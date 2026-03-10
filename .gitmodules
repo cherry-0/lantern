@@ -1,0 +1,12 @@
+[submodule "target-apps/clone"]
+	path = target-apps/clone
+	url = https://github.com/snuhcs-course/swpp-2025-project-team-07.git
+[submodule "target-apps/momentag"]
+	path = target-apps/momentag
+	url = https://github.com/snuhcs-course/swpp-2025-project-team-06.git
+[submodule "target-apps/snapdo"]
+	path = target-apps/snapdo
+	url = https://github.com/cherry-0/snapdo.git
+[submodule "target-apps/xend"]
+	path = target-apps/xend
+	url = https://github.com/snuhcs-course/swpp-2025-project-team-11.git
