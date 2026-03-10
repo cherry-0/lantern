@@ -1,0 +1,13 @@
+filename,status,original_output,perturbed_output,orig_location_inferable,orig_location_score,pert_location_inferable,pert_location_score,orig_identity_inferable,orig_identity_score,pert_identity_inferable,pert_identity_score
+main1.json,success,"Subject: Exciting Updates from the Legal Front!
+
+Body:
+Hello everyone! Been a busy few weeks working on some fascinating cases and attending some insightful industry events.
+
+Currently, I'm deeply inv","Subject: Facebook Post Draft - Exciting Legal Updates!
+
+Body:
+Hey everyone,
+
+Hope you're all doing well! I wanted to share a quick update on some of the interesting work I've been involved in lately.
+",True,0.85,True,0.85,True,0.85,True,0.85

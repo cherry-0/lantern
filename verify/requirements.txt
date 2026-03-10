@@ -1,0 +1,20 @@
+# Verify — core dependencies
+# Install with: pip install -r verify/requirements.txt
+
+streamlit>=1.35.0
+Pillow>=10.0.0
+requests>=2.31.0
+pandas>=2.0.0
+
+# Optional: needed for video support
+# opencv-python>=4.8.0
+
+# Optional: needed for native momentag pipeline
+# torch>=2.0.0
+# transformers>=4.40.0
+# sentence-transformers>=3.0.0
+
+# Optional: needed for native snapdo pipeline
+# langchain>=0.2.0
+# langchain-openai>=0.1.0
+# django>=5.2.0

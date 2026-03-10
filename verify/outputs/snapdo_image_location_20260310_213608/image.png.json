@@ -1,0 +1,78 @@
+{
+  "filename": "image.png",
+  "status": "success",
+  "timestamp": "2026-03-10T12:36:15.243492+00:00",
+  "original_input": {
+    "modality": "image",
+    "text_content": "",
+    "has_image": true,
+    "has_frames": false,
+    "frame_count": 0
+  },
+  "original_output": {
+    "success": true,
+    "output_text": "Verdict: PASSED\nConfidence: 1.0\nExplanation: The image shows content that can be analyzed according to the task's requirements. We can see a camera held by a person, a body of water, and trees in the background. Therefore, the image is suitable for identifying and describing visible content as per the task.",
+    "raw_output": {
+      "raw_response": "Verdict: PASSED\nConfidence: 1.0\nExplanation: The image shows content that can be analyzed according to the task's requirements. We can see a camera held by a person, a body of water, and trees in the background. Therefore, the image is suitable for identifying and describing visible content as per the task."
+    },
+    "structured_output": {
+      "verdict": "PASSED",
+      "confidence": 1.0,
+      "explanation": "The image shows content that can be analyzed according to the task's requirements. We can see a camera held by a person, a body of water, and trees in the background. Therefore, the image is suitable for identifying and describing visible content as per the task."
+    },
+    "error": null,
+    "metadata": {
+      "method": "openrouter_fallback"
+    }
+  },
+  "perturbed_input": {
+    "modality": "image",
+    "text_content": "",
+    "has_image": true,
+    "has_frames": false,
+    "perturbation_applied": {
+      "method": "Imago_Obscura",
+      "attributes": [
+        "location"
+      ],
+      "blur_radius": 20
+    }
+  },
+  "perturbed_output": {
+    "success": true,
+    "output_text": "Verdict: FAILED\nConfidence: 1.0\nExplanation: The image is a gradient blur. There are no objects, text, people, or location cues to identify and describe. Therefore, the task cannot be completed based on the provided image.",
+    "raw_output": {
+      "raw_response": "Verdict: FAILED\nConfidence: 1.0\nExplanation: The image is a gradient blur. There are no objects, text, people, or location cues to identify and describe. Therefore, the task cannot be completed based on the provided image."
+    },
+    "structured_output": {
+      "verdict": "FAILED",
+      "confidence": 1.0,
+      "explanation": "The image is a gradient blur. There are no objects, text, people, or location cues to identify and describe. Therefore, the task cannot be completed based on the provided image."
+    },
+    "error": null,
+    "metadata": {
+      "method": "openrouter_fallback"
+    }
+  },
+  "evaluation": {
+    "original": {
+      "location": {
+        "inferable": true,
+        "score": 0.85,
+        "reasoning": "The presence of 'body of water' and 'trees' provides some, albeit vague, geographic context, making location inferable to some extent. The description could potentially be used to narrow down possible locations."
+      }
+    },
+    "perturbed": {
+      "location": {
+        "inferable": true,
+        "score": 0.7,
+        "reasoning": "The AI determination that there are no location cues provided, means that location was a relevant attribute for assessment of the image content, it knows of the existence of location cues and it needs to find/avoid them."
+      }
+    },
+    "original_success": true,
+    "perturbed_success": true,
+    "original_error": null,
+    "perturbed_error": null
+  },
+  "type": "item_result"
+}

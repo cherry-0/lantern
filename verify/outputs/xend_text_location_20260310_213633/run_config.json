@@ -1,0 +1,13 @@
+{
+  "app_name": "xend",
+  "dataset_name": "PrivacyLens",
+  "modality": "text",
+  "attributes": [
+    "location"
+  ],
+  "perturbation_method": "PrivacyLens",
+  "evaluation_method": "openrouter",
+  "use_cache": false,
+  "run_dir": "/home/sieunpark/Lantern/verify/outputs/xend_text_location_20260310_213633",
+  "started_at": "2026-03-10T12:36:33.708212+00:00"
+}

@@ -1,0 +1,22 @@
+{
+  "run_config": {
+    "app_name": "xend",
+    "dataset_name": "VISPR",
+    "modality": "image",
+    "attributes": [
+      "location",
+      "identity"
+    ],
+    "perturbation_method": "Imago_Obscura"
+  },
+  "items": [
+    {
+      "filename": "image.png",
+      "status": "failed",
+      "timestamp": "2026-03-10T12:48:31.902326+00:00",
+      "error": "Original pipeline failed: xend only supports 'text' modality, got 'image'.",
+      "type": "item_result"
+    }
+  ],
+  "generated_at": "2026-03-10T12:48:31.938285+00:00"
+}
