@@ -61,7 +61,7 @@ def get_env(key: str, default: Optional[str] = None) -> Optional[str]:
     """
     val = os.environ.get(key)
     if val:
-        return val
+        return val.strip()
 
     # Try loading from .env at LANTERN_ROOT
     env_path = LANTERN_ROOT / ".env"

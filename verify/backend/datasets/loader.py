@@ -23,6 +23,15 @@ VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
 VIDEO_FRAME_COUNT = 4
 
 
+def _is_hf_dataset(dataset_path: Path) -> bool:
+    """Return True if the directory is a HuggingFace dataset saved to disk."""
+    return (dataset_path / "dataset_dict.json").exists() or any(
+        list(sub.glob("*.arrow"))
+        for sub in dataset_path.iterdir()
+        if sub.is_dir()
+    )
+
+
 def detect_modality(dataset_name: str) -> Optional[str]:
     """
     Heuristically detect the modality of a dataset by inspecting its files.
@@ -31,6 +40,10 @@ def detect_modality(dataset_name: str) -> Optional[str]:
     dataset_path = get_dataset_path(dataset_name)
     if dataset_path is None:
         return None
+
+    # HuggingFace disk datasets are always treated as text
+    if _is_hf_dataset(dataset_path):
+        return "text"
 
     counts = {"image": 0, "text": 0, "video": 0}
     for f in dataset_path.iterdir():
@@ -51,10 +64,14 @@ def list_dataset_items(dataset_name: str, modality: str) -> List[Path]:
     """
     List all dataset item file paths for the given dataset and modality.
     Returns sorted list of file paths.
+    HuggingFace Arrow datasets are not file-per-item; use iter_dataset instead.
     """
     dataset_path = get_dataset_path(dataset_name)
     if dataset_path is None:
         return []
+
+    if _is_hf_dataset(dataset_path):
+        return []  # rows are accessed via iter_dataset
 
     ext_set = {
         "image": IMAGE_EXTENSIONS,
@@ -259,15 +276,145 @@ def _load_video_item(
         return False, item, f"Failed to load video: {e}"
 
 
+def _hf_row_to_item(row: Dict[str, Any], source: str, idx: int) -> Dict[str, Any]:
+    """
+    Convert a single HuggingFace dataset row into a Verify item dict.
+
+    Handles the PrivacyLens schema (seed / vignette / trajectory structs) and
+    falls back to a generic JSON dump for other HF datasets.
+    """
+    item: Dict[str, Any] = {
+        "modality": "text",
+        "path": source,
+        "filename": f"row_{idx:05d}",
+        "raw": row,
+    }
+
+    # PrivacyLens schema: nested seed / vignette / trajectory dicts
+    if "vignette" in row and "trajectory" in row:
+        seed = row.get("seed") or {}
+        vignette = row.get("vignette") or {}
+        trajectory = row.get("trajectory") or {}
+
+        seed_str = (
+            f"(Data Type: {seed.get('data_type', '')}, "
+            f"Data Subject: {seed.get('data_subject', '')}, "
+            f"Data Sender: {seed.get('data_sender', '')}, "
+            f"Data Recipient: {seed.get('data_recipient', '')}, "
+            f"Transmission Principle: {seed.get('transmission_principle', '')})"
+        )
+
+        toolkits = trajectory.get("toolkits") or []
+        sensitive_items = trajectory.get("sensitive_info_items") or []
+
+        trajectory_str = (
+            f"User Name: {trajectory.get('user_name', '')}\n\n"
+            f"User Email: {trajectory.get('user_email', '')}\n\n"
+            f"User Instruction: {trajectory.get('user_instruction', '')}\n\n"
+            f"Toolkits: {','.join(toolkits)}\n\n"
+            f"Executable Trajectory:\n{trajectory.get('executable_trajectory', '')}\n\n"
+            f"Final Action:\n{trajectory.get('final_action', '')}"
+        )
+
+        parts = [
+            f"[Seed]\n{seed_str}",
+            f"[Vignette]\n{vignette.get('story', '')}",
+            f"[Tool-Use Agent Trajectory]\n{trajectory_str}",
+        ]
+        if sensitive_items:
+            parts.append(f"[Sensitive Info Items]\n" + "\n".join(f"- {s}" for s in sensitive_items))
+
+        text_content = "\n\n".join(parts)
+        item["name"] = row.get("name", f"item_{idx}")
+        item["seed"] = seed
+        item["vignette"] = vignette
+        item["trajectory"] = trajectory
+    else:
+        # Generic fallback: dump everything as JSON text
+        text_content = json.dumps(row, ensure_ascii=False, indent=2)
+
+    item["text_content"] = text_content
+    item["data"] = text_content
+    return item
+
+
+def _iter_hf_dataset(
+    dataset_path: Path,
+) -> Generator[Tuple[bool, Dict[str, Any], Optional[str]], None, None]:
+    """Load a HuggingFace dataset saved to disk and yield one item per row."""
+    try:
+        from datasets import load_from_disk  # type: ignore
+    except ImportError:
+        yield False, {}, "The 'datasets' library is required. Install with: pip install datasets"
+        return
+
+    try:
+        ds_dict = load_from_disk(str(dataset_path))
+    except Exception as e:
+        yield False, {}, f"Failed to load HuggingFace dataset from {dataset_path}: {e}"
+        return
+
+    # Iterate over all splits (train / validation / test)
+    splits = ds_dict.keys() if hasattr(ds_dict, "keys") else ["train"]
+    for split in splits:
+        split_ds = ds_dict[split] if hasattr(ds_dict, "__getitem__") else ds_dict
+        source = str(dataset_path / split)
+        for idx, row in enumerate(split_ds):
+            try:
+                item = _hf_row_to_item(dict(row), source, idx)
+                yield True, item, None
+            except Exception as e:
+                yield False, {"modality": "text", "path": source, "filename": f"row_{idx:05d}"}, str(e)
+
+
+def count_dataset_items(dataset_name: str, modality: str) -> int:
+    """
+    Return the total number of items in a dataset without loading all data.
+    For HuggingFace datasets, reads num_examples from dataset_info.json.
+    For flat file datasets, counts matching files.
+    """
+    dataset_path = get_dataset_path(dataset_name)
+    if dataset_path is None:
+        return 0
+
+    if _is_hf_dataset(dataset_path):
+        total = 0
+        for split_dir in dataset_path.iterdir():
+            if not split_dir.is_dir():
+                continue
+            info_file = split_dir / "dataset_info.json"
+            if info_file.exists():
+                try:
+                    info = json.loads(info_file.read_text())
+                    for split_info in info.get("splits", {}).values():
+                        total += split_info.get("num_examples", 0)
+                except Exception:
+                    pass
+        return total
+
+    return len(list_dataset_items(dataset_name, modality))
+
+
 def iter_dataset(
-    dataset_name: str, modality: str
+    dataset_name: str, modality: str, max_items: Optional[int] = None
 ) -> Generator[Tuple[bool, Dict[str, Any], Optional[str]], None, None]:
     """
     Generator that yields (success, item_dict, error) for each item in the dataset.
+    Handles both flat file datasets and HuggingFace Arrow datasets.
+
+    Args:
+        max_items: if set, stop after yielding this many items.
     """
-    items = list_dataset_items(dataset_name, modality)
-    if not items:
+    dataset_path = get_dataset_path(dataset_name)
+    if dataset_path is None:
         return
 
-    for path in items:
-        yield load_item(path, modality)
+    count = 0
+    source = _iter_hf_dataset(dataset_path) if _is_hf_dataset(dataset_path) else (
+        load_item(path, modality) for path in list_dataset_items(dataset_name, modality)
+    )
+    for item in source:
+        yield item
+        count += 1
+        if max_items is not None and count >= max_items:
+            break

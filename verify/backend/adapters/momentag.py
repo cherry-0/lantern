@@ -104,7 +104,12 @@ class MomentagAdapter(BaseAdapter):
             os.environ.setdefault(
                 "DJANGO_SETTINGS_MODULE", "config.settings.local"
             )
-            # Only attempt setup if Django isn't already configured
+            # Purge any cached 'config' package from a previous adapter to
+            # avoid sys.modules collision (momentag and xend both use a
+            # top-level package named 'config').
+            for _mod in list(sys.modules):
+                if _mod == "config" or _mod.startswith("config."):
+                    del sys.modules[_mod]
             try:
                 django.setup()
             except RuntimeError:

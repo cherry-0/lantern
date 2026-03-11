@@ -397,6 +397,15 @@ def main():
 
         st.divider()
 
+        # Max items
+        st.subheader("Item Limit")
+        limit_enabled = st.checkbox("Limit number of items", value=False)
+        max_items = None
+        if limit_enabled:
+            max_items = int(st.number_input("Max items to process", min_value=1, value=5, step=1))
+
+        st.divider()
+
         # Cache option
         use_cache = st.checkbox("Use cache (skip already-processed items)", value=True)
 
@@ -426,6 +435,12 @@ def main():
         st.session_state.run_config = {}
     if "status_messages" not in st.session_state:
         st.session_state.status_messages = []
+    if "items_processed" not in st.session_state:
+        st.session_state.items_processed = 0
+    if "items_total" not in st.session_state:
+        st.session_state.items_total = 0
+    if "current_item" not in st.session_state:
+        st.session_state.current_item = ""
 
     # Start a new run
     if verify_clicked:
@@ -433,13 +448,19 @@ def main():
         st.session_state.summary = None
         st.session_state.status_messages = []
         st.session_state.processing = True
+        st.session_state.items_processed = 0
+        st.session_state.current_item = ""
         st.session_state.run_config = {
             "app": selected_app,
             "dataset": selected_dataset,
             "modality": selected_modality,
             "attributes": selected_attributes,
         }
-        # Store generator for progressive processing
+        # Pre-count dataset size for the progress bar (capped by max_items if set)
+        from verify.frontend.utils import count_dataset_items
+        total = count_dataset_items(selected_dataset, selected_modality)
+        st.session_state.items_total = min(total, max_items) if max_items else total
+
         from verify.backend.orchestrator import Orchestrator
         orch = Orchestrator(
             app_name=selected_app,
@@ -447,6 +468,7 @@ def main():
             modality=selected_modality,
             attributes=selected_attributes,
             use_cache=use_cache,
+            max_items=max_items,
         )
         st.session_state._generator = orch.run()
         st.rerun()
@@ -484,6 +506,8 @@ def main():
 
             elif item_type == "item_result":
                 st.session_state.results.append(item)
+                st.session_state.items_processed += 1
+                st.session_state.current_item = item.get("filename", "")
                 st.rerun()
 
         except StopIteration:
@@ -510,12 +534,22 @@ def main():
     # Progress indicator
     if st.session_state.processing:
         rc = st.session_state.run_config
-        st.info(
-            f"Processing: **{rc.get('app')}** | dataset: **{rc.get('dataset')}** | "
-            f"modality: **{rc.get('modality')}** | attributes: **{', '.join(rc.get('attributes', []))}**"
+        processed = st.session_state.items_processed
+        total = st.session_state.items_total
+        current = st.session_state.current_item
+
+        st.markdown(
+            f"**{rc.get('app')}** &nbsp;·&nbsp; {rc.get('dataset')} &nbsp;·&nbsp; "
+            f"{rc.get('modality')} &nbsp;·&nbsp; `{'`, `'.join(rc.get('attributes', []))}`"
         )
-        with st.spinner("Running pipeline on next item..."):
-            pass  # Spinner is shown while rerun is pending
+
+        if total > 0:
+            fraction = min(processed / total, 1.0)
+            st.progress(fraction, text=f"Item {processed} / {total}" + (f"  —  `{current}`" if current else ""))
+        else:
+            # Total unknown (e.g. flat file dataset not yet counted) — show indeterminate
+            st.progress(0, text=f"{processed} item{'s' if processed != 1 else ''} processed" + (f"  —  `{current}`" if current else ""))
+            st.caption("Counting items…")
 
     # Results
     if st.session_state.results:

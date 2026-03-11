@@ -71,12 +71,14 @@ class Orchestrator:
         modality: str,
         attributes: List[str],
         use_cache: bool = True,
+        max_items: Optional[int] = None,
     ):
         self.app_name = app_name
         self.dataset_name = dataset_name
         self.modality = modality
         self.attributes = attributes
         self.use_cache = use_cache
+        self.max_items = max_items
 
         # Resolve perturbation method name from config
         method_map = load_perturbation_method_map()
@@ -263,7 +265,7 @@ class Orchestrator:
 
         all_results: List[Dict[str, Any]] = []
 
-        for load_ok, item, load_err in iter_dataset(self.dataset_name, self.modality):
+        for load_ok, item, load_err in iter_dataset(self.dataset_name, self.modality, max_items=self.max_items):
             filename = item.get("filename", "unknown")
 
             # Check cache first

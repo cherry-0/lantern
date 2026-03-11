@@ -1,0 +1,140 @@
+{
+  "builder_name": "json",
+  "citation": "",
+  "config_name": "default",
+  "dataset_name": "privacy_lens",
+  "dataset_size": 2209829,
+  "description": "",
+  "download_checksums": {
+    "hf://datasets/SALT-NLP/PrivacyLens@7dc406e8d1e882e5b0c6ea4be697b2b7a5dee805/main_data.json": {
+      "num_bytes": 2714319,
+      "checksum": null
+    }
+  },
+  "download_size": 2714319,
+  "features": {
+    "name": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "seed": {
+      "data_recipient": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "data_sender": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "data_sender_name": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "data_subject": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "data_type": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "source": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "source_details": {
+        "hint": {
+          "dtype": "string",
+          "_type": "Value"
+        },
+        "paper": {
+          "dtype": "string",
+          "_type": "Value"
+        },
+        "regulation": {
+          "dtype": "string",
+          "_type": "Value"
+        }
+      },
+      "transmission_principle": {
+        "dtype": "string",
+        "_type": "Value"
+      }
+    },
+    "vignette": {
+      "data_recipient_concrete": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "data_sender_concrete": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "data_subject_concrete": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "data_type_concrete": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "story": {
+        "dtype": "string",
+        "_type": "Value"
+      }
+    },
+    "trajectory": {
+      "executable_trajectory": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "final_action": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "sensitive_info_items": {
+        "feature": {
+          "dtype": "string",
+          "_type": "Value"
+        },
+        "_type": "List"
+      },
+      "toolkits": {
+        "feature": {
+          "dtype": "string",
+          "_type": "Value"
+        },
+        "_type": "List"
+      },
+      "user_email": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "user_instruction": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "user_name": {
+        "dtype": "string",
+        "_type": "Value"
+      }
+    }
+  },
+  "homepage": "",
+  "license": "",
+  "size_in_bytes": 4924148,
+  "splits": {
+    "train": {
+      "name": "train",
+      "num_bytes": 2209829,
+      "num_examples": 493,
+      "dataset_name": "privacy_lens"
+    }
+  },
+  "version": {
+    "version_str": "0.0.0",
+    "major": 0,
+    "minor": 0,
+    "patch": 0
+  }
+}
