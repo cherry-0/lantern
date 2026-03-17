@@ -4,36 +4,38 @@ Adapter for the snapdo app.
 Core pipeline: image + task description → VLM verification → PASSED/FAILED + explanation.
 
 Primary strategy: import VLMService from the snapdo backend.
-Fallback: replicate the VLM call using OpenRouter directly (without Django context).
+Task generation: before verification, a VLM agent inspects the image and generates
+a realistic Todo title + description that this photo could plausibly be submitted
+as evidence for.  The generated task is cached per filename so the same task is
+reused for both the original and perturbed pipeline runs.
 """
 
+import json
+import re
 import sys
 import base64
-from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-from verify.backend.adapters.base import BaseAdapter, AdapterResult
-from verify.backend.utils.config import TARGET_APPS_DIR, get_openrouter_api_key  # get_openrouter_api_key used in check_availability
+from verify.backend.adapters.base import BaseAdapter, AdapterResult, OPENROUTER_DEFAULT_MODEL
+from verify.backend.utils.config import TARGET_APPS_DIR, get_openrouter_api_key  # noqa: F401
 
 SNAPDO_SERVER = TARGET_APPS_DIR / "snapdo" / "server"
 
-# Default task description used when none is provided in input
+# Fallback used only when task generation itself fails
 DEFAULT_TASK = "Identify and describe all visible content in this image, including objects, text, people, and location cues."
 
 
 def _encode_image_b64(data_or_path) -> str:
     """Encode a PIL Image or path to base64 JPEG."""
     import io
+    from PIL import Image as PILImage
 
     try:
-        from PIL import Image as PILImage
-
         if isinstance(data_or_path, (str, Path)):
             img = PILImage.open(str(data_or_path)).convert("RGB")
         else:
             img = data_or_path.convert("RGB")
-
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=85)
         return base64.b64encode(buf.getvalue()).decode("utf-8")
@@ -55,6 +57,11 @@ class SnapdoAdapter(BaseAdapter):
     def __init__(self):
         self._native_available: Optional[bool] = None
         self._native_error: str = ""
+        # Cache generated tasks keyed by filename so original + perturbed
+        # runs for the same image share the same task context.
+        self._task_cache: Dict[str, Dict[str, str]] = {}
+
+    # ── Django / native availability ─────────────────────────────────────────
 
     def _check_native(self) -> Tuple[bool, str]:
         if self._native_available is not None:
@@ -70,22 +77,28 @@ class SnapdoAdapter(BaseAdapter):
             from django.apps import apps as django_apps
             from django import conf as django_conf
 
-            # Purge snapdo/server modules so they reload under correct settings
-            for _mod in list(sys.modules):
-                if _mod == "server" or _mod.startswith("server.") or \
-                   _mod == "snapdo" or _mod.startswith("snapdo."):
-                    del sys.modules[_mod]
+            already_configured = (
+                django_conf.settings.configured
+                and os.environ.get("DJANGO_SETTINGS_MODULE") == "server.settings"
+                and django_apps.ready
+            )
 
-            # Reset Django app registry so we can call setup() with new settings
-            if django_apps.ready:
-                from collections import defaultdict
-                django_apps.app_configs = {}
-                django_apps.all_models = defaultdict(dict)
-                django_apps.ready = False
-                django_conf.settings._wrapped = None
+            if not already_configured:
+                for _mod in list(sys.modules):
+                    if _mod == "server" or _mod.startswith("server.") or \
+                       _mod == "snapdo" or _mod.startswith("snapdo."):
+                        del sys.modules[_mod]
 
-            os.environ["DJANGO_SETTINGS_MODULE"] = "server.settings"
-            django.setup()
+                if django_apps.ready or getattr(django_apps, "_loading", False):
+                    from collections import defaultdict
+                    django_apps.app_configs = {}
+                    django_apps.all_models = defaultdict(dict)
+                    django_apps.ready = False
+                    django_apps._loading = False
+                    django_conf.settings._wrapped = None
+
+                os.environ["DJANGO_SETTINGS_MODULE"] = "server.settings"
+                django.setup()
 
             from snapdo.services.vlm_service import VLMService  # noqa: F401
 
@@ -103,6 +116,52 @@ class SnapdoAdapter(BaseAdapter):
             return True, "Native snapdo VLMService available."
         return False, f"Native snapdo pipeline unavailable: {native_err}"
 
+    # ── Task generation ───────────────────────────────────────────────────────
+
+    def _generate_task(self, filename: str, image_b64: str) -> Dict[str, str]:
+        """
+        Ask a VLM to invent a realistic Todo task for which this image would be
+        natural photo evidence.
+
+        Returns {"title": str, "description": str}.
+        Falls back to DEFAULT_TASK title on any failure.
+        """
+        if filename in self._task_cache:
+            return self._task_cache[filename]
+
+        prompt = (
+            "You are helping a to-do app where users submit photos as proof of completing a task.\n\n"
+            "Look at this image and imagine: what is the most realistic, natural to-do task "
+            "that someone would create, for which this photo would be submitted as evidence of completion?\n\n"
+            "Return a JSON object with exactly these two fields:\n"
+            '  "title": a short task title (≤ 200 characters), e.g. "Go for a morning run at the park"\n'
+            '  "description": optional extra detail or sub-steps (can be empty string)\n\n'
+            "Rules:\n"
+            "- The task must feel like something a real person adds to their personal to-do list.\n"
+            "- Do NOT mention privacy, surveillance, or analysis.\n"
+            "- Return ONLY the JSON object, no other text.\n\n"
+            'Example: {"title": "Visit the farmers market", "description": "Pick up fresh vegetables and take a photo of the stall."}'
+        )
+
+        try:
+            raw = self._call_openrouter(prompt, image_b64=image_b64, max_tokens=256)
+            match = re.search(r"\{.*\}", raw, re.DOTALL)
+            if match:
+                parsed = json.loads(match.group())
+                task = {
+                    "title": str(parsed.get("title", DEFAULT_TASK))[:200],
+                    "description": str(parsed.get("description", "")),
+                }
+            else:
+                raise ValueError("No JSON object in response")
+        except Exception:
+            task = {"title": DEFAULT_TASK, "description": ""}
+
+        self._task_cache[filename] = task
+        return task
+
+    # ── Pipeline ──────────────────────────────────────────────────────────────
+
     def run_pipeline(self, input_item: Dict[str, Any]) -> AdapterResult:
         if input_item.get("modality") != "image":
             return AdapterResult(
@@ -110,20 +169,36 @@ class SnapdoAdapter(BaseAdapter):
                 error=f"snapdo only supports 'image' modality, got '{input_item.get('modality')}'.",
             )
 
+        filename = input_item.get("filename", "")
+        data = input_item.get("data")
+        path = input_item.get("path", "")
+        image_b64 = input_item.get("image_base64") or _encode_image_b64(
+            data if data is not None else path
+        )
+
+        # Step 1: generate task context (pre-pipeline VLM agent).
+        # Cached by filename — the original run generates the task; the
+        # perturbed run for the same image hits the cache and reuses it
+        # without making another VLM call.
+        generated_task = self._generate_task(filename, image_b64)
+
+        # Step 2: run the native snapdo verification pipeline
         native_ok, native_err = self._check_native()
-        if native_ok:
-            return self._run_native(input_item)
-        else:
+        if not native_ok:
             return AdapterResult(success=False, error=f"Native pipeline unavailable: {native_err}")
 
-    def _run_native(self, input_item: Dict[str, Any]) -> AdapterResult:
-        """Use snapdo's VLMService directly."""
-        # Re-apply snapdo settings in case another adapter reset Django between calls
+        return self._run_native(image_b64=image_b64, generated_task=generated_task)
+
+    def _run_native(
+        self,
+        image_b64: str,
+        generated_task: Dict[str, str],
+    ) -> AdapterResult:
+        """Run snapdo's native VLMService with the pre-generated task as constraint."""
         from django import conf as django_conf
         try:
             _ = django_conf.settings.VLM_API_KEY
         except AttributeError:
-            # Settings got clobbered — redo the Django reset+setup
             self._native_available = None
             native_ok, native_err = self._check_native()
             if not native_ok:
@@ -131,18 +206,15 @@ class SnapdoAdapter(BaseAdapter):
 
         from snapdo.services.vlm_service import VLMService
 
-        data = input_item.get("data")
-        path = input_item.get("path", "")
-        image_b64 = input_item.get("image_base64") or _encode_image_b64(
-            data if data is not None else path
-        )
-
-        task = input_item.get("task_description", DEFAULT_TASK)
+        constraint = generated_task["title"]
+        if generated_task["description"]:
+            constraint += ". " + generated_task["description"]
 
         service = VLMService()
-        raw = service.verify_evidence(image_b64, task)
+        raw = service.verify_evidence(image_b64, constraint, model=OPENROUTER_DEFAULT_MODEL)
 
         output_text = (
+            f"Task: {generated_task['title']}\n"
             f"Verdict: {raw.get('verdict', 'UNKNOWN')}\n"
             f"Confidence: {raw.get('confidence', 'N/A')}\n"
             f"Explanation: {raw.get('explanation', '')}"
@@ -153,56 +225,8 @@ class SnapdoAdapter(BaseAdapter):
             output_text=output_text,
             raw_output=raw,
             structured_output=raw,
-            metadata={"method": "native_vlmservice"},
-        )
-
-    def _run_openrouter_fallback(self, input_item: Dict[str, Any]) -> AdapterResult:
-        """Replicate VLMService.verify_evidence using OpenRouter directly."""
-        data = input_item.get("data")
-        path = input_item.get("path", "")
-        image_b64 = input_item.get("image_base64") or _encode_image_b64(
-            data if data is not None else path
-        )
-
-        task = input_item.get("task_description", DEFAULT_TASK)
-
-        prompt = (
-            f"Please analyze the given image and tell me how it relates to the following task:\n"
-            f"Task: {task}\n\n"
-            "Respond in this exact format:\n"
-            "Verdict: PASSED or FAILED\n"
-            "Confidence: <0.0 to 1.0>\n"
-            "Explanation: <your explanation>"
-        )
-
-        try:
-            response_text = self._call_openrouter(prompt, image_b64=image_b64, max_tokens=512)
-        except RuntimeError as e:
-            return AdapterResult(success=False, error=str(e))
-
-        # Parse the structured response
-        verdict, confidence, explanation = "UNKNOWN", 0.5, response_text
-        for line in response_text.splitlines():
-            if line.lower().startswith("verdict:"):
-                verdict = line.split(":", 1)[1].strip().upper()
-            elif line.lower().startswith("confidence:"):
-                try:
-                    confidence = float(line.split(":", 1)[1].strip())
-                except ValueError:
-                    pass
-            elif line.lower().startswith("explanation:"):
-                explanation = line.split(":", 1)[1].strip()
-
-        structured = {
-            "verdict": verdict,
-            "confidence": confidence,
-            "explanation": explanation,
-        }
-
-        return AdapterResult(
-            success=True,
-            output_text=response_text,
-            raw_output={"raw_response": response_text},
-            structured_output=structured,
-            metadata={"method": "openrouter_fallback"},
+            metadata={
+                "method": "native_vlmservice",
+                "generated_task": generated_task,
+            },
         )

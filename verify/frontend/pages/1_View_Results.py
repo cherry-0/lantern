@@ -199,6 +199,23 @@ def _reconstruct_perturbed_image(filename: str, dataset_name: str,
         return None
 
 
+def _render_generated_task(result: dict):
+    """If the result carries a snapdo-generated task, render it as an info banner."""
+    generated_task = (
+        result.get("original_output", {}).get("metadata", {}).get("generated_task")
+        or result.get("perturbed_output", {}).get("metadata", {}).get("generated_task")
+    )
+    if not generated_task:
+        return
+    title = generated_task.get("title", "")
+    description = generated_task.get("description", "")
+    st.markdown("### Generated Task Context")
+    st.info(
+        f"**📋 Task title:** {title}"
+        + (f"\n\n**Description:** {description}" if description else "")
+    )
+
+
 def _render_item_result(result: dict, dataset_name: str, modality: str):
     filename = result.get("filename", "Unknown")
     status = result.get("status", "")
@@ -224,6 +241,9 @@ def _render_item_result(result: dict, dataset_name: str, modality: str):
         orig_out = result.get("original_output", {})
         pert_out = result.get("perturbed_output", {})
         evaluation = result.get("evaluation", {})
+
+        # ── Generated task (snapdo only) ──────────────────────────────────
+        _render_generated_task(result)
 
         # ── Input Comparison ──────────────────────────────────────────────
         st.markdown("### Input Comparison")
