@@ -72,6 +72,7 @@ class Orchestrator:
         attributes: List[str],
         use_cache: bool = True,
         max_items: Optional[int] = None,
+        perturbation_method: Optional[str] = None,
     ):
         self.app_name = app_name
         self.dataset_name = dataset_name
@@ -80,9 +81,12 @@ class Orchestrator:
         self.use_cache = use_cache
         self.max_items = max_items
 
-        # Resolve perturbation method name from config
-        method_map = load_perturbation_method_map()
-        self.perturbation_method = method_map.get(modality, "")
+        # Resolve perturbation method: use explicit override or fall back to config
+        if perturbation_method:
+            self.perturbation_method = perturbation_method
+        else:
+            method_map = load_perturbation_method_map()
+            self.perturbation_method = method_map.get(modality, "")
 
         self._adapter = get_adapter(app_name)
         self._cache_dir: Optional[Path] = None
@@ -254,7 +258,7 @@ class Orchestrator:
             return
 
         # Check perturbation availability
-        pert_ok, pert_msg = check_perturbation_availability(self.modality)
+        pert_ok, pert_msg = check_perturbation_availability(self.modality, self.perturbation_method or None)
         yield {
             "type": "perturbation_status",
             "modality": self.modality,
@@ -327,7 +331,7 @@ class Orchestrator:
                 continue
 
             pert_ok_item, perturbed_item, pert_err = run_perturbation(
-                item, self.modality, self.attributes
+                item, self.modality, self.attributes, self.perturbation_method or None
             )
 
             if not pert_ok_item:

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from verify.backend.adapters.base import BaseAdapter, AdapterResult
-from verify.backend.utils.config import TARGET_APPS_DIR, get_openrouter_api_key
+from verify.backend.utils.config import TARGET_APPS_DIR, get_openrouter_api_key  # used in check_availability
 
 MOMENTAG_BACKEND = TARGET_APPS_DIR / "momentag" / "backend"
 
@@ -37,40 +37,6 @@ def _encode_image_b64(image_or_path) -> str:
         raise RuntimeError(f"Failed to encode image: {e}")
 
 
-def _run_openrouter_vision(image_b64: str, prompt: str, api_key: str) -> str:
-    """Call OpenRouter with a vision model and return the text response."""
-    import requests
-
-    resp = requests.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/Verify",
-            "X-Title": "Verify",
-        },
-        json={
-            "model": "google/gemini-2.0-flash-001",
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{image_b64}"
-                            },
-                        },
-                    ],
-                }
-            ],
-            "max_tokens": 512,
-        },
-        timeout=60,
-    )
-    resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"]
 
 
 class MomentagAdapter(BaseAdapter):
@@ -205,13 +171,6 @@ class MomentagAdapter(BaseAdapter):
 
     def _run_openrouter_fallback(self, input_item: Dict[str, Any]) -> AdapterResult:
         """Use OpenRouter vision model to generate tags/captions as momentag would."""
-        api_key = get_openrouter_api_key()
-        if not api_key or api_key.startswith("your_"):
-            return AdapterResult(
-                success=False,
-                error="No valid OpenRouter API key available for momentag fallback.",
-            )
-
         data = input_item.get("data")
         path = input_item.get("path", "")
         image_b64 = input_item.get("image_base64")
@@ -229,7 +188,10 @@ class MomentagAdapter(BaseAdapter):
             "Tags: <tag1>, <tag2>, <tag3>, ..."
         )
 
-        response = _run_openrouter_vision(image_b64, prompt, api_key)
+        try:
+            response = self._call_openrouter(prompt, image_b64=image_b64, max_tokens=512)
+        except RuntimeError as e:
+            return AdapterResult(success=False, error=str(e))
 
         # Parse response
         caption = ""

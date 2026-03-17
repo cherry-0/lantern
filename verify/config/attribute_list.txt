@@ -1,2 +1,5 @@
 location
 identity
+marital status
+gender
+age

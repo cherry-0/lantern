@@ -23,6 +23,115 @@ VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
 VIDEO_FRAME_COUNT = 4
 
 
+# HR-VISPR 18-class label names (index → attribute)
+_HRVISPR_18_CLASSES = [
+    "age", "face", "color", "haircolor", "gender", "race", "nudity",
+    "height", "weight", "disability", "ethnic_clothing", "formal",
+    "uniforms", "medical", "troupe", "sports", "casual", "religion",
+]
+
+# Preferred split order for HR-VISPR (pick the first one that exists)
+_HRVISPR_SPLIT_PREFERENCE = ["val2017", "test2017", "train2017"]
+
+
+def _is_subdir_image_dataset(dataset_path: Path) -> bool:
+    """Return True if the dataset stores images inside named subdirectories."""
+    return any(
+        sub.is_dir() and any(f.suffix.lower() in IMAGE_EXTENSIONS for f in sub.iterdir())
+        for sub in dataset_path.iterdir()
+        if sub.is_dir() and not sub.name.endswith("_labels") and not sub.name.endswith("_pkl_labels")
+    )
+
+
+def _load_hrvispr_pkl_labels(dataset_path: Path, split: str) -> Dict[str, List[str]]:
+    """
+    Load 18-class PKL labels for a given split.
+    Returns {image_id: [label_name, ...]} with only positive labels.
+    """
+    pkl_path = dataset_path / "18_class_pkl_labels" / f"{split}_labels.pkl"
+    if not pkl_path.exists():
+        return {}
+    try:
+        import pickle
+        with open(pkl_path, "rb") as f:
+            data = pickle.load(f)
+        result: Dict[str, List[str]] = {}
+        for img_id, vec in data.items():
+            labels = [_HRVISPR_18_CLASSES[i] for i, v in enumerate(vec) if v > 0]
+            result[img_id] = labels
+        return result
+    except Exception:
+        return {}
+
+
+def _iter_subdir_image_dataset(
+    dataset_path: Path,
+) -> Generator[Tuple[bool, Dict[str, Any], Optional[str]], None, None]:
+    """
+    Load an HR-VISPR-style dataset: images in split subdirs, labels in JSON or PKL.
+    Yields one image item per file, with privacy labels attached as metadata.
+    """
+    # Pick the first available split
+    split = next(
+        (s for s in _HRVISPR_SPLIT_PREFERENCE if (dataset_path / s).is_dir()),
+        None,
+    )
+    if split is None:
+        yield False, {}, "No recognised split directory found in dataset."
+        return
+
+    image_dir = dataset_path / split
+    label_dir = dataset_path / f"{split}_labels"
+    has_json_labels = label_dir.is_dir() and any(label_dir.iterdir())
+
+    # Load PKL labels as fallback (always available for all splits)
+    pkl_labels = _load_hrvispr_pkl_labels(dataset_path, split)
+
+    image_files = sorted(
+        f for f in image_dir.iterdir() if f.suffix.lower() in IMAGE_EXTENSIONS
+    )
+
+    for img_path in image_files:
+        img_id = img_path.stem  # e.g. "2017_67135519"
+
+        # Load labels: prefer per-image JSON, fall back to PKL
+        privacy_labels: List[str] = []
+        label_source = "none"
+
+        if has_json_labels:
+            json_path = label_dir / f"{img_id}.json"
+            if json_path.exists():
+                try:
+                    raw = json.loads(json_path.read_text())
+                    # Strip the "a{N}_" prefix to get clean attribute names
+                    privacy_labels = [
+                        lbl.split("_", 1)[1] if "_" in lbl else lbl
+                        for lbl in raw.get("labels", [])
+                    ]
+                    label_source = "json"
+                except Exception:
+                    pass
+
+        if not privacy_labels and img_id in pkl_labels:
+            privacy_labels = pkl_labels[img_id]
+            label_source = "pkl_18class"
+
+        # Load image
+        ok, item, err = _load_image_item(img_path, {
+            "modality": "image",
+            "path": str(img_path),
+            "filename": img_path.name,
+        })
+
+        if ok:
+            item["privacy_labels"] = privacy_labels
+            item["label_source"] = label_source
+            item["split"] = split
+            item["image_id"] = img_id
+
+        yield ok, item, err
+
+
 def _is_hf_dataset(dataset_path: Path) -> bool:
     """Return True if the directory is a HuggingFace dataset saved to disk."""
     return (dataset_path / "dataset_dict.json").exists() or any(
@@ -44,6 +153,10 @@ def detect_modality(dataset_name: str) -> Optional[str]:
     # HuggingFace disk datasets are always treated as text
     if _is_hf_dataset(dataset_path):
         return "text"
+
+    # Subdirectory image datasets (e.g. HR-VISPR)
+    if _is_subdir_image_dataset(dataset_path):
+        return "image"
 
     counts = {"image": 0, "text": 0, "video": 0}
     for f in dataset_path.iterdir():
@@ -392,6 +505,18 @@ def count_dataset_items(dataset_name: str, modality: str) -> int:
                     pass
         return total
 
+    if _is_subdir_image_dataset(dataset_path):
+        split = next(
+            (s for s in _HRVISPR_SPLIT_PREFERENCE if (dataset_path / s).is_dir()),
+            None,
+        )
+        if split:
+            return sum(
+                1 for f in (dataset_path / split).iterdir()
+                if f.suffix.lower() in IMAGE_EXTENSIONS
+            )
+        return 0
+
     return len(list_dataset_items(dataset_name, modality))
 
 
@@ -410,9 +535,12 @@ def iter_dataset(
         return
 
     count = 0
-    source = _iter_hf_dataset(dataset_path) if _is_hf_dataset(dataset_path) else (
-        load_item(path, modality) for path in list_dataset_items(dataset_name, modality)
-    )
+    if _is_hf_dataset(dataset_path):
+        source = _iter_hf_dataset(dataset_path)
+    elif _is_subdir_image_dataset(dataset_path):
+        source = _iter_subdir_image_dataset(dataset_path)
+    else:
+        source = (load_item(path, modality) for path in list_dataset_items(dataset_name, modality))
     for item in source:
         yield item
         count += 1

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from verify.backend.adapters.base import BaseAdapter, AdapterResult
-from verify.backend.utils.config import TARGET_APPS_DIR, get_openrouter_api_key
+from verify.backend.utils.config import TARGET_APPS_DIR, get_openrouter_api_key  # get_openrouter_api_key used in check_availability
 
 SNAPDO_SERVER = TARGET_APPS_DIR / "snapdo" / "server"
 
@@ -67,12 +67,25 @@ class SnapdoAdapter(BaseAdapter):
         try:
             import django
             import os
+            from django.apps import apps as django_apps
+            from django import conf as django_conf
 
-            os.environ.setdefault("DJANGO_SETTINGS_MODULE", "server.settings")
-            try:
-                django.setup()
-            except RuntimeError:
-                pass
+            # Purge snapdo/server modules so they reload under correct settings
+            for _mod in list(sys.modules):
+                if _mod == "server" or _mod.startswith("server.") or \
+                   _mod == "snapdo" or _mod.startswith("snapdo."):
+                    del sys.modules[_mod]
+
+            # Reset Django app registry so we can call setup() with new settings
+            if django_apps.ready:
+                from collections import defaultdict
+                django_apps.app_configs = {}
+                django_apps.all_models = defaultdict(dict)
+                django_apps.ready = False
+                django_conf.settings._wrapped = None
+
+            os.environ["DJANGO_SETTINGS_MODULE"] = "server.settings"
+            django.setup()
 
             from snapdo.services.vlm_service import VLMService  # noqa: F401
 
@@ -88,18 +101,7 @@ class SnapdoAdapter(BaseAdapter):
         native_ok, native_err = self._check_native()
         if native_ok:
             return True, "Native snapdo VLMService available."
-
-        api_key = get_openrouter_api_key()
-        if api_key and not api_key.startswith("your_"):
-            return (
-                True,
-                f"Native pipeline unavailable ({native_err}); using OpenRouter vision fallback.",
-            )
-
-        return (
-            False,
-            f"snapdo native pipeline unavailable ({native_err}) and no valid OpenRouter API key.",
-        )
+        return False, f"Native snapdo pipeline unavailable: {native_err}"
 
     def run_pipeline(self, input_item: Dict[str, Any]) -> AdapterResult:
         if input_item.get("modality") != "image":
@@ -108,17 +110,25 @@ class SnapdoAdapter(BaseAdapter):
                 error=f"snapdo only supports 'image' modality, got '{input_item.get('modality')}'.",
             )
 
-        try:
-            native_ok, _ = self._check_native()
-            if native_ok:
-                return self._run_native(input_item)
-            else:
-                return self._run_openrouter_fallback(input_item)
-        except Exception as e:
-            return AdapterResult(success=False, error=str(e))
+        native_ok, native_err = self._check_native()
+        if native_ok:
+            return self._run_native(input_item)
+        else:
+            return AdapterResult(success=False, error=f"Native pipeline unavailable: {native_err}")
 
     def _run_native(self, input_item: Dict[str, Any]) -> AdapterResult:
         """Use snapdo's VLMService directly."""
+        # Re-apply snapdo settings in case another adapter reset Django between calls
+        from django import conf as django_conf
+        try:
+            _ = django_conf.settings.VLM_API_KEY
+        except AttributeError:
+            # Settings got clobbered — redo the Django reset+setup
+            self._native_available = None
+            native_ok, native_err = self._check_native()
+            if not native_ok:
+                return AdapterResult(success=False, error=f"Native pipeline unavailable: {native_err}")
+
         from snapdo.services.vlm_service import VLMService
 
         data = input_item.get("data")
@@ -148,15 +158,6 @@ class SnapdoAdapter(BaseAdapter):
 
     def _run_openrouter_fallback(self, input_item: Dict[str, Any]) -> AdapterResult:
         """Replicate VLMService.verify_evidence using OpenRouter directly."""
-        import requests
-
-        api_key = get_openrouter_api_key()
-        if not api_key or api_key.startswith("your_"):
-            return AdapterResult(
-                success=False,
-                error="No valid OpenRouter API key for snapdo fallback.",
-            )
-
         data = input_item.get("data")
         path = input_item.get("path", "")
         image_b64 = input_item.get("image_base64") or _encode_image_b64(
@@ -174,36 +175,10 @@ class SnapdoAdapter(BaseAdapter):
             "Explanation: <your explanation>"
         )
 
-        resp = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://github.com/Verify",
-                "X-Title": "Verify",
-            },
-            json={
-                "model": "google/gemini-2.0-flash-001",
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{image_b64}"
-                                },
-                            },
-                        ],
-                    }
-                ],
-                "max_tokens": 512,
-            },
-            timeout=60,
-        )
-        resp.raise_for_status()
-        response_text = resp.json()["choices"][0]["message"]["content"]
+        try:
+            response_text = self._call_openrouter(prompt, image_b64=image_b64, max_tokens=512)
+        except RuntimeError as e:
+            return AdapterResult(success=False, error=str(e))
 
         # Parse the structured response
         verdict, confidence, explanation = "UNKNOWN", 0.5, response_text

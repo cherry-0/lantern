@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from verify.backend.adapters.base import BaseAdapter, AdapterResult
-from verify.backend.utils.config import TARGET_APPS_DIR, get_openrouter_api_key
+from verify.backend.utils.config import TARGET_APPS_DIR, get_openrouter_api_key  # used in check_availability
 
 XEND_BACKEND = TARGET_APPS_DIR / "xend" / "backend"
 
@@ -104,14 +104,22 @@ class XendAdapter(BaseAdapter):
                 error=f"xend only supports 'text' modality, got '{input_item.get('modality')}'.",
             )
 
-        try:
-            native_ok, _ = self._check_native()
-            if native_ok:
-                return self._run_native(input_item)
-            else:
-                return self._run_openrouter_fallback(input_item)
-        except Exception as e:
-            return AdapterResult(success=False, error=str(e))
+        native_ok, _ = self._check_native()
+        if native_ok:
+            try:
+                result = self._run_native(input_item)
+                # If native produced empty output, fall through to OpenRouter
+                if result.success and not (result.output_text or "").strip().replace("Subject: \n\nBody:", "").strip():
+                    raise RuntimeError("Native chain returned empty output.")
+                return result
+            except Exception as native_err:
+                # Native failed at inference time — fall back to OpenRouter
+                fallback = self._run_openrouter_fallback(input_item)
+                if fallback.success:
+                    fallback.metadata = {**( fallback.metadata or {}), "native_error": str(native_err)}
+                return fallback
+
+        return self._run_openrouter_fallback(input_item)
 
     def _run_native(self, input_item: Dict[str, Any]) -> AdapterResult:
         """Attempt to use xend's actual chain (unlikely to work without full Django setup)."""
@@ -140,17 +148,9 @@ class XendAdapter(BaseAdapter):
             "locked_subject": "",
         }
 
-        try:
-            subject = (subject_chain.invoke(inputs) or "").strip()
-        except Exception:
-            subject = ""
-
+        subject = (subject_chain.invoke(inputs) or "").strip()
         inputs["locked_subject"] = subject
-
-        try:
-            body = (body_chain.invoke(inputs) or "").strip()
-        except Exception:
-            body = ""
+        body = (body_chain.invoke(inputs) or "").strip()
 
         output_text = f"Subject: {subject}\n\nBody:\n{body}"
 
@@ -164,15 +164,6 @@ class XendAdapter(BaseAdapter):
 
     def _run_openrouter_fallback(self, input_item: Dict[str, Any]) -> AdapterResult:
         """Use OpenRouter to rewrite text content as an email draft."""
-        import requests
-
-        api_key = get_openrouter_api_key()
-        if not api_key or api_key.startswith("your_"):
-            return AdapterResult(
-                success=False,
-                error="No valid OpenRouter API key for xend fallback.",
-            )
-
         text_content = input_item.get("text_content", "")
         if not text_content:
             return AdapterResult(success=False, error="No text content provided.")
@@ -186,23 +177,10 @@ class XendAdapter(BaseAdapter):
             "Body:\n<email body>"
         )
 
-        resp = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://github.com/Verify",
-                "X-Title": "Verify",
-            },
-            json={
-                "model": "google/gemini-2.0-flash-001",
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 1024,
-            },
-            timeout=60,
-        )
-        resp.raise_for_status()
-        response_text = resp.json()["choices"][0]["message"]["content"]
+        try:
+            response_text = self._call_openrouter(prompt, max_tokens=1024)
+        except RuntimeError as e:
+            return AdapterResult(success=False, error=str(e))
 
         # Parse subject and body
         subject, body = "", response_text
