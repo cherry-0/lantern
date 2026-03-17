@@ -59,9 +59,14 @@ def get_adapter_status(app_name: str) -> tuple[bool, str]:
     return adapter.check_availability()
 
 
-def get_perturbation_status(modality: str) -> tuple[bool, str]:
+def get_perturbation_status(modality: str, method: str) -> tuple[bool, str]:
     from verify.backend.perturbation_method.interface import check_perturbation_availability
-    return check_perturbation_availability(modality)
+    return check_perturbation_availability(modality, method)
+
+
+def list_perturbation_methods(modality: str) -> list[str]:
+    from verify.backend.perturbation_method.interface import list_methods_for_modality
+    return list_methods_for_modality(modality)
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -137,7 +142,22 @@ def _eval_chart(eval_results: dict, stage_label: str):
         if reasoning:
             st.caption(reasoning)
 
-    st.bar_chart(df.set_index("Attribute")["Inferability Score"])
+    import altair as alt
+    chart = (
+        alt.Chart(df)
+        .mark_bar()
+        .encode(
+            x=alt.X("Attribute:N", sort=None),
+            y=alt.Y("Inferability Score:Q", scale=alt.Scale(domain=[0, 1])),
+            color=alt.condition(
+                alt.datum["Inferable"] == True,
+                alt.value("#d9534f"),
+                alt.value("#5cb85c"),
+            ),
+        )
+        .properties(height=200)
+    )
+    st.altair_chart(chart, use_container_width=True)
 
 
 def _render_item_result(result: dict):
@@ -185,17 +205,16 @@ def _render_item_result(result: dict):
         with col_pert:
             st.markdown("**Perturbed Input**")
             pert_info = pert_input.get("perturbation_applied", {})
-            if pert_info:
-                method = pert_info.get("method", "")
-                attrs = pert_info.get("attributes", [])
-                st.caption(f"Method: {method} | Attributes: {', '.join(attrs)}")
-
             if modality == "image":
                 _display_image(result.get("_perturbed_image_b64"), result.get("_perturbed_data"))
             elif modality == "text":
                 _display_text(pert_input.get("text_content", ""), "")
             elif modality == "video":
                 _display_frames(result.get("_perturbed_frames", []), "Frame")
+            if pert_info:
+                method = pert_info.get("method", "")
+                attrs = pert_info.get("attributes", [])
+                st.caption(f"Method: {method} | Attributes: {', '.join(attrs)}")
 
         st.divider()
 
@@ -300,8 +319,24 @@ def _render_aggregated_chart(all_results: list, attributes: list):
         st.info("No aggregated data to display yet.")
         return
 
-    df = pd.DataFrame(data).set_index("Attribute")
-    st.bar_chart(df)
+    import altair as alt
+    df = pd.DataFrame(data)
+    df_melted = df.melt("Attribute", var_name="Stage", value_name="Avg Inferability Score")
+    chart = (
+        alt.Chart(df_melted)
+        .mark_bar()
+        .encode(
+            x=alt.X("Attribute:N", sort=None),
+            y=alt.Y("Avg Inferability Score:Q", scale=alt.Scale(domain=[0, 1])),
+            color=alt.Color("Stage:N", scale=alt.Scale(
+                domain=["Original (avg score)", "Perturbed (avg score)"],
+                range=["#d9534f", "#5bc0de"],
+            )),
+            xOffset="Stage:N",
+        )
+        .properties(height=250)
+    )
+    st.altair_chart(chart, use_container_width=True)
     st.caption("Average inferability score across all items (lower is better after perturbation).")
 
 
@@ -369,13 +404,17 @@ def main():
         st.subheader("Modality")
         selected_modality = st.selectbox("Select modality", MODALITIES)
 
-        # Show perturbation method and availability
-        pert_method = perturbation_map.get(selected_modality, "None configured")
-        st.caption(f"Perturbation method: **{pert_method}**")
+        # Perturbation method dropdown
+        available_methods = list_perturbation_methods(selected_modality)
+        if available_methods:
+            selected_pert_method = st.selectbox("Perturbation method", available_methods)
+        else:
+            selected_pert_method = perturbation_map.get(selected_modality, "")
+            st.caption(f"Perturbation method: **{selected_pert_method or 'None configured'}**")
         try:
-            pert_available, pert_msg = get_perturbation_status(selected_modality)
+            pert_available, pert_msg = get_perturbation_status(selected_modality, selected_pert_method)
             if pert_available:
-                st.success(f"Perturbation ready")
+                st.success("Perturbation ready")
             else:
                 st.warning(f"Perturbation unavailable: {pert_msg}")
         except Exception as e:
@@ -469,6 +508,7 @@ def main():
             attributes=selected_attributes,
             use_cache=use_cache,
             max_items=max_items,
+            perturbation_method=selected_pert_method,
         )
         st.session_state._generator = orch.run()
         st.rerun()
