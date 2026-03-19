@@ -38,16 +38,20 @@ st.set_page_config(
 def _load_config():
     from verify.backend.utils.config import (
         load_dataset_list,
-        load_attribute_list,
         list_target_apps,
         load_perturbation_method_map,
     )
     return {
         "datasets": load_dataset_list(),
-        "attributes": load_attribute_list(),
         "apps": list_target_apps(),
         "perturbation_map": load_perturbation_method_map(),
     }
+
+
+@st.cache_data
+def _load_attributes(modality: str) -> list[str]:
+    from verify.backend.utils.config import load_attribute_list
+    return load_attribute_list(modality)
 
 
 def get_adapter_status(app_name: str) -> tuple[bool, str]:
@@ -186,7 +190,17 @@ def _render_item_result(result: dict):
     status_icon = {"success": "✅", "failed": "❌", "skipped": "⚠️"}.get(status, "")
     from_cache = " (cached)" if result.get("from_cache") else ""
 
-    with st.expander(f"{status_icon} {filename}{from_cache}", expanded=(status == "failed")):
+    # Build label suffix for the expander title
+    orig_input = result.get("original_input", {})
+    _privacy_labels = orig_input.get("privacy_labels", [])
+    _data_type = orig_input.get("data_type", "")
+    _label_suffix = ""
+    if _privacy_labels:
+        _label_suffix = f"  —  🏷 {', '.join(_privacy_labels)}"
+    elif _data_type:
+        _label_suffix = f"  —  📄 {_data_type}"
+
+    with st.expander(f"{status_icon} {filename}{from_cache}{_label_suffix}", expanded=(status == "failed")):
         if status == "failed":
             st.error(f"Error: {result.get('error', 'Unknown error')}")
             return
@@ -201,6 +215,16 @@ def _render_item_result(result: dict):
             return
 
         orig_input = result.get("original_input", {})
+
+        # ── Label metadata line ───────────────────────────────────────────
+        _pl = orig_input.get("privacy_labels", [])
+        _dt = orig_input.get("data_type", "")
+        _dta = orig_input.get("data_type_attributes", [])
+        if _pl:
+            st.caption(f"🏷 **Privacy labels:** {', '.join(_pl)}")
+        if _dt:
+            _dta_str = f"  →  attributes: `{', '.join(_dta)}`" if _dta else "  →  *unmapped*"
+            st.caption(f"📄 **Data type:** {_dt}{_dta_str}")
         pert_input = result.get("perturbed_input", {})
         orig_out = result.get("original_output", {})
         pert_out = result.get("perturbed_output", {})
@@ -371,7 +395,6 @@ def main():
 
     config = _load_config()
     datasets = config["datasets"]
-    all_attributes = config["attributes"]
     all_apps = config["apps"]
     perturbation_map = config["perturbation_map"]
 
@@ -424,6 +447,9 @@ def main():
         st.subheader("Modality")
         selected_modality = st.selectbox("Select modality", MODALITIES)
 
+        # Load attributes for the selected modality
+        all_attributes = _load_attributes(selected_modality)
+
         # Perturbation method dropdown
         available_methods = list_perturbation_methods(selected_modality)
         if available_methods:
@@ -440,6 +466,16 @@ def main():
         except Exception as e:
             pert_available = False
             st.warning(f"Could not check perturbation: {e}")
+
+        # Imago Obscura mode selector (only shown when that method is selected)
+        perturbation_kwargs: dict = {}
+        if selected_pert_method == "Imago_Obscura":
+            imago_mode = st.selectbox(
+                "Obscura mode",
+                ["blur", "pixelate", "fill"],
+                help="blur: Gaussian blur · pixelate: mosaic · fill: solid grey",
+            )
+            perturbation_kwargs["mode"] = imago_mode
 
         st.divider()
 
@@ -529,6 +565,7 @@ def main():
             use_cache=use_cache,
             max_items=max_items,
             perturbation_method=selected_pert_method,
+            perturbation_kwargs=perturbation_kwargs,
         )
         st.session_state._generator = orch.run()
         st.rerun()

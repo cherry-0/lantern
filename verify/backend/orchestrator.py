@@ -73,6 +73,7 @@ class Orchestrator:
         use_cache: bool = True,
         max_items: Optional[int] = None,
         perturbation_method: Optional[str] = None,
+        perturbation_kwargs: Optional[Dict[str, Any]] = None,
     ):
         self.app_name = app_name
         self.dataset_name = dataset_name
@@ -80,6 +81,7 @@ class Orchestrator:
         self.attributes = attributes
         self.use_cache = use_cache
         self.max_items = max_items
+        self.perturbation_kwargs = perturbation_kwargs or {}
 
         # Resolve perturbation method: use explicit override or fall back to config
         if perturbation_method:
@@ -272,6 +274,20 @@ class Orchestrator:
         for load_ok, item, load_err in iter_dataset(self.dataset_name, self.modality, max_items=self.max_items):
             filename = item.get("filename", "unknown")
 
+            # ── Attribute-based filtering ──────────────────────────────────
+            # Keep only items whose label set overlaps with the selected attributes.
+            # Items with no labels are always included.
+            # The UI already presents modality-appropriate attributes (HR-VISPR labels
+            # for image, text attributes for text), so the comparison is always
+            # within the same vocabulary — a direct set intersection suffices.
+            item_labels: List[str] = (
+                item.get("privacy_labels")           # HR-VISPR / image datasets
+                or item.get("data_type_attributes")  # PrivacyLens text dataset
+                or []
+            )
+            if item_labels and not (set(item_labels) & set(self.attributes)):
+                continue  # no overlap — skip
+
             # Check cache first
             cached = self._check_cache(filename)
             if cached:
@@ -331,7 +347,8 @@ class Orchestrator:
                 continue
 
             pert_ok_item, perturbed_item, pert_err = run_perturbation(
-                item, self.modality, self.attributes, self.perturbation_method or None
+                item, self.modality, self.attributes, self.perturbation_method or None,
+                **self.perturbation_kwargs,
             )
 
             if not pert_ok_item:
@@ -398,6 +415,10 @@ class Orchestrator:
                     "has_image": "image_base64" in item,
                     "has_frames": "frames" in item,
                     "frame_count": len(item.get("frames", [])),
+                    # Label metadata (for display)
+                    "privacy_labels": item.get("privacy_labels", []),
+                    "data_type": item.get("data_type", ""),
+                    "data_type_attributes": item.get("data_type_attributes", []),
                 },
                 original_output=orig_result.to_dict(),
                 perturbed_input={

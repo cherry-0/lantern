@@ -117,6 +117,7 @@ def run_perturbation(
     modality: str,
     attributes: List[str],
     method_name: Optional[str] = None,
+    **kwargs,
 ) -> Tuple[bool, Dict[str, Any], Optional[str]]:
     """
     Apply privacy perturbation to an input item.
@@ -149,7 +150,7 @@ def run_perturbation(
         return False, input_item, f"Perturbation module '{name}' does not define a `perturb()` function."
 
     try:
-        return module.perturb(input_item, attributes)
+        return module.perturb(input_item, attributes, **kwargs)
     except Exception as e:
         return False, input_item, f"Perturbation failed ({name}): {e}"
 

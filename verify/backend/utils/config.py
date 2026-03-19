@@ -26,9 +26,17 @@ def load_dataset_list() -> List[str]:
     return [line.strip() for line in path.read_text().splitlines() if line.strip()]
 
 
-def load_attribute_list() -> List[str]:
-    """Read privacy attributes from config/attribute_list.txt."""
-    path = CONFIG_DIR / "attribute_list.txt"
+def load_attribute_list(modality: str = "text") -> List[str]:
+    """
+    Read privacy attributes for the given modality.
+    image → config/attribute_list_image.txt  (HR-VISPR 18-class labels)
+    text / other → config/attribute_list.txt
+    """
+    filename = "attribute_list_image.txt" if modality == "image" else "attribute_list.txt"
+    path = CONFIG_DIR / filename
+    if not path.exists():
+        # fallback to default
+        path = CONFIG_DIR / "attribute_list.txt"
     if not path.exists():
         return []
     return [line.strip() for line in path.read_text().splitlines() if line.strip()]
