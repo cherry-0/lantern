@@ -1,34 +1,51 @@
 """
 Imago_Obscura — image perturbation for privacy attribute removal.
 
-Strategy: apply Gaussian blur (aggressive) to obscure location and identity cues.
-Blur radius is scaled by the number of selected attributes.
+Strategy (in priority order):
+  1. Florence-2 phrase grounding → detect sensitive regions → targeted blur/pixelate/fill
+  2. Fallback: full-image Gaussian blur (used when torch/transformers are unavailable
+     or when no regions are detected)
+
+Set IMAGO_OBSCURA_MODE=blur|pixelate|fill and IMAGO_OBSCURA_BLUR_RADIUS=<int>
+in the environment to tune behaviour without code changes.
 """
 
+import sys
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+# Make the headless package importable regardless of working directory.
+_SRC = Path(__file__).parent / "src" / "headless"
+if str(_SRC.parent) not in sys.path:
+    sys.path.insert(0, str(_SRC.parent))
+
 
 def check_availability() -> Tuple[bool, str]:
-    """Check that Pillow is available (required for image operations)."""
+    """Always runnable. Reports whether Florence-2 is available for semantic segmentation."""
     try:
-        from PIL import Image, ImageFilter  # noqa: F401
-
-        return True, "Imago_Obscura ready (PIL available)."
+        from PIL import Image  # noqa: F401
     except ImportError:
-        return False, "Pillow is required for Imago_Obscura. Please install it: pip install Pillow"
+        return False, "Pillow is required. Install it: pip install Pillow"
+
+    try:
+        import torch  # noqa: F401
+        import transformers  # noqa: F401
+        return True, "Imago_Obscura ready (Florence-2 semantic segmentation enabled)."
+    except ImportError:
+        return True, (
+            "Imago_Obscura ready (fallback mode: full-image blur). "
+            "Install torch + transformers for semantic region detection."
+        )
 
 
 def perturb(
     input_item: Dict[str, Any],
     attributes: List[str],
+    mode: Optional[str] = None,
 ) -> Tuple[bool, Dict[str, Any], Optional[str]]:
     """
     Perturb an image to remove signals for the given privacy attributes.
-
-    Strategy:
-    - Apply Gaussian blur with a radius proportional to the number of attributes selected.
-    - Aggressive perturbation is acceptable per Verify requirements.
 
     Args:
         input_item: item dict from the dataset loader (must have "data" PIL.Image
@@ -39,11 +56,7 @@ def perturb(
         (success, perturbed_item_dict, error_message)
         perturbed_item_dict has same structure as input_item with "data", "image_base64" updated.
     """
-    available, reason = check_availability()
-    if not available:
-        return False, input_item, reason
-
-    from PIL import Image as PILImage, ImageFilter
+    from PIL import Image as PILImage
     import base64
     import io
     import copy
@@ -60,12 +73,13 @@ def perturb(
         if not isinstance(data, PILImage.Image):
             return False, input_item, "Input data is not a PIL Image."
 
-        # Blur radius: base 20, +10 per attribute (aggressive)
-        blur_radius = 20 + 10 * (len(attributes) - 1) if attributes else 20
+        from headless.pipeline import run as _pipeline_run
+        mode = mode or os.environ.get("IMAGO_OBSCURA_MODE", "blur")
+        success, perturbed_img, error = _pipeline_run(data, attributes, mode=mode)
 
-        perturbed_img = data.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+        if not success:
+            return False, input_item, error
 
-        # Re-encode
         buf = io.BytesIO()
         perturbed_img.save(buf, format="JPEG", quality=80)
         perturbed_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
@@ -76,7 +90,7 @@ def perturb(
         perturbed_item["perturbation_applied"] = {
             "method": "Imago_Obscura",
             "attributes": attributes,
-            "blur_radius": blur_radius,
+            "mode": mode,
         }
 
         return True, perturbed_item, None
