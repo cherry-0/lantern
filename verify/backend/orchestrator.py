@@ -126,6 +126,32 @@ class Orchestrator:
         if self._cache_dir and self.use_cache:
             cache_module.save_item_cache(self._cache_dir, filename, result)
 
+    def _save_perturbed_image(self, filename: str, image_b64: str) -> Optional[str]:
+        """
+        Save the perturbed image to perturbed_images/<stem>_perturbed.jpg under the
+        run directory.  Returns the path relative to run_dir, or None on failure.
+        """
+        if not self._run_dir:
+            return None
+        try:
+            import base64 as _b64
+            import io
+            from PIL import Image as _PILImage
+
+            images_dir = self._run_dir / "perturbed_images"
+            images_dir.mkdir(exist_ok=True)
+
+            stem = Path(filename).stem
+            out_path = images_dir / f"{stem}_perturbed.jpg"
+
+            img_data = _b64.b64decode(image_b64)
+            img = _PILImage.open(io.BytesIO(img_data)).convert("RGB")
+            img.save(str(out_path), format="JPEG", quality=85)
+
+            return str(out_path.relative_to(self._run_dir))
+        except Exception:
+            return None
+
     def _check_cache(self, filename: str) -> Optional[Dict[str, Any]]:
         """Return a cached result if available, else None."""
         if self._cache_dir and self.use_cache:
@@ -440,6 +466,13 @@ class Orchestrator:
             result["_perturbed_data"] = perturbed_item.get("data")
             result["_perturbed_image_b64"] = perturbed_item.get("image_base64")
             result["_perturbed_frames"] = perturbed_item.get("frames", [])
+
+            # Save perturbed image to perturbed_images/ subdirectory
+            perturbed_b64 = result.get("_perturbed_image_b64")
+            if perturbed_b64:
+                img_rel_path = self._save_perturbed_image(filename, perturbed_b64)
+                if img_rel_path:
+                    result["perturbed_image_file"] = img_rel_path
 
             # Save to disk (without the _ prefixed PIL fields)
             saveable = {k: v for k, v in result.items() if not k.startswith("_")}

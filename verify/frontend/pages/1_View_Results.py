@@ -147,27 +147,48 @@ def _load_original_image(filename: str, dataset_name: str) -> str | None:
         return None
 
 
-def _reconstruct_perturbed_image(filename: str, dataset_name: str,
-                                  perturbation_applied: dict) -> str | None:
+def _load_perturbed_image(filename: str, run_dir: str, result: dict,
+                           dataset_name: str) -> str | None:
     """
-    Reconstruct the perturbed image by re-applying the stored perturbation
-    parameters to the original image.
+    Load the perturbed image for a result item.
 
-    Supports:
-    - Simple_Blur: applies stored regional or full-image Gaussian blur using
-      stored `regions` and `blur_radius`. No API call needed.
-    - Any method with `blur_radius` but no `regions`: full-image blur.
-    Returns base64 string or None if reconstruction is not possible.
+    Strategy (in order):
+    1. Use the saved file recorded in result["perturbed_image_file"] (relative to run_dir).
+    2. Probe the conventional path: <run_dir>/perturbed_images/<stem>_perturbed.jpg
+    3. Fall back to re-applying stored blur parameters to the original image.
+
+    Returns a base64 JPEG string, or None if unavailable.
     """
-    if not perturbation_applied:
-        return None
+    # ── Strategy 1: explicit path stored in result ──────────────────────────
+    rel_path = result.get("perturbed_image_file")
+    if rel_path and run_dir:
+        candidate = Path(run_dir) / rel_path
+        if candidate.exists():
+            try:
+                from PIL import Image as PILImage
+                img = PILImage.open(str(candidate)).convert("RGB")
+                return _pil_to_b64(img)
+            except Exception:
+                pass
 
-    method = perturbation_applied.get("method", "")
-    blur_radius = perturbation_applied.get("blur_radius")
-    regions = perturbation_applied.get("regions")  # may be None or []
+    # ── Strategy 2: conventional path ───────────────────────────────────────
+    if run_dir:
+        stem = Path(filename).stem
+        candidate = Path(run_dir) / "perturbed_images" / f"{stem}_perturbed.jpg"
+        if candidate.exists():
+            try:
+                from PIL import Image as PILImage
+                img = PILImage.open(str(candidate)).convert("RGB")
+                return _pil_to_b64(img)
+            except Exception:
+                pass
 
+    # ── Strategy 3: re-apply stored blur parameters ─────────────────────────
+    pert_info = result.get("perturbed_input", {}).get("perturbation_applied", {})
+    blur_radius = pert_info.get("blur_radius")
+    regions = pert_info.get("regions")
     if not blur_radius:
-        return None  # cannot reconstruct without blur parameters
+        return None
 
     try:
         from PIL import Image as PILImage, ImageFilter
@@ -177,9 +198,8 @@ def _reconstruct_perturbed_image(filename: str, dataset_name: str,
         img = PILImage.open(str(img_path)).convert("RGB")
 
         if regions:
-            # Selective blur: apply blur only to stored bounding box regions
             w, h = img.size
-            result = img.copy()
+            out = img.copy()
             for box in regions:
                 x1 = max(0, int(box["x1"] * w))
                 y1 = max(0, int(box["y1"] * h))
@@ -187,14 +207,12 @@ def _reconstruct_perturbed_image(filename: str, dataset_name: str,
                 y2 = min(h, int(box["y2"] * h))
                 if x2 <= x1 or y2 <= y1:
                     continue
-                region = result.crop((x1, y1, x2, y2))
-                blurred = region.filter(ImageFilter.GaussianBlur(radius=blur_radius))
-                result.paste(blurred, (x1, y1))
+                region = out.crop((x1, y1, x2, y2))
+                out.paste(region.filter(ImageFilter.GaussianBlur(radius=blur_radius)), (x1, y1))
         else:
-            # Full-image blur fallback
-            result = img.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+            out = img.filter(ImageFilter.GaussianBlur(radius=blur_radius))
 
-        return _pil_to_b64(result)
+        return _pil_to_b64(out)
     except Exception:
         return None
 
@@ -216,7 +234,7 @@ def _render_generated_task(result: dict):
     )
 
 
-def _render_item_result(result: dict, dataset_name: str, modality: str):
+def _render_item_result(result: dict, dataset_name: str, modality: str, run_dir: str = ""):
     filename = result.get("filename", "Unknown")
     status = result.get("status", "")
 
@@ -266,11 +284,11 @@ def _render_item_result(result: dict, dataset_name: str, modality: str):
             st.markdown("**Perturbed Input**")
             pert_info = pert_input.get("perturbation_applied", {})
             if modality == "image":
-                pert_b64 = _reconstruct_perturbed_image(filename, dataset_name, pert_info)
+                pert_b64 = _load_perturbed_image(filename, run_dir, result, dataset_name)
                 if pert_b64:
                     _display_image(pert_b64, caption=f"{filename} (perturbed)")
                 else:
-                    st.info("Perturbed image could not be reconstructed.")
+                    st.info("Perturbed image not found.")
             elif modality == "text":
                 _display_text(pert_input.get("text_content", ""), key_suffix=f"pert_{filename}")
             else:
@@ -606,7 +624,7 @@ def main():
     st.subheader(f"Results — {app_name} / {dataset_name} / {modality} ({n} item{'s' if n != 1 else ''})")
 
     for result in items:
-        _render_item_result(result, dataset_name, modality)
+        _render_item_result(result, dataset_name, modality, run_dir=run_dir_loaded)
 
 
 if __name__ == "__main__":

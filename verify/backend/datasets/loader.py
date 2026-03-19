@@ -6,6 +6,7 @@ Supports image, text, and video modalities.
 """
 
 import base64
+import functools
 import json
 import random
 from io import BytesIO
@@ -389,6 +390,20 @@ def _load_video_item(
         return False, item, f"Failed to load video: {e}"
 
 
+@functools.lru_cache(maxsize=1)
+def _load_privacylens_mapping() -> Dict[str, Any]:
+    """Load the pre-built data_type → attribute mapping PKL (cached after first load)."""
+    pkl_path = Path(__file__).resolve().parent / "PrivacyLens" / "data_type_mapping.pkl"
+    if not pkl_path.exists():
+        return {}
+    try:
+        import pickle
+        with open(pkl_path, "rb") as f:
+            return pickle.load(f)
+    except Exception:
+        return {}
+
+
 def _hf_row_to_item(row: Dict[str, Any], source: str, idx: int) -> Dict[str, Any]:
     """
     Convert a single HuggingFace dataset row into a Verify item dict.
@@ -407,6 +422,12 @@ def _hf_row_to_item(row: Dict[str, Any], source: str, idx: int) -> Dict[str, Any
     if "vignette" in row and "trajectory" in row:
         seed = row.get("seed") or {}
         vignette = row.get("vignette") or {}
+        # Attach mapped privacy attributes from the pre-built PKL
+        _mapping = _load_privacylens_mapping()
+        _dt2attrs = _mapping.get("data_type_to_attrs", {})
+        _data_type = (seed.get("data_type") or "").strip()
+        item["data_type"] = _data_type
+        item["data_type_attributes"] = _dt2attrs.get(_data_type, [])
         trajectory = row.get("trajectory") or {}
 
         seed_str = (
