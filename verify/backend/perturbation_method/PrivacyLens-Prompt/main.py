@@ -9,11 +9,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 def check_availability() -> Tuple[bool, str]:
-    """Check that requests is available and an OpenRouter API key is configured."""
+    """Check that requests and yaml are available, and an OpenRouter API key is configured."""
     try:
         import requests  # noqa: F401
+        import yaml      # noqa: F401
     except ImportError:
-        return False, "requests library is required. Please install it: pip install requests"
+        return False, "requests and PyYAML libraries are required. Please install them."
 
     from verify.backend.utils.config import get_openrouter_api_key
 
@@ -48,6 +49,8 @@ def perturb(
 
     import requests
     import copy
+    import yaml
+    from pathlib import Path
     from verify.backend.utils.config import get_openrouter_api_key
 
     text_content = input_item.get("text_content", "")
@@ -56,17 +59,16 @@ def perturb(
 
     api_key = get_openrouter_api_key()
 
-    # Build a joint prompt for all selected attributes
-    attr_descriptions = {
-        "location": (
-            "location information (e.g. country, city, address, GPS coordinates, "
-            "place names, landmarks, geographic regions)"
-        ),
-        "identity": (
-            "personally identifiable information (e.g. real names, usernames, email addresses, "
-            "phone numbers, social security numbers, account IDs, unique identifiers)"
-        ),
-    }
+    # Load prompt and attributes from YAML
+    prompt_yaml_path = Path(__file__).parent / "prompt" / "prompt_privacylens.yaml"
+    try:
+        with open(prompt_yaml_path, "r", encoding="utf-8") as f:
+            prompt_data = yaml.safe_load(f)
+    except Exception as e:
+        return False, input_item, f"Failed to load prompt from {prompt_yaml_path}: {e}"
+
+    system_prompt_template = prompt_data.get("system_prompt", "")
+    attr_descriptions = prompt_data.get("attributes", {})
 
     attr_bullets = []
     for attr in attributes:
@@ -75,23 +77,10 @@ def perturb(
 
     attr_list_str = "\n".join(attr_bullets)
 
-    prompt = f"""You are a privacy-preserving text transformation assistant.
-
-Rewrite the following text to remove or anonymize these privacy attributes:
-{attr_list_str}
-
-Rules:
-1. Replace all instances of the listed attributes with generic placeholders (e.g. [LOCATION], [PERSON_NAME], [EMAIL]).
-2. Preserve the meaning, structure, and context of the original text as much as possible.
-3. Be thorough — remove ALL signals that could help infer the listed attributes.
-4. Do not add explanations or commentary. Return only the rewritten text.
-
-Original text:
----
-{text_content}
----
-
-Rewritten text (with attributes removed/anonymized):"""
+    prompt = system_prompt_template.format(
+        attr_list_str=attr_list_str,
+        text_content=text_content
+    )
 
     try:
         resp = requests.post(

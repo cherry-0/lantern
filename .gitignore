@@ -5,4 +5,4 @@ verify/backend/evaluation_method/__pycache__
 verify/backend/perturbation_method/__pycache__
 verify/backend/utils/__pycache__
 verify/backend/datasets/__pycache__
-verify/outputs/
+verify/outputs/*
