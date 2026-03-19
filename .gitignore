@@ -6,3 +6,10 @@ verify/backend/perturbation_method/__pycache__
 verify/backend/utils/__pycache__
 verify/backend/datasets/__pycache__
 verify/outputs/*
+
+# datasets
+verify/backend/datasets/HR-VISPR/
+verify/backend/datasets/VISPR/
+
+# perturbation method sources
+verify/backend/perturbation_method/Imago_Obscura/src/
