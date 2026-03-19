@@ -1,7 +1,0 @@
-{
-  "filename": "image.png",
-  "status": "failed",
-  "timestamp": "2026-03-10T12:34:33.115057+00:00",
-  "error": "Original pipeline failed: 404 Client Error: Not Found for url: https://openrouter.ai/api/v1/chat/completions",
-  "type": "item_result"
-}

@@ -1,6 +1,0 @@
-filename,status,original_output,perturbed_output,orig_location_inferable,orig_location_score,pert_location_inferable,pert_location_score
-image.png,success,"Verdict: PASSED
-Confidence: 1.0
-Explanation: The image shows content that can be analyzed according to the task's requirements. We can see a camera held by a person, a body of water, and trees in the ","Verdict: FAILED
-Confidence: 1.0
-Explanation: The image is a gradient blur. There are no objects, text, people, or location cues to identify and describe. Therefore, the task cannot be completed based ",True,0.85,True,0.7

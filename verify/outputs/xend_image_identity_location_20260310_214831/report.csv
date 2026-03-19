@@ -1,2 +1,0 @@
-filename,status,original_output,perturbed_output,orig_location_inferable,orig_location_score,pert_location_inferable,pert_location_score,orig_identity_inferable,orig_identity_score,pert_identity_inferable,pert_identity_score
-image.png,failed,,,,,,,,,,
