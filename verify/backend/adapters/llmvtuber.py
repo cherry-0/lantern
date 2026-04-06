@@ -17,6 +17,7 @@ package is not importable.
 """
 
 import sys
+import traceback as _tb
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -51,6 +52,7 @@ class LLMVTuberAdapter(BaseAdapter):
     def __init__(self):
         self._native_available: Optional[bool] = None
         self._native_error: str = ""
+        self._native_traceback: str = ""
 
     # ── Native availability ───────────────────────────────────────────────────
 
@@ -73,6 +75,7 @@ class LLMVTuberAdapter(BaseAdapter):
         except Exception as e:
             self._native_available = False
             self._native_error = str(e)
+            self._native_traceback = _tb.format_exc()
 
         return self._native_available, self._native_error
 

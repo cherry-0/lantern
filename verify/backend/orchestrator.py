@@ -14,7 +14,6 @@ can display them item-by-item without waiting for the whole dataset.
 """
 
 import json
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional
@@ -31,7 +30,7 @@ from verify.backend.perturbation_method.interface import (
     run_perturbation,
 )
 from verify.backend.evaluation_method.evaluator import evaluate_both
-from verify.backend.utils.verbose_log import log_inference, is_verbose
+from verify.backend.utils.verbose_log import log_inference, log_availability
 
 
 # ─── Result type definitions ────────────────────────────────────────────────
@@ -270,6 +269,12 @@ class Orchestrator:
             return
 
         adapter_ok, adapter_msg = self._adapter.check_availability()
+        log_availability(
+            app_name=self.app_name,
+            available=adapter_ok,
+            message=adapter_msg,
+            traceback_str=getattr(self._adapter, "_native_traceback", ""),
+        )
         yield {
             "type": "adapter_status",
             "app_name": self.app_name,

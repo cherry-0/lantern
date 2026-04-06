@@ -14,6 +14,7 @@ import json
 import re
 import sys
 import base64
+import traceback as _tb
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -57,6 +58,7 @@ class SnapdoAdapter(BaseAdapter):
     def __init__(self):
         self._native_available: Optional[bool] = None
         self._native_error: str = ""
+        self._native_traceback: str = ""
         # Cache generated tasks keyed by filename so original + perturbed
         # runs for the same image share the same task context.
         self._task_cache: Dict[str, Dict[str, str]] = {}
@@ -106,13 +108,13 @@ class SnapdoAdapter(BaseAdapter):
                        _mod == "snapdo" or _mod.startswith("snapdo."):
                         del sys.modules[_mod]
 
-                if django_apps.ready or getattr(django_apps, "_loading", False):
+                if django_apps.ready or getattr(django_apps, "loading", False):
                     from collections import defaultdict
                     from django.utils.functional import empty
                     django_apps.app_configs = {}
                     django_apps.all_models = defaultdict(dict)
                     django_apps.ready = False
-                    django_apps._loading = False
+                    django_apps.loading = False
                     django_conf.settings._wrapped = empty
 
                 os.environ["DJANGO_SETTINGS_MODULE"] = "server.settings"
@@ -125,6 +127,7 @@ class SnapdoAdapter(BaseAdapter):
         except Exception as e:
             self._native_available = False
             self._native_error = str(e)
+            self._native_traceback = _tb.format_exc()
 
         return self._native_available, self._native_error
 

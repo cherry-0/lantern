@@ -8,6 +8,7 @@ Fallback: use OpenRouter vision model to generate image description and tags.
 """
 
 import sys
+import traceback as _tb
 import base64
 from io import BytesIO
 from pathlib import Path
@@ -53,6 +54,7 @@ class MomentagAdapter(BaseAdapter):
     def __init__(self):
         self._native_available: Optional[bool] = None
         self._native_error: str = ""
+        self._native_traceback: str = ""
 
     def _check_native(self) -> Tuple[bool, str]:
         """Try to import momentag's GPU pipeline."""
@@ -88,6 +90,7 @@ class MomentagAdapter(BaseAdapter):
         except Exception as e:
             self._native_available = False
             self._native_error = str(e)
+            self._native_traceback = _tb.format_exc()
 
         return self._native_available, self._native_error
 

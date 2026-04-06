@@ -19,6 +19,7 @@ or if the orchestrator raises an unrecoverable error.
 import os
 import sys
 import uuid
+import traceback as _tb
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -70,6 +71,7 @@ class DeepTutorAdapter(BaseAdapter):
     def __init__(self):
         self._native_available: Optional[bool] = None
         self._native_error: str = ""
+        self._native_traceback: str = ""
 
     # ── Native availability ───────────────────────────────────────────────────
 
@@ -94,6 +96,7 @@ class DeepTutorAdapter(BaseAdapter):
         except Exception as e:
             self._native_available = False
             self._native_error = str(e)
+            self._native_traceback = _tb.format_exc()
 
         return self._native_available, self._native_error
 

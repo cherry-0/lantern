@@ -20,6 +20,7 @@ import os
 import re
 import sys
 import tempfile
+import traceback as _tb
 import base64
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -92,6 +93,7 @@ class BudgetLensAdapter(BaseAdapter):
     def __init__(self):
         self._native_available: Optional[bool] = None
         self._native_error: str = ""
+        self._native_traceback: str = ""
 
     # ── Django / native availability ─────────────────────────────────────────
 
@@ -129,7 +131,7 @@ class BudgetLensAdapter(BaseAdapter):
                        _mod.startswith("accounts."):
                         del sys.modules[_mod]
 
-                if django_apps.ready or getattr(django_apps, "_loading", False):
+                if django_apps.ready or getattr(django_apps, "loading", False):
                     from collections import defaultdict
                     django_apps.app_configs = {}
                     django_apps.all_models = defaultdict(dict)
@@ -152,6 +154,7 @@ class BudgetLensAdapter(BaseAdapter):
         except Exception as e:
             self._native_available = False
             self._native_error = str(e)
+            self._native_traceback = _tb.format_exc()
 
         return self._native_available, self._native_error
 

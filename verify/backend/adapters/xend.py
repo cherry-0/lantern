@@ -8,6 +8,7 @@ Fallback: use OpenRouter to rewrite the text as an email drafting assistant woul
 """
 
 import sys
+import traceback as _tb
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -31,6 +32,7 @@ class XendAdapter(BaseAdapter):
     def __init__(self):
         self._native_available: Optional[bool] = None
         self._native_error: str = ""
+        self._native_traceback: str = ""
 
     def _check_native(self) -> Tuple[bool, str]:
         if self._native_available is not None:
@@ -85,6 +87,7 @@ class XendAdapter(BaseAdapter):
         except Exception as e:
             self._native_available = False
             self._native_error = str(e)
+            self._native_traceback = _tb.format_exc()
 
         return self._native_available, self._native_error
 
