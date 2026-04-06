@@ -6,6 +6,11 @@ from verify.backend.adapters.momentag import MomentagAdapter
 from verify.backend.adapters.clone import CloneAdapter
 from verify.backend.adapters.snapdo import SnapdoAdapter
 from verify.backend.adapters.xend import XendAdapter
+from verify.backend.adapters.budgetlens import BudgetLensAdapter
+from verify.backend.adapters.deeptutor import DeepTutorAdapter
+from verify.backend.adapters.llmvtuber import LLMVTuberAdapter
+from verify.backend.adapters.skindisease import SkinDiseaseAdapter
+from verify.backend.adapters.googleaiedge import GoogleAIEdgeAdapter
 
 # Registry: name → adapter class
 ADAPTER_REGISTRY: Dict[str, Type[BaseAdapter]] = {
@@ -13,6 +18,11 @@ ADAPTER_REGISTRY: Dict[str, Type[BaseAdapter]] = {
     "clone": CloneAdapter,
     "snapdo": SnapdoAdapter,
     "xend": XendAdapter,
+    "budget-lens": BudgetLensAdapter,
+    "deeptutor": DeepTutorAdapter,
+    "llm-vtuber": LLMVTuberAdapter,
+    "skin-disease-detection": SkinDiseaseAdapter,
+    "google-ai-edge-gallery": GoogleAIEdgeAdapter,
 }
 
 

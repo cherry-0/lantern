@@ -99,6 +99,11 @@ class BudgetLensAdapter(BaseAdapter):
         if self._native_available is not None:
             return self._native_available, self._native_error
 
+        # core/views.py creates `client = OpenAI()` at module level — the
+        # env vars must be set before the first import so the client picks up
+        # the correct API key and base URL.
+        self._inject_openrouter_env()
+
         django_root = str(BUDGETLENS_DJANGO_ROOT)
         if django_root not in sys.path:
             sys.path.insert(0, django_root)

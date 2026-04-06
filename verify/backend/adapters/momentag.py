@@ -95,18 +95,25 @@ class MomentagAdapter(BaseAdapter):
         """Available if either native OR OpenRouter fallback works."""
         native_ok, native_err = self._check_native()
         if native_ok:
-            return True, "Native momentag CLIP/BLIP pipeline available."
+            return True, "Native momentag CLIP/BLIP pipeline available (torch + transformers found)."
+
+        # Give a targeted message about the likely missing dep.
+        missing = ""
+        if "torch" in native_err or "transformers" in native_err or "peft" in native_err:
+            missing = " (torch/transformers/peft not installed)"
+        elif "django" in native_err.lower():
+            missing = " (Django not configured)"
 
         api_key = get_openrouter_api_key()
         if api_key and not api_key.startswith("your_"):
             return (
                 True,
-                f"Native pipeline unavailable ({native_err}); using OpenRouter vision fallback.",
+                f"Native momentag pipeline unavailable{missing}; using OpenRouter vision fallback.",
             )
 
         return (
             False,
-            f"momentag native pipeline unavailable ({native_err}) and no valid OpenRouter API key found.",
+            f"momentag native pipeline unavailable{missing} and no valid OpenRouter API key found.",
         )
 
     def run_pipeline(self, input_item: Dict[str, Any]) -> AdapterResult:

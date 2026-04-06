@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from verify.backend.adapters.base import BaseAdapter, AdapterResult, OPENROUTER_DEFAULT_MODEL
-from verify.backend.utils.config import TARGET_APPS_DIR, get_openrouter_api_key  # noqa: F401
+from verify.backend.utils.config import TARGET_APPS_DIR, get_openrouter_api_key
 
 SNAPDO_SERVER = TARGET_APPS_DIR / "snapdo" / "server"
 
@@ -67,13 +67,30 @@ class SnapdoAdapter(BaseAdapter):
         if self._native_available is not None:
             return self._native_available, self._native_error
 
+        # Inject OpenRouter credentials before anything else so that Django
+        # settings (which read these at startup) and VLMService both get them.
+        self._inject_openrouter_env()
+
+        # Also load snapdo's own .env so any app-specific overrides are in place.
+        import os
+        snapdo_env = SNAPDO_SERVER / "snapdo" / ".env"
+        if snapdo_env.exists():
+            try:
+                for line in snapdo_env.read_text().splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, val = line.split("=", 1)
+                    os.environ.setdefault(key.strip(), val.strip())
+            except Exception:
+                pass
+
         snapdo_path = str(SNAPDO_SERVER)
         if snapdo_path not in sys.path:
             sys.path.insert(0, snapdo_path)
 
         try:
             import django
-            import os
             from django.apps import apps as django_apps
             from django import conf as django_conf
 
@@ -91,11 +108,12 @@ class SnapdoAdapter(BaseAdapter):
 
                 if django_apps.ready or getattr(django_apps, "_loading", False):
                     from collections import defaultdict
+                    from django.utils.functional import empty
                     django_apps.app_configs = {}
                     django_apps.all_models = defaultdict(dict)
                     django_apps.ready = False
                     django_apps._loading = False
-                    django_conf.settings._wrapped = None
+                    django_conf.settings._wrapped = empty
 
                 os.environ["DJANGO_SETTINGS_MODULE"] = "server.settings"
                 django.setup()
@@ -114,6 +132,13 @@ class SnapdoAdapter(BaseAdapter):
         native_ok, native_err = self._check_native()
         if native_ok:
             return True, "Native snapdo VLMService available."
+
+        api_key = get_openrouter_api_key()
+        if api_key and not api_key.startswith("your_"):
+            return (
+                True,
+                f"Native snapdo pipeline unavailable ({native_err}); using OpenRouter fallback.",
+            )
         return False, f"Native snapdo pipeline unavailable: {native_err}"
 
     # ── Task generation ───────────────────────────────────────────────────────
@@ -182,12 +207,15 @@ class SnapdoAdapter(BaseAdapter):
         # without making another VLM call.
         generated_task = self._generate_task(filename, image_b64)
 
-        # Step 2: run the native snapdo verification pipeline
-        native_ok, native_err = self._check_native()
-        if not native_ok:
-            return AdapterResult(success=False, error=f"Native pipeline unavailable: {native_err}")
+        # Step 2: run the native snapdo verification pipeline, fall back to OpenRouter
+        native_ok, _ = self._check_native()
+        if native_ok:
+            try:
+                return self._run_native(image_b64=image_b64, generated_task=generated_task)
+            except Exception as e:
+                pass  # fall through to OpenRouter fallback
 
-        return self._run_native(image_b64=image_b64, generated_task=generated_task)
+        return self._run_openrouter_fallback(image_b64=image_b64, generated_task=generated_task)
 
     def _run_native(
         self,
@@ -227,6 +255,59 @@ class SnapdoAdapter(BaseAdapter):
             structured_output=raw,
             metadata={
                 "method": "native_vlmservice",
+                "generated_task": generated_task,
+            },
+        )
+
+    def _run_openrouter_fallback(
+        self,
+        image_b64: str,
+        generated_task: Dict[str, str],
+    ) -> AdapterResult:
+        """Replicate VLMService.verify_evidence() via OpenRouter when native is unavailable."""
+        constraint = generated_task["title"]
+        if generated_task["description"]:
+            constraint += ". " + generated_task["description"]
+
+        prompt = (
+            f"You are a task verification assistant for a to-do app.\n\n"
+            f"Task: {constraint}\n\n"
+            "Examine the image and decide whether it is convincing photo evidence that this task "
+            "was completed. Respond ONLY with a JSON object:\n"
+            '{"verdict": "PASSED" or "FAILED", "confidence": <0.0–1.0>, "explanation": "<one sentence>"}'
+        )
+
+        try:
+            raw_response = self._call_openrouter(prompt, image_b64=image_b64, max_tokens=256)
+        except RuntimeError as e:
+            return AdapterResult(success=False, error=str(e))
+
+        raw: Dict[str, Any] = {}
+        match = re.search(r"\{.*\}", raw_response, re.DOTALL)
+        if match:
+            try:
+                raw = json.loads(match.group())
+            except json.JSONDecodeError:
+                pass
+
+        verdict = raw.get("verdict", "UNKNOWN")
+        confidence = raw.get("confidence", "N/A")
+        explanation = raw.get("explanation", raw_response)
+
+        output_text = (
+            f"Task: {generated_task['title']}\n"
+            f"Verdict: {verdict}\n"
+            f"Confidence: {confidence}\n"
+            f"Explanation: {explanation}"
+        )
+
+        return AdapterResult(
+            success=True,
+            output_text=output_text,
+            raw_output=raw,
+            structured_output=raw,
+            metadata={
+                "method": "openrouter_fallback",
                 "generated_task": generated_task,
             },
         )

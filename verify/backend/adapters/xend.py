@@ -36,13 +36,21 @@ class XendAdapter(BaseAdapter):
         if self._native_available is not None:
             return self._native_available, self._native_error
 
+        # Inject OpenRouter credentials first so ChatOpenAI (created at module
+        # level when chains.py is imported) picks up the right API key and URL.
+        self._inject_openrouter_env()
+
+        import os
+        # Also set OPENAI_MODEL to our default model unless the app overrides it.
+        from verify.backend.adapters.base import OPENROUTER_DEFAULT_MODEL
+        os.environ.setdefault("OPENAI_MODEL", OPENROUTER_DEFAULT_MODEL)
+
         xend_path = str(XEND_BACKEND)
         if xend_path not in sys.path:
             sys.path.insert(0, xend_path)
 
         try:
             import django
-            import os
             import environ
 
             # Manually load xend's .env (config/utils.py uses match syntax, Python 3.10+ only)

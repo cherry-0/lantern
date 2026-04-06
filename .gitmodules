@@ -10,7 +10,18 @@
 [submodule "target-apps/xend"]
 	path = target-apps/xend
 	url = https://github.com/snuhcs-course/swpp-2025-project-team-11.git
-	
 [submodule "target-apps/budget-lens"]
 	path = target-apps/budget-lens
 	url = https://github.com/1oannis/budget-lens.git
+[submodule "target-apps/google-ai-edge-gallery"]
+	path = target-apps/google-ai-edge-gallery
+	url = https://github.com/google-ai-edge/gallery.git
+[submodule "target-apps/skin-disease-detection"]
+	path = target-apps/skin-disease-detection
+	url = https://github.com/ananmaysuri/Skin-Disease-Detection-App.git
+[submodule "target-apps/llm-vtuber"]
+	path = target-apps/llm-vtuber
+	url = https://github.com/Open-LLM-VTuber/Open-LLM-VTuber.git
+[submodule "target-apps/deeptutor"]
+	path = target-apps/deeptutor
+	url = https://github.com/HKUDS/DeepTutor.git

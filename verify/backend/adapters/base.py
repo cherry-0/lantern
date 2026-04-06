@@ -86,6 +86,60 @@ class BaseAdapter(ABC):
     def supports_modality(self, modality: str) -> bool:
         return modality in self.supported_modalities
 
+    # ── Shared env-injection helpers ─────────────────────────────────────────
+
+    @staticmethod
+    def _inject_openrouter_env() -> None:
+        """
+        Inject OpenRouter credentials into the process environment so that
+        target-app code that reads standard OpenAI-style env vars at import
+        time will route to OpenRouter.
+
+        Sets (only if not already set):
+          OPENAI_API_KEY      → OPENROUTER_API_KEY
+          OPENAI_BASE_URL     → https://openrouter.ai/api/v1
+          LLM_API_KEY         → OPENROUTER_API_KEY   (deeptutor EnvStore)
+          LLM_HOST            → https://openrouter.ai/api/v1   (deeptutor)
+          VLM_API_KEY         → OPENROUTER_API_KEY   (snapdo Django settings)
+          VLM_API_URL         → https://openrouter.ai/api/v1   (snapdo)
+        """
+        import os
+        from verify.backend.utils.config import get_openrouter_api_key
+
+        api_key = get_openrouter_api_key()
+        if not api_key or api_key.startswith("your_"):
+            return
+
+        base_url = "https://openrouter.ai/api/v1"
+
+        for var, val in [
+            ("OPENAI_API_KEY", api_key),
+            ("OPENAI_BASE_URL", base_url),
+            ("LLM_API_KEY", api_key),
+            ("LLM_HOST", base_url),
+            ("VLM_API_KEY", api_key),
+            ("VLM_API_URL", base_url),
+        ]:
+            os.environ.setdefault(var, val)
+
+    @staticmethod
+    def _run_async(coro) -> Any:
+        """
+        Run an async coroutine synchronously, safe even when an event loop is
+        already running (e.g. inside Streamlit or Jupyter).
+
+        Uses a dedicated thread with its own event loop so the caller never
+        needs to worry about 'cannot run nested event loop' errors.
+        """
+        import asyncio
+        import concurrent.futures
+
+        def _target():
+            return asyncio.run(coro)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(_target).result()
+
     # ── Shared OpenRouter helper ──────────────────────────────────────────────
 
     def _call_openrouter(
