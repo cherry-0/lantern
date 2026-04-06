@@ -75,7 +75,10 @@ def list_perturbation_methods(modality: str) -> list[str]:
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
-KNOWN_APPS = ["momentag", "clone", "snapdo", "xend", "budget-lens"]
+KNOWN_APPS = [
+    "momentag", "clone", "snapdo", "xend", "budget-lens",
+    "deeptutor", "llm-vtuber", "skin-disease-detection", "google-ai-edge-gallery",
+]
 MODALITIES = ["image", "text", "video"]
 
 

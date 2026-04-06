@@ -31,6 +31,7 @@ from verify.backend.perturbation_method.interface import (
     run_perturbation,
 )
 from verify.backend.evaluation_method.evaluator import evaluate_both
+from verify.backend.utils.verbose_log import log_inference, is_verbose
 
 
 # ─── Result type definitions ────────────────────────────────────────────────
@@ -343,6 +344,15 @@ class Orchestrator:
             else:
                 orig_error = orig_result.error if not orig_result.success else None
 
+            log_inference(
+                stage="original",
+                app_name=self.app_name,
+                filename=filename,
+                modality=self.modality,
+                input_item=item,
+                result=orig_result,
+            )
+
             if not orig_result or not orig_result.success:
                 result = _make_item_result(
                     filename=filename,
@@ -404,6 +414,15 @@ class Orchestrator:
                     if not pert_pipeline_result.success
                     else None
                 )
+
+            log_inference(
+                stage="perturbed",
+                app_name=self.app_name,
+                filename=filename,
+                modality=self.modality,
+                input_item=perturbed_item,
+                result=pert_pipeline_result,
+            )
 
             if not pert_pipeline_result or not pert_pipeline_result.success:
                 result = _make_item_result(
