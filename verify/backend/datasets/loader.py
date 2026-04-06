@@ -34,6 +34,17 @@ _HRVISPR_18_CLASSES = [
 # Preferred split order for HR-VISPR (pick the first one that exists)
 _HRVISPR_SPLIT_PREFERENCE = ["val2017", "test2017", "train2017"]
 
+# SROIE2019 entity fields and their corresponding generic privacy attributes
+SROIE_ENTITY_TO_ATTR = {
+    "company": "identity",
+    "address": "location",
+    "date": "date",
+    "total": "total",
+}
+
+# Preferred split order for SROIE2019
+_SROIE_SPLIT_PREFERENCE = ["test", "train"]
+
 
 def _is_subdir_image_dataset(dataset_path: Path) -> bool:
     """Return True if the dataset stores images inside named subdirectories."""
@@ -133,6 +144,97 @@ def _iter_subdir_image_dataset(
         yield ok, item, err
 
 
+def _is_sroie_dataset(dataset_path: Path) -> bool:
+    """Return True if the directory follows the SROIE2019 layout (split/img/)."""
+    return any(
+        (dataset_path / split / "img").is_dir() and any(
+            f.suffix.lower() in IMAGE_EXTENSIONS
+            for f in (dataset_path / split / "img").iterdir()
+        )
+        for split in _SROIE_SPLIT_PREFERENCE
+    )
+
+
+def _load_sroie_entities(entities_dir: Path, stem: str) -> Dict[str, Any]:
+    """
+    Load the SROIE entities JSON for a given image stem.
+    Returns a dict with keys: company, date, address, total (empty strings if missing).
+    Returns an empty dict if the file doesn't exist.
+    """
+    entity_path = entities_dir / f"{stem}.txt"
+    if not entity_path.exists():
+        return {}
+    try:
+        return json.loads(entity_path.read_text(encoding="utf-8", errors="replace"))
+    except Exception:
+        return {}
+
+
+def _iter_sroie_dataset(
+    dataset_path: Path,
+) -> Generator[Tuple[bool, Dict[str, Any], Optional[str]], None, None]:
+    """
+    Load a SROIE2019-style dataset.
+
+    Structure:
+        <split>/img/<id>.jpg       — receipt image
+        <split>/entities/<id>.txt  — JSON ground truth: {company, date, address, total}
+
+    Yields one image item per receipt. Entity fields are stored as:
+        - privacy_labels: list of entity field names that are non-empty
+                          (e.g. ["company", "address", "date", "total"])
+        - sroie_entities: full dict {"company": ..., "date": ..., "address": ..., "total": ...}
+        - sroie_entity_attrs: mapped generic attribute names (e.g. ["identity", "location"])
+    """
+    split = next(
+        (s for s in _SROIE_SPLIT_PREFERENCE if (dataset_path / s / "img").is_dir()),
+        None,
+    )
+    if split is None:
+        yield False, {}, "No recognised split directory (test/, train/) found in SROIE dataset."
+        return
+
+    img_dir = dataset_path / split / "img"
+    entities_dir = dataset_path / split / "entities"
+
+    image_files = sorted(
+        f for f in img_dir.iterdir() if f.suffix.lower() in IMAGE_EXTENSIONS
+    )
+
+    for img_path in image_files:
+        stem = img_path.stem
+
+        # Load ground-truth entities
+        entities = _load_sroie_entities(entities_dir, stem)
+
+        # Derive privacy labels from non-empty entity fields
+        privacy_labels = [
+            field for field in ("company", "date", "address", "total")
+            if entities.get(field, "").strip()
+        ]
+        entity_attrs = [
+            SROIE_ENTITY_TO_ATTR[field]
+            for field in privacy_labels
+            if field in SROIE_ENTITY_TO_ATTR
+        ]
+
+        ok, item, err = _load_image_item(img_path, {
+            "modality": "image",
+            "path": str(img_path),
+            "filename": img_path.name,
+        })
+
+        if ok:
+            item["privacy_labels"] = privacy_labels
+            item["sroie_entities"] = entities
+            item["sroie_entity_attrs"] = entity_attrs
+            item["label_source"] = "sroie_entities"
+            item["split"] = split
+            item["image_id"] = stem
+
+        yield ok, item, err
+
+
 def _is_hf_dataset(dataset_path: Path) -> bool:
     """Return True if the directory is a HuggingFace dataset saved to disk."""
     return (dataset_path / "dataset_dict.json").exists() or any(
@@ -154,6 +256,10 @@ def detect_modality(dataset_name: str) -> Optional[str]:
     # HuggingFace disk datasets are always treated as text
     if _is_hf_dataset(dataset_path):
         return "text"
+
+    # SROIE2019-style datasets (split/img/)
+    if _is_sroie_dataset(dataset_path):
+        return "image"
 
     # Subdirectory image datasets (e.g. HR-VISPR)
     if _is_subdir_image_dataset(dataset_path):
@@ -526,6 +632,18 @@ def count_dataset_items(dataset_name: str, modality: str) -> int:
                     pass
         return total
 
+    if _is_sroie_dataset(dataset_path):
+        split = next(
+            (s for s in _SROIE_SPLIT_PREFERENCE if (dataset_path / s / "img").is_dir()),
+            None,
+        )
+        if split:
+            return sum(
+                1 for f in (dataset_path / split / "img").iterdir()
+                if f.suffix.lower() in IMAGE_EXTENSIONS
+            )
+        return 0
+
     if _is_subdir_image_dataset(dataset_path):
         split = next(
             (s for s in _HRVISPR_SPLIT_PREFERENCE if (dataset_path / s).is_dir()),
@@ -558,6 +676,8 @@ def iter_dataset(
     count = 0
     if _is_hf_dataset(dataset_path):
         source = _iter_hf_dataset(dataset_path)
+    elif _is_sroie_dataset(dataset_path):
+        source = _iter_sroie_dataset(dataset_path)
     elif _is_subdir_image_dataset(dataset_path):
         source = _iter_subdir_image_dataset(dataset_path)
     else:

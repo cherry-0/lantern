@@ -75,7 +75,7 @@ def list_perturbation_methods(modality: str) -> list[str]:
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
-KNOWN_APPS = ["momentag", "clone", "snapdo", "xend"]
+KNOWN_APPS = ["momentag", "clone", "snapdo", "xend", "budget-lens"]
 MODALITIES = ["image", "text", "video"]
 
 

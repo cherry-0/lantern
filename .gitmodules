@@ -10,3 +10,7 @@
 [submodule "target-apps/xend"]
 	path = target-apps/xend
 	url = https://github.com/snuhcs-course/swpp-2025-project-team-11.git
+	
+[submodule "target-apps/budget-lens"]
+	path = target-apps/budget-lens
+	url = https://github.com/1oannis/budget-lens.git
