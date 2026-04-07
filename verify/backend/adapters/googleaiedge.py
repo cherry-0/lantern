@@ -38,10 +38,18 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from verify.backend.adapters.base import BaseAdapter, AdapterResult, OPENROUTER_DEFAULT_MODEL
-from verify.backend.utils.config import get_env, get_openrouter_api_key, use_app_servers
+from verify.backend.utils.config import get_env, get_openrouter_api_key, use_app_servers, TARGET_APPS_DIR
+from verify.backend.utils.conda_runner import CondaRunner, EnvSpec
 
 _DEFAULT_MODEL_ID = "Qwen/Qwen2.5-1.5B-Instruct"
 _DEFAULT_MAX_TOKENS = 512
+
+_ENV_SPEC = EnvSpec(
+    name="google-ai-edge-gallery",
+    python="3.10",
+    install_cmds=[["pip", "install", "transformers", "accelerate", "torch"]],
+)
+_RUNNER = Path(__file__).parent.parent / "runners" / "googleaiedge_runner.py"
 
 # System prompt matching the app's LlmChat capability persona
 _CHAT_SYSTEM = (
@@ -80,37 +88,14 @@ class GoogleAIEdgeAdapter(BaseAdapter):
     def __init__(self):
         self._model_id: str = get_env("GOOGLE_AI_EDGE_MODEL_ID") or _DEFAULT_MODEL_ID
         self._max_tokens: int = int(get_env("GOOGLE_AI_EDGE_MAX_TOKENS") or _DEFAULT_MAX_TOKENS)
-        self._pipeline = None   # cached transformers pipeline
-        self._transformers_ok: Optional[bool] = None
-
-    # ── Availability ──────────────────────────────────────────────────────────
-
-    def _check_transformers(self) -> Tuple[bool, str]:
-        if self._transformers_ok is not None:
-            return self._transformers_ok, ""
-        try:
-            import transformers  # noqa: F401
-            self._transformers_ok = True
-            return True, ""
-        except ImportError:
-            self._transformers_ok = False
-            return False, "transformers not installed (pip install transformers accelerate torch)"
 
     def check_availability(self) -> Tuple[bool, str]:
         if use_app_servers():
-            ok, msg = self._check_transformers()
-            if not ok:
-                return False, f"[NATIVE] {msg}"
-            return (
-                True,
-                f"[NATIVE] transformers available. Will load {self._model_id} on first run "
-                "(model is downloaded from HuggingFace if not cached locally).",
-            )
-        else:
-            api_key = get_openrouter_api_key()
-            if api_key and not api_key.startswith("your_"):
-                return True, f"[SERVERLESS] Using OpenRouter to replicate LiteRT LLM output."
-            return False, "[SERVERLESS] No OPENROUTER_API_KEY configured."
+            return CondaRunner.probe(_ENV_SPEC)
+        api_key = get_openrouter_api_key()
+        if api_key and not api_key.startswith("your_"):
+            return True, "[SERVERLESS] Using OpenRouter to replicate LiteRT LLM output."
+        return False, "[SERVERLESS] No OPENROUTER_API_KEY configured."
 
     # ── Main pipeline ─────────────────────────────────────────────────────────
 
@@ -121,50 +106,27 @@ class GoogleAIEdgeAdapter(BaseAdapter):
                 success=False,
                 error=f"google-ai-edge-gallery does not support modality '{modality}'.",
             )
-
         if use_app_servers():
             return self._run_native(input_item, modality)
         return self._run_serverless(input_item, modality)
 
     # ── NATIVE mode ───────────────────────────────────────────────────────────
 
-    def _get_pipeline(self):
-        """Lazily load the transformers pipeline (downloads model on first call)."""
-        if self._pipeline is not None:
-            return self._pipeline
-
-        from transformers import pipeline as hf_pipeline
-        import torch
-
-        device = 0 if torch.cuda.is_available() else -1
-        self._pipeline = hf_pipeline(
-            "text-generation",
-            model=self._model_id,
-            device=device,
-            torch_dtype=torch.float16 if device >= 0 else torch.float32,
-            trust_remote_code=True,
-        )
-        return self._pipeline
-
     def _run_native(self, input_item: Dict[str, Any], modality: str) -> AdapterResult:
-        """
-        Run the same HuggingFace model family as the app's LiteRT allowlist via transformers.
-        Image inputs are described in the prompt since most 1-2B text models are text-only.
-        """
-        ok, msg = self._check_transformers()
+        """Run HuggingFace transformers in the 'google-ai-edge-gallery' conda env."""
+        ok, msg = CondaRunner.ensure(_ENV_SPEC)
         if not ok:
-            return AdapterResult(success=False, error=f"[NATIVE] {msg}")
+            return AdapterResult(success=False, error=msg)
 
+        image_description = ""
         if modality == "image":
-            # Describe the image as a text prompt (most small transformers models are text-only)
             data = input_item.get("data")
             path = input_item.get("path", "")
             try:
                 image_b64 = input_item.get("image_base64") or _encode_image_b64(
                     data if data is not None else path
                 )
-                # Use OpenRouter vision briefly just to get an image description,
-                # then feed that into the local model — mirrors how the app handles images
+                # Describe image using OpenRouter so the text-only local model can process it
                 image_description = self._call_openrouter(
                     "Describe this image in detail for an AI assistant to process.",
                     image_b64=image_b64,
@@ -172,52 +134,37 @@ class GoogleAIEdgeAdapter(BaseAdapter):
                 )
             except Exception as e:
                 return AdapterResult(success=False, error=f"Image encoding failed: {e}")
-            user_message = (
-                f"The user shared an image. Visual content: {image_description}\n\n"
-                "Please analyze this and provide a helpful response."
-            )
-        else:
-            data = input_item.get("data", "")
-            user_message = str(data).strip() if data else ""
-            if not user_message:
-                return AdapterResult(success=False, error="Empty text input.")
 
-        messages = [
-            {"role": "system", "content": _CHAT_SYSTEM},
-            {"role": "user",   "content": user_message},
-        ]
+        ok, result, err = CondaRunner.run(
+            _ENV_SPEC.name,
+            _RUNNER,
+            {
+                "modality": modality,
+                "text_content": input_item.get("data", "") if modality == "text" else "",
+                "image_description": image_description,
+                "model_id": self._model_id,
+                "max_tokens": self._max_tokens,
+            },
+            timeout=300,  # model download + first inference can be slow
+        )
+        if not ok:
+            return AdapterResult(success=False, error=err)
 
-        try:
-            pipe = self._get_pipeline()
-            outputs = pipe(
-                messages,
-                max_new_tokens=self._max_tokens,
-                do_sample=True,
-                temperature=1.0,
-                top_k=64,
-                top_p=0.95,
-            )
-            response = outputs[0]["generated_text"][-1]["content"]
-        except Exception as e:
-            return AdapterResult(success=False, error=f"Local model inference failed: {e}")
+        response = result.get("ai_response", "")
+        externalizations = result.get("externalizations", {})
 
         structured = {
             "input_modality": modality,
-            "user_message": user_message[:500],
             "ai_response": response,
-            "model_id": self._model_id,
+            "model_id": result.get("model_id", self._model_id),
         }
-
         return AdapterResult(
-            success=True,
+            success=result.get("success", False),
             output_text=response,
-            raw_output={"user_message": user_message, "response": response},
+            raw_output=result,
             structured_output=structured,
-            metadata={
-                "method": "native_transformers",
-                "model_id": self._model_id,
-                "workflow": "local_multimodal_chat",
-            },
+            externalizations=externalizations,
+            metadata={"method": "native_transformers", "model_id": self._model_id},
         )
 
     # ── SERVERLESS mode ───────────────────────────────────────────────────────
@@ -267,10 +214,17 @@ class GoogleAIEdgeAdapter(BaseAdapter):
             "ai_response": response,
         }
 
+        # Simulated fallback externalizations
+        externalizations = {
+            "UI": f"Rendering LlmChatScreen with: {response[:100]}...",
+            "ANALYTICS": "[Firebase Fallback] Log: CAPABILITY_CHAT_UI_GENERATION"
+        }
+
         return AdapterResult(
             success=True,
             output_text=response,
             raw_output={"user_message": user_message, "response": response},
             structured_output=structured,
+            externalizations=externalizations,
             metadata={"method": "serverless", "workflow": "local_multimodal_chat"},
         )

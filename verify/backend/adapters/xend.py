@@ -3,110 +3,46 @@ Adapter for the xend app.
 
 Core pipeline: original email/text content + style → revised email (subject + body).
 
-Primary strategy: import xend's LangChain chains (requires Django + Poetry deps).
-Fallback: use OpenRouter to rewrite the text as an email drafting assistant would.
+USE_APP_SERVERS=true  : runs xend's LangChain chains inside the 'xend' conda env.
+USE_APP_SERVERS=false : uses OpenRouter to rewrite text as an email drafting assistant would.
 """
 
-import sys
-import traceback as _tb
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Tuple
 
-from verify.backend.adapters.base import BaseAdapter, AdapterResult
-from verify.backend.utils.config import TARGET_APPS_DIR, get_openrouter_api_key  # used in check_availability
+from verify.backend.adapters.base import BaseAdapter, AdapterResult, OPENROUTER_DEFAULT_MODEL
+from verify.backend.utils.config import TARGET_APPS_DIR, get_openrouter_api_key, use_app_servers
+from verify.backend.utils.conda_runner import CondaRunner, EnvSpec
 
 XEND_BACKEND = TARGET_APPS_DIR / "xend" / "backend"
+
+_ENV_SPEC = EnvSpec(
+    name="xend",
+    python="3.12",
+    install_cmds=[["pip", "install", "poetry"], ["poetry", "install", "--no-root"]],
+    cwd=XEND_BACKEND,
+)
+_RUNNER = Path(__file__).parent.parent / "runners" / "xend_runner.py"
 
 
 class XendAdapter(BaseAdapter):
     """
     Wraps the xend email revision pipeline.
 
-    For Verify: given a text item (email content or scenario text), produce
-    a revised email draft. The output is evaluated for privacy attribute inferability.
+    NATIVE mode     : xend's LangChain chains (subject_chain + body_chain) in conda env.
+    SERVERLESS mode : OpenRouter replicating the same subject/body output structure.
     """
 
     name = "xend"
     supported_modalities = ["text"]
 
-    def __init__(self):
-        self._native_available: Optional[bool] = None
-        self._native_error: str = ""
-        self._native_traceback: str = ""
-
-    def _check_native(self) -> Tuple[bool, str]:
-        if self._native_available is not None:
-            return self._native_available, self._native_error
-
-        # Inject OpenRouter credentials first so ChatOpenAI (created at module
-        # level when chains.py is imported) picks up the right API key and URL.
-        self._inject_openrouter_env()
-
-        import os
-        # Also set OPENAI_MODEL to our default model unless the app overrides it.
-        from verify.backend.adapters.base import OPENROUTER_DEFAULT_MODEL
-        os.environ.setdefault("OPENAI_MODEL", OPENROUTER_DEFAULT_MODEL)
-
-        xend_path = str(XEND_BACKEND)
-        if xend_path not in sys.path:
-            sys.path.insert(0, xend_path)
-
-        try:
-            import django
-            import environ
-
-            # Manually load xend's .env (config/utils.py uses match syntax, Python 3.10+ only)
-            env_file = XEND_BACKEND / ".env"
-            if not env_file.exists():
-                env_example = XEND_BACKEND / ".env_example"
-                if env_example.exists():
-                    import shutil
-                    shutil.copyfile(str(env_example), str(env_file))
-
-            if env_file.exists():
-                _env = environ.Env(DEBUG=(bool, True), overwrite=True)
-                environ.Env.read_env(env_file=str(env_file))
-
-            os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.local")
-            # Purge any cached 'config' package from a previous adapter to
-            # avoid sys.modules collision (momentag and xend both use a
-            # top-level package named 'config').
-            for _mod in list(sys.modules):
-                if _mod == "config" or _mod.startswith("config."):
-                    del sys.modules[_mod]
-            try:
-                django.setup()
-            except RuntimeError:
-                pass
-
-            # Try importing the chain — this will fail if Django isn't configured correctly
-            from apps.ai.services.chains import body_chain, subject_chain  # noqa: F401
-
-            self._native_available = True
-            self._native_error = ""
-        except Exception as e:
-            self._native_available = False
-            self._native_error = str(e)
-            self._native_traceback = _tb.format_exc()
-
-        return self._native_available, self._native_error
-
     def check_availability(self) -> Tuple[bool, str]:
-        native_ok, native_err = self._check_native()
-        if native_ok:
-            return True, "Native xend LangChain pipeline available."
-
+        if use_app_servers():
+            return CondaRunner.probe(_ENV_SPEC)
         api_key = get_openrouter_api_key()
         if api_key and not api_key.startswith("your_"):
-            return (
-                True,
-                f"Native xend pipeline unavailable ({native_err}); using OpenRouter fallback.",
-            )
-
-        return (
-            False,
-            f"xend native pipeline unavailable ({native_err}) and no valid OpenRouter API key.",
-        )
+            return True, "[SERVERLESS] Using OpenRouter fallback for xend."
+        return False, "[SERVERLESS] No OPENROUTER_API_KEY configured."
 
     def run_pipeline(self, input_item: Dict[str, Any]) -> AdapterResult:
         if input_item.get("modality") != "text":
@@ -114,62 +50,43 @@ class XendAdapter(BaseAdapter):
                 success=False,
                 error=f"xend only supports 'text' modality, got '{input_item.get('modality')}'.",
             )
-
-        native_ok, _ = self._check_native()
-        if native_ok:
-            try:
-                result = self._run_native(input_item)
-                # If native produced empty output, fall through to OpenRouter
-                if result.success and not (result.output_text or "").strip().replace("Subject: \n\nBody:", "").strip():
-                    raise RuntimeError("Native chain returned empty output.")
-                return result
-            except Exception as native_err:
-                # Native failed at inference time — fall back to OpenRouter
-                fallback = self._run_openrouter_fallback(input_item)
-                if fallback.success:
-                    fallback.metadata = {**( fallback.metadata or {}), "native_error": str(native_err)}
-                return fallback
-
+        if use_app_servers():
+            return self._run_native(input_item)
         return self._run_openrouter_fallback(input_item)
 
     def _run_native(self, input_item: Dict[str, Any]) -> AdapterResult:
-        """Attempt to use xend's actual chain (unlikely to work without full Django setup)."""
-        from apps.ai.services.chains import body_chain, subject_chain
+        """Run xend's LangChain chains inside the 'xend' conda env via subprocess."""
+        ok, msg = CondaRunner.ensure(_ENV_SPEC)
+        if not ok:
+            return AdapterResult(success=False, error=msg)
 
         text_content = input_item.get("text_content", "")
         if not text_content:
             return AdapterResult(success=False, error="No text content provided.")
 
-        # Build minimal inputs (xend chains expect many context fields; use defaults)
-        inputs = {
-            "body": text_content,
-            "subject": "",
-            "language": "en",
-            "recipients": "",
-            "group_name": "",
-            "group_description": "",
-            "prompt_text": "",
-            "sender_role": "",
-            "recipient_role": "",
-            "plan_text": "",
-            "analysis": None,
-            "fewshots": None,
-            "profile": "",
-            "attachments": [],
-            "locked_subject": "",
-        }
+        ok, result, err = CondaRunner.run(
+            _ENV_SPEC.name,
+            _RUNNER,
+            {
+                "text_content": text_content,
+                "openrouter_api_key": get_openrouter_api_key() or "",
+                "model": OPENROUTER_DEFAULT_MODEL,
+            },
+            timeout=90,
+        )
+        if not ok:
+            return AdapterResult(success=False, error=err)
 
-        subject = (subject_chain.invoke(inputs) or "").strip()
-        inputs["locked_subject"] = subject
-        body = (body_chain.invoke(inputs) or "").strip()
-
+        subject = result.get("subject", "")
+        body = result.get("body", "")
+        externalizations = result.get("externalizations", {})
         output_text = f"Subject: {subject}\n\nBody:\n{body}"
-
         return AdapterResult(
-            success=True,
+            success=result.get("success", False),
             output_text=output_text,
-            raw_output={"subject": subject, "body": body},
+            raw_output=result,
             structured_output={"subject": subject, "body": body},
+            externalizations=externalizations,
             metadata={"method": "native_langchain"},
         )
 
@@ -193,20 +110,26 @@ class XendAdapter(BaseAdapter):
         except RuntimeError as e:
             return AdapterResult(success=False, error=str(e))
 
-        # Parse subject and body
         subject, body = "", response_text
         lines = response_text.splitlines()
         for i, line in enumerate(lines):
             if line.lower().startswith("subject:"):
                 subject = line.split(":", 1)[1].strip()
             elif line.lower().startswith("body:"):
-                body = "\n".join(lines[i + 1 :]).strip()
+                body = "\n".join(lines[i + 1:]).strip()
                 break
+
+        # Simulated fallback externalizations
+        externalizations = {
+            "NETWORK": "[OpenRouter Fallback] Direct email generation request.",
+            "UI": f"Rendering email draft with subject: {subject}"
+        }
 
         return AdapterResult(
             success=True,
             output_text=response_text,
             raw_output={"raw_response": response_text},
             structured_output={"subject": subject, "body": body},
-            metadata={"method": "openrouter_fallback"},
+            externalizations=externalizations,
+            metadata={"method": "serverless"},
         )

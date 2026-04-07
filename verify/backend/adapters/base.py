@@ -24,15 +24,39 @@ class AdapterResult:
     raw_output: Dict[str, Any] = field(default_factory=dict)
     # Optional structured output fields (tags, verdict, subject/body, etc.)
     structured_output: Dict[str, Any] = field(default_factory=dict)
+    # Captured externalizations (e.g. "NETWORK", "UI", "STORAGE", "LOGGING")
+    externalizations: Dict[str, str] = field(default_factory=dict)
     error: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def combined_output(self) -> str:
+        """
+        Concatenates all externalized results into a single string for evaluation.
+        If no externalizations are present, falls back to output_text.
+        """
+        if not self.externalizations:
+            return self.output_text
+
+        parts = []
+        # Include primary UI output if available and not redundant
+        if self.output_text and "UI" not in self.externalizations:
+            parts.append(f"[UI] {self.output_text}")
+
+        # Add all other channels
+        for channel, content in self.externalizations.items():
+            parts.append(f"[{channel.upper()}] {content}")
+
+        return "\n".join(parts)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "success": self.success,
             "output_text": self.output_text,
+            "combined_output": self.combined_output,
             "raw_output": self.raw_output,
             "structured_output": self.structured_output,
+            "externalizations": self.externalizations,
             "error": self.error,
             "metadata": self.metadata,
         }

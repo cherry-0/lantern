@@ -12,16 +12,22 @@ reused for both the original and perturbed pipeline runs.
 
 import json
 import re
-import sys
 import base64
-import traceback as _tb
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from verify.backend.adapters.base import BaseAdapter, AdapterResult, OPENROUTER_DEFAULT_MODEL
-from verify.backend.utils.config import TARGET_APPS_DIR, get_openrouter_api_key
+from verify.backend.utils.config import TARGET_APPS_DIR, get_openrouter_api_key, use_app_servers
+from verify.backend.utils.conda_runner import CondaRunner, EnvSpec
 
 SNAPDO_SERVER = TARGET_APPS_DIR / "snapdo" / "server"
+
+_ENV_SPEC = EnvSpec(
+    name="snapdo",
+    python="3.10",
+    install_cmds=[["pip", "install", "-r", str(TARGET_APPS_DIR / "snapdo" / "requirements.txt")]],
+)
+_RUNNER = Path(__file__).parent.parent / "runners" / "snapdo_runner.py"
 
 # Fallback used only when task generation itself fails
 DEFAULT_TASK = "Identify and describe all visible content in this image, including objects, text, people, and location cues."
@@ -132,30 +138,25 @@ class SnapdoAdapter(BaseAdapter):
         return self._native_available, self._native_error
 
     def check_availability(self) -> Tuple[bool, str]:
-        native_ok, native_err = self._check_native()
-        if native_ok:
-            return True, "Native snapdo VLMService available."
-
+        if use_app_servers():
+            return CondaRunner.probe(_ENV_SPEC)
         api_key = get_openrouter_api_key()
         if api_key and not api_key.startswith("your_"):
-            return (
-                True,
-                f"Native snapdo pipeline unavailable ({native_err}); using OpenRouter fallback.",
-            )
-        return False, f"Native snapdo pipeline unavailable: {native_err}"
+            return True, "[SERVERLESS] Using OpenRouter fallback for snapdo."
+        return False, "[SERVERLESS] No OPENROUTER_API_KEY configured."
 
     # ── Task generation ───────────────────────────────────────────────────────
 
-    def _generate_task(self, filename: str, image_b64: str) -> Dict[str, str]:
+    def _generate_task(self, path: str, image_b64: str) -> Dict[str, str]:
         """
         Ask a VLM to invent a realistic Todo task for which this image would be
         natural photo evidence.
 
         Returns {"title": str, "description": str}.
-        Falls back to DEFAULT_TASK title on any failure.
+        Falls back to DEFAULT_TASK title on any failure (error is printed to stderr).
         """
-        if filename in self._task_cache:
-            return self._task_cache[filename]
+        if path in self._task_cache:
+            return self._task_cache[path]
 
         prompt = (
             "You are helping a to-do app where users submit photos as proof of completing a task.\n\n"
@@ -171,6 +172,7 @@ class SnapdoAdapter(BaseAdapter):
             'Example: {"title": "Visit the farmers market", "description": "Pick up fresh vegetables and take a photo of the stall."}'
         )
 
+        import sys
         try:
             raw = self._call_openrouter(prompt, image_b64=image_b64, max_tokens=256)
             match = re.search(r"\{.*\}", raw, re.DOTALL)
@@ -181,11 +183,12 @@ class SnapdoAdapter(BaseAdapter):
                     "description": str(parsed.get("description", "")),
                 }
             else:
-                raise ValueError("No JSON object in response")
-        except Exception:
+                raise ValueError(f"No JSON object in VLM response: {raw[:200]!r}")
+        except Exception as e:
+            print(f"[snapdo] _generate_task failed for {path!r}: {e}", file=sys.stderr, flush=True)
             task = {"title": DEFAULT_TASK, "description": ""}
 
-        self._task_cache[filename] = task
+        self._task_cache[path] = task
         return task
 
     # ── Pipeline ──────────────────────────────────────────────────────────────
@@ -197,7 +200,6 @@ class SnapdoAdapter(BaseAdapter):
                 error=f"snapdo only supports 'image' modality, got '{input_item.get('modality')}'.",
             )
 
-        filename = input_item.get("filename", "")
         data = input_item.get("data")
         path = input_item.get("path", "")
         image_b64 = input_item.get("image_base64") or _encode_image_b64(
@@ -205,19 +207,13 @@ class SnapdoAdapter(BaseAdapter):
         )
 
         # Step 1: generate task context (pre-pipeline VLM agent).
-        # Cached by filename — the original run generates the task; the
+        # Cached by full path — the original run generates the task; the
         # perturbed run for the same image hits the cache and reuses it
         # without making another VLM call.
-        generated_task = self._generate_task(filename, image_b64)
+        generated_task = self._generate_task(path, image_b64)
 
-        # Step 2: run the native snapdo verification pipeline, fall back to OpenRouter
-        native_ok, _ = self._check_native()
-        if native_ok:
-            try:
-                return self._run_native(image_b64=image_b64, generated_task=generated_task)
-            except Exception as e:
-                pass  # fall through to OpenRouter fallback
-
+        if use_app_servers():
+            return self._run_native(image_b64=image_b64, generated_task=generated_task)
         return self._run_openrouter_fallback(image_b64=image_b64, generated_task=generated_task)
 
     def _run_native(
@@ -225,41 +221,41 @@ class SnapdoAdapter(BaseAdapter):
         image_b64: str,
         generated_task: Dict[str, str],
     ) -> AdapterResult:
-        """Run snapdo's native VLMService with the pre-generated task as constraint."""
-        from django import conf as django_conf
-        try:
-            _ = django_conf.settings.VLM_API_KEY
-        except AttributeError:
-            self._native_available = None
-            native_ok, native_err = self._check_native()
-            if not native_ok:
-                return AdapterResult(success=False, error=f"Native pipeline unavailable: {native_err}")
+        """Run snapdo's VLMService inside the 'snapdo' conda env via subprocess."""
+        ok, msg = CondaRunner.ensure(_ENV_SPEC)
+        if not ok:
+            return AdapterResult(success=False, error=msg)
 
-        from snapdo.services.vlm_service import VLMService
-
-        constraint = generated_task["title"]
-        if generated_task["description"]:
-            constraint += ". " + generated_task["description"]
-
-        service = VLMService()
-        raw = service.verify_evidence(image_b64, constraint, model=OPENROUTER_DEFAULT_MODEL)
+        ok, result, err = CondaRunner.run(
+            _ENV_SPEC.name,
+            _RUNNER,
+            {
+                "image_base64": image_b64,
+                "task_title": generated_task.get("title", ""),
+                "task_description": generated_task.get("description", ""),
+                "openrouter_api_key": get_openrouter_api_key() or "",
+                "model": OPENROUTER_DEFAULT_MODEL,
+            },
+            timeout=90,
+        )
+        if not ok:
+            return AdapterResult(success=False, error=err)
 
         output_text = (
             f"Task: {generated_task['title']}\n"
-            f"Verdict: {raw.get('verdict', 'UNKNOWN')}\n"
-            f"Confidence: {raw.get('confidence', 'N/A')}\n"
-            f"Explanation: {raw.get('explanation', '')}"
+            f"Verdict: {result.get('verdict', 'UNKNOWN')}\n"
+            f"Confidence: {result.get('confidence', 'N/A')}\n"
+            f"Explanation: {result.get('explanation', '')}"
         )
+        externalizations = result.get("externalizations", {})
 
         return AdapterResult(
-            success=True,
+            success=result.get("success", False),
             output_text=output_text,
-            raw_output=raw,
-            structured_output=raw,
-            metadata={
-                "method": "native_vlmservice",
-                "generated_task": generated_task,
-            },
+            raw_output=result,
+            structured_output=result,
+            externalizations=externalizations,
+            metadata={"method": "native_vlmservice", "generated_task": generated_task},
         )
 
     def _run_openrouter_fallback(
@@ -304,11 +300,18 @@ class SnapdoAdapter(BaseAdapter):
             f"Explanation: {explanation}"
         )
 
+        # Simulated fallback externalizations
+        externalizations = {
+            "NETWORK": "[OpenRouter Fallback] Sending verification request for proof-of-work photo.",
+            "UI": f"Verification Banner: {verdict} - {explanation[:50]}..."
+        }
+
         return AdapterResult(
             success=True,
             output_text=output_text,
             raw_output=raw,
             structured_output=raw,
+            externalizations=externalizations,
             metadata={
                 "method": "openrouter_fallback",
                 "generated_task": generated_task,

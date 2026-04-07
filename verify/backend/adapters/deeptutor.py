@@ -16,17 +16,21 @@ Fallback: direct OpenRouter chat call if the deeptutor package cannot be importe
 or if the orchestrator raises an unrecoverable error.
 """
 
-import os
-import sys
-import uuid
-import traceback as _tb
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Tuple
 
 from verify.backend.adapters.base import BaseAdapter, AdapterResult, OPENROUTER_DEFAULT_MODEL
-from verify.backend.utils.config import TARGET_APPS_DIR, get_openrouter_api_key
+from verify.backend.utils.config import TARGET_APPS_DIR, get_openrouter_api_key, use_app_servers
+from verify.backend.utils.conda_runner import CondaRunner, EnvSpec
 
 DEEPTUTOR_ROOT = TARGET_APPS_DIR / "deeptutor"
+
+_ENV_SPEC = EnvSpec(
+    name="deeptutor",
+    python="3.10",
+    install_cmds=[["pip", "install", "-e", str(DEEPTUTOR_ROOT)]],
+)
+_RUNNER = Path(__file__).parent.parent / "runners" / "deeptutor_runner.py"
 
 # System prompt matching deeptutor's tutoring persona
 _TUTOR_SYSTEM = (
@@ -68,53 +72,13 @@ class DeepTutorAdapter(BaseAdapter):
     name = "deeptutor"
     supported_modalities = ["text"]
 
-    def __init__(self):
-        self._native_available: Optional[bool] = None
-        self._native_error: str = ""
-        self._native_traceback: str = ""
-
-    # ── Native availability ───────────────────────────────────────────────────
-
-    def _check_native(self) -> Tuple[bool, str]:
-        if self._native_available is not None:
-            return self._native_available, self._native_error
-
-        api_key = get_openrouter_api_key()
-        if api_key and not api_key.startswith("your_"):
-            _inject_deeptutor_env(api_key)
-
-        deeptutor_path = str(DEEPTUTOR_ROOT)
-        if deeptutor_path not in sys.path:
-            sys.path.insert(0, deeptutor_path)
-
-        try:
-            from deeptutor.runtime.orchestrator import ChatOrchestrator  # noqa: F401
-            from deeptutor.core.context import UnifiedContext  # noqa: F401
-            from deeptutor.core.stream import StreamEventType  # noqa: F401
-            self._native_available = True
-            self._native_error = ""
-        except Exception as e:
-            self._native_available = False
-            self._native_error = str(e)
-            self._native_traceback = _tb.format_exc()
-
-        return self._native_available, self._native_error
-
     def check_availability(self) -> Tuple[bool, str]:
-        native_ok, native_err = self._check_native()
-        if native_ok:
-            return True, "Native deeptutor ChatOrchestrator available; routing via OpenRouter."
-
+        if use_app_servers():
+            return CondaRunner.probe(_ENV_SPEC)
         api_key = get_openrouter_api_key()
         if api_key and not api_key.startswith("your_"):
-            return (
-                True,
-                f"Native deeptutor pipeline unavailable ({native_err}); using OpenRouter chat fallback.",
-            )
-        return (
-            False,
-            f"deeptutor native pipeline unavailable ({native_err}) and no valid OpenRouter API key.",
-        )
+            return True, "[SERVERLESS] Using OpenRouter chat fallback for deeptutor."
+        return False, "[SERVERLESS] No OPENROUTER_API_KEY configured."
 
     # ── Pipeline ──────────────────────────────────────────────────────────────
 
@@ -124,78 +88,46 @@ class DeepTutorAdapter(BaseAdapter):
                 success=False,
                 error=f"deeptutor only supports 'text' modality, got '{input_item.get('modality')}'.",
             )
+        if use_app_servers():
+            return self._run_native(input_item)
+        return self._run_openrouter_fallback(input_item)
 
-        native_ok, _ = self._check_native()
-        try:
-            if native_ok:
-                return self._run_native(input_item)
-            else:
-                return self._run_openrouter_fallback(input_item)
-        except Exception as e:
-            return AdapterResult(success=False, error=str(e))
-
-    # ── Native path: ChatOrchestrator ─────────────────────────────────────────
+    # ── NATIVE mode ───────────────────────────────────────────────────────────
 
     def _run_native(self, input_item: Dict[str, Any]) -> AdapterResult:
-        """
-        Drive a single deeptutor chat turn through ChatOrchestrator.
-
-        ChatOrchestrator.handle(context) is an async generator of StreamEvent
-        objects.  We collect all CONTENT events (the streaming text chunks) and
-        join them into the final response.  Any other event types (STAGE_START,
-        TOOL_CALL, DONE, …) are ignored for the output text but preserved in
-        raw_output for debugging.
-        """
-        from deeptutor.runtime.orchestrator import ChatOrchestrator
-        from deeptutor.core.context import UnifiedContext
-        from deeptutor.core.stream import StreamEventType
+        """Run deeptutor's ChatOrchestrator inside the 'deeptutor' conda env via subprocess."""
+        ok, msg = CondaRunner.ensure(_ENV_SPEC)
+        if not ok:
+            return AdapterResult(success=False, error=msg)
 
         data = input_item.get("data", "")
-        if not isinstance(data, str):
-            data = str(data)
-        text = data.strip()
+        text = str(data).strip() if data else ""
         if not text:
             return AdapterResult(success=False, error="Empty text input.")
 
-        context = UnifiedContext(
-            session_id=str(uuid.uuid4()),
-            user_message=text,
-            active_capability="chat",
-            language="en",
-        )
-
-        orchestrator = ChatOrchestrator()
-
-        async def _collect():
-            content_parts = []
-            all_events = []
-            async for event in orchestrator.handle(context):
-                all_events.append(event.to_dict())
-                if event.type == StreamEventType.CONTENT and event.content:
-                    content_parts.append(event.content)
-            return "".join(content_parts), all_events
-
-        response_text, all_events = self._run_async(_collect())
-
-        if not response_text:
-            # No CONTENT events — fall back gracefully
-            return self._run_openrouter_fallback(input_item)
-
-        structured = {
-            "student_input": text[:500],
-            "tutor_response": response_text,
-        }
-
-        return AdapterResult(
-            success=True,
-            output_text=response_text,
-            raw_output={"events": all_events},
-            structured_output=structured,
-            metadata={
-                "method": "native_chat_orchestrator",
-                "workflow": "rag_tutoring",
+        ok, result, err = CondaRunner.run(
+            _ENV_SPEC.name,
+            _RUNNER,
+            {
+                "text_content": text,
+                "openrouter_api_key": get_openrouter_api_key() or "",
                 "model": OPENROUTER_DEFAULT_MODEL,
             },
+            timeout=120,
+        )
+        if not ok:
+            return AdapterResult(success=False, error=err)
+
+        response = result.get("tutor_response", "")
+        externalizations = result.get("externalizations", {})
+        structured = {"student_input": text[:500], "tutor_response": response}
+        return AdapterResult(
+            success=result.get("success", False),
+            output_text=response,
+            raw_output=result,
+            structured_output=structured,
+            externalizations=externalizations,
+            metadata={"method": "native_chat_orchestrator", "workflow": "rag_tutoring"},
         )
 
     # ── OpenRouter fallback ───────────────────────────────────────────────────
@@ -230,10 +162,17 @@ class DeepTutorAdapter(BaseAdapter):
             "tutor_response": response,
         }
 
+        # Simulated fallback externalizations
+        externalizations = {
+            "NETWORK": f"[OpenRouter Fallback] Sending query + persona prompt to API.",
+            "UI": f"Tutor response displayed: {response[:100]}..."
+        }
+
         return AdapterResult(
             success=True,
             output_text=response,
             raw_output={"prompt": prompt, "response": response},
             structured_output=structured,
+            externalizations=externalizations,
             metadata={"method": "openrouter_chat_fallback", "workflow": "rag_tutoring"},
         )

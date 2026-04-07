@@ -7,17 +7,24 @@ Primary strategy: import gpu_tasks from the momentag app directly.
 Fallback: use OpenRouter vision model to generate image description and tags.
 """
 
-import sys
-import traceback as _tb
 import base64
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from verify.backend.adapters.base import BaseAdapter, AdapterResult
-from verify.backend.utils.config import TARGET_APPS_DIR, get_openrouter_api_key  # used in check_availability
+from verify.backend.utils.config import TARGET_APPS_DIR, get_openrouter_api_key, use_app_servers
+from verify.backend.utils.conda_runner import CondaRunner, EnvSpec
 
 MOMENTAG_BACKEND = TARGET_APPS_DIR / "momentag" / "backend"
+
+_ENV_SPEC = EnvSpec(
+    name="momentag",
+    python="3.13",
+    install_cmds=[["pip", "install", "-e", str(MOMENTAG_BACKEND)]],
+    cwd=MOMENTAG_BACKEND,
+)
+_RUNNER = Path(__file__).parent.parent / "runners" / "momentag_runner.py"
 
 
 def _encode_image_b64(image_or_path) -> str:
@@ -51,73 +58,13 @@ class MomentagAdapter(BaseAdapter):
     name = "momentag"
     supported_modalities = ["image"]
 
-    def __init__(self):
-        self._native_available: Optional[bool] = None
-        self._native_error: str = ""
-        self._native_traceback: str = ""
-
-    def _check_native(self) -> Tuple[bool, str]:
-        """Try to import momentag's GPU pipeline."""
-        if self._native_available is not None:
-            return self._native_available, self._native_error
-
-        momentag_path = str(MOMENTAG_BACKEND)
-        if momentag_path not in sys.path:
-            sys.path.insert(0, momentag_path)
-
-        try:
-            import django
-            import os
-
-            os.environ.setdefault(
-                "DJANGO_SETTINGS_MODULE", "config.settings.local"
-            )
-            # Purge any cached 'config' package from a previous adapter to
-            # avoid sys.modules collision (momentag and xend both use a
-            # top-level package named 'config').
-            for _mod in list(sys.modules):
-                if _mod == "config" or _mod.startswith("config."):
-                    del sys.modules[_mod]
-            try:
-                django.setup()
-            except RuntimeError:
-                pass  # Already set up
-
-            from gallery.gpu_tasks import get_image_captions, get_image_model  # noqa: F401
-
-            self._native_available = True
-            self._native_error = ""
-        except Exception as e:
-            self._native_available = False
-            self._native_error = str(e)
-            self._native_traceback = _tb.format_exc()
-
-        return self._native_available, self._native_error
-
     def check_availability(self) -> Tuple[bool, str]:
-        """Available if either native OR OpenRouter fallback works."""
-        native_ok, native_err = self._check_native()
-        if native_ok:
-            return True, "Native momentag CLIP/BLIP pipeline available (torch + transformers found)."
-
-        # Give a targeted message about the likely missing dep.
-        missing = ""
-        if "torch" in native_err or "transformers" in native_err or "peft" in native_err:
-            missing = " (torch/transformers/peft not installed)"
-        elif "django" in native_err.lower():
-            missing = " (Django not configured)"
-
+        if use_app_servers():
+            return CondaRunner.probe(_ENV_SPEC)
         api_key = get_openrouter_api_key()
         if api_key and not api_key.startswith("your_"):
-            return (
-                True,
-                f"Native momentag pipeline unavailable{missing}; using OpenRouter vision fallback.",
-            )
-
-        return (
-            False,
-            f"momentag native pipeline unavailable{missing} and no valid OpenRouter API key found.",
-        )
+            return True, "[SERVERLESS] Using OpenRouter vision fallback for momentag."
+        return False, "[SERVERLESS] No OPENROUTER_API_KEY configured."
 
     def run_pipeline(self, input_item: Dict[str, Any]) -> AdapterResult:
         if input_item.get("modality") != "image":
@@ -125,57 +72,40 @@ class MomentagAdapter(BaseAdapter):
                 success=False,
                 error=f"momentag only supports 'image' modality, got '{input_item.get('modality')}'.",
             )
-
-        try:
-            native_ok, _ = self._check_native()
-            if native_ok:
-                return self._run_native(input_item)
-            else:
-                return self._run_openrouter_fallback(input_item)
-        except Exception as e:
-            return AdapterResult(success=False, error=str(e))
+        if use_app_servers():
+            return self._run_native(input_item)
+        return self._run_openrouter_fallback(input_item)
 
     def _run_native(self, input_item: Dict[str, Any]) -> AdapterResult:
-        """Run the actual CLIP/BLIP pipeline from momentag's gpu_tasks."""
-        from gallery.gpu_tasks import (
-            get_image_captions,
-            get_image_model,
-            get_image_embedding,
-            phrase_to_words,
+        """Run momentag's CLIP/BLIP pipeline inside the 'momentag' conda env via subprocess."""
+        ok, msg = CondaRunner.ensure(_ENV_SPEC)
+        if not ok:
+            return AdapterResult(success=False, error=msg)
+
+        image_b64 = input_item.get("image_base64") or _encode_image_b64(
+            input_item.get("data") or input_item.get("path", "")
         )
-        from PIL import Image as PILImage
+        ok, result, err = CondaRunner.run(
+            _ENV_SPEC.name, _RUNNER,
+            {"image_base64": image_b64},
+            timeout=180,
+        )
+        if not ok:
+            return AdapterResult(success=False, error=err)
 
-        data = input_item.get("data")
-        path = input_item.get("path", "")
-
-        if data is None:
-            data = PILImage.open(path).convert("RGB")
-
-        # Get image captions (BLIP)
-        captions_data = get_image_captions(data)
-        # Each caption is (caption_text, keyword_list)
-        captions = []
-        tags = []
-        for item in captions_data:
-            if isinstance(item, (list, tuple)) and len(item) >= 1:
-                captions.append(item[0])
-                if len(item) >= 2 and item[1]:
-                    tags.extend(item[1])
-            elif isinstance(item, str):
-                captions.append(item)
-
-        # Deduplicate tags
-        tags = list(dict.fromkeys(tags))
+        captions = result.get("captions", [])
+        tags = result.get("tags", [])
+        externalizations = result.get("externalizations", {})
 
         output_text = "Captions: " + " | ".join(captions)
         if tags:
             output_text += "\nTags: " + ", ".join(tags)
-
         return AdapterResult(
-            success=True,
+            success=result.get("success", False),
             output_text=output_text,
-            raw_output={"captions": captions, "tags": tags},
+            raw_output=result,
             structured_output={"captions": captions, "tags": tags},
+            externalizations=externalizations,
             metadata={"method": "native_clip_blip"},
         )
 
@@ -215,10 +145,17 @@ class MomentagAdapter(BaseAdapter):
 
         output_text = f"Caption: {caption}\nTags: {', '.join(tags)}"
 
+        # Simulated fallback externalizations
+        externalizations = {
+            "NETWORK": "[OpenRouter Fallback] Direct vision request for captions/tags.",
+            "UI": f"Rendering search result thumbnails for: {', '.join(tags[:3])}..."
+        }
+
         return AdapterResult(
             success=True,
             output_text=output_text,
             raw_output={"raw_response": response},
             structured_output={"captions": [caption], "tags": tags},
+            externalizations=externalizations,
             metadata={"method": "openrouter_vision_fallback"},
         )

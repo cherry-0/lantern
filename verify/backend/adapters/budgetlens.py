@@ -16,20 +16,23 @@ Upcoming datasets: SROIE2019, receipt private-attribute dataset.
 
 import io
 import json
-import os
 import re
-import sys
-import tempfile
-import traceback as _tb
 import base64
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from verify.backend.adapters.base import BaseAdapter, AdapterResult
-from verify.backend.utils.config import TARGET_APPS_DIR, get_openrouter_api_key
+from verify.backend.utils.config import TARGET_APPS_DIR, get_openrouter_api_key, use_app_servers
+from verify.backend.utils.conda_runner import CondaRunner, EnvSpec
 
-# Budget-lens Django project root (the dir that contains budgetlens/settings.py)
 BUDGETLENS_DJANGO_ROOT = TARGET_APPS_DIR / "budget-lens" / "budgetlens"
+
+_ENV_SPEC = EnvSpec(
+    name="budget-lens",
+    python="3.10",
+    install_cmds=[["pip", "install", "-r", str(TARGET_APPS_DIR / "budget-lens" / "requirements.txt")]],
+)
+_RUNNER = Path(__file__).parent.parent / "runners" / "budgetlens_runner.py"
 
 # Expense categories as defined in core/models.py
 BASE_CATEGORIES = [
@@ -90,91 +93,13 @@ class BudgetLensAdapter(BaseAdapter):
     name = "budget-lens"
     supported_modalities = ["image"]
 
-    def __init__(self):
-        self._native_available: Optional[bool] = None
-        self._native_error: str = ""
-        self._native_traceback: str = ""
-
-    # ── Django / native availability ─────────────────────────────────────────
-
-    def _check_native(self) -> Tuple[bool, str]:
-        if self._native_available is not None:
-            return self._native_available, self._native_error
-
-        # core/views.py creates `client = OpenAI()` at module level — the
-        # env vars must be set before the first import so the client picks up
-        # the correct API key and base URL.
-        self._inject_openrouter_env()
-
-        django_root = str(BUDGETLENS_DJANGO_ROOT)
-        if django_root not in sys.path:
-            sys.path.insert(0, django_root)
-
-        try:
-            import django
-            from django.apps import apps as django_apps
-            from django import conf as django_conf
-            from django.utils.functional import empty
-
-            already_configured = (
-                django_conf.settings.configured
-                and os.environ.get("DJANGO_SETTINGS_MODULE") == "budgetlens.settings"
-                and django_apps.ready
-            )
-
-            if not already_configured:
-                # Purge any stale module cache from other adapters
-                for _mod in list(sys.modules):
-                    if _mod in ("budgetlens", "core", "accounts") or \
-                       _mod.startswith("budgetlens.") or \
-                       _mod.startswith("core.") or \
-                       _mod.startswith("accounts."):
-                        del sys.modules[_mod]
-
-                if django_apps.ready or getattr(django_apps, "loading", False):
-                    from collections import defaultdict
-                    django_apps.app_configs = {}
-                    django_apps.all_models = defaultdict(dict)
-                    django_apps.ready = False
-                    django_apps.loading = False # changed here
-                    # Use Django's own sentinel value so LazySettings.configured
-                    # returns False and _setup() is re-run on the next attribute
-                    # access. Setting _wrapped = None (not empty) would make
-                    # .configured return True while the wrapped object is None,
-                    # causing 'NoneType has no attribute LOGGING_CONFIG' errors.
-                    django_conf.settings._wrapped = empty
-
-                os.environ["DJANGO_SETTINGS_MODULE"] = "budgetlens.settings"
-                django.setup()
-
-            from core.views import process_receipt  # noqa: F401
-
-            self._native_available = True
-            self._native_error = ""
-        except Exception as e:
-            self._native_available = False
-            self._native_error = str(e)
-            self._native_traceback = _tb.format_exc()
-
-        return self._native_available, self._native_error
-
     def check_availability(self) -> Tuple[bool, str]:
-        """Available if either native pipeline or OpenRouter fallback works."""
-        native_ok, native_err = self._check_native()
-        if native_ok:
-            return True, "Native budget-lens process_receipt() available."
-
+        if use_app_servers():
+            return CondaRunner.probe(_ENV_SPEC)
         api_key = get_openrouter_api_key()
         if api_key and not api_key.startswith("your_"):
-            return (
-                True,
-                f"Native pipeline unavailable ({native_err}); using OpenRouter vision fallback.",
-            )
-
-        return (
-            False,
-            f"budget-lens native pipeline unavailable ({native_err}) and no valid OpenRouter API key found.",
-        )
+            return True, "[SERVERLESS] Using OpenRouter vision fallback for budget-lens."
+        return False, "[SERVERLESS] No OPENROUTER_API_KEY configured."
 
     # ── Pipeline ──────────────────────────────────────────────────────────────
 
@@ -184,60 +109,47 @@ class BudgetLensAdapter(BaseAdapter):
                 success=False,
                 error=f"budget-lens only supports 'image' modality, got '{input_item.get('modality')}'.",
             )
+        if use_app_servers():
+            return self._run_native(input_item)
+        return self._run_openrouter_fallback(input_item)
 
-        try:
-            native_ok, _ = self._check_native()
-            if native_ok:
-                return self._run_native(input_item)
-            else:
-                return self._run_openrouter_fallback(input_item)
-        except Exception as e:
-            return AdapterResult(success=False, error=str(e))
-
-    # ── Native strategy ───────────────────────────────────────────────────────
+    # ── NATIVE mode ───────────────────────────────────────────────────────────
 
     def _run_native(self, input_item: Dict[str, Any]) -> AdapterResult:
-        """
-        Call budget-lens's process_receipt() directly.
+        """Run budget-lens's process_receipt() inside the 'budget-lens' conda env."""
+        ok, msg = CondaRunner.ensure(_ENV_SPEC)
+        if not ok:
+            return AdapterResult(success=False, error=msg)
 
-        process_receipt() requires a filesystem path, so we write a temp file
-        when only in-memory PIL data is provided.
-        """
-        from core.views import process_receipt
-
-        data = input_item.get("data")
-        path = input_item.get("path", "")
-
-        temp_path: Optional[str] = None
-        if path and Path(path).exists():
-            image_path = path
-        else:
-            image_path = _image_to_temp_file(data)
-            temp_path = image_path
-
-        try:
-            category, expense_date, amount, currency = process_receipt(image_path)
-        finally:
-            if temp_path and os.path.exists(temp_path):
-                os.unlink(temp_path)
-
-        structured = {
-            "category": category,
-            "date": str(expense_date),
-            "amount": float(amount) if amount is not None else None,
-            "currency": currency,
-        }
-        output_text = (
-            f"Category: {category}\n"
-            f"Date: {expense_date}\n"
-            f"Amount: {amount} {currency}"
+        image_b64 = input_item.get("image_base64") or _encode_image_b64(
+            input_item.get("data") or input_item.get("path", "")
         )
+        ok, result, err = CondaRunner.run(
+            _ENV_SPEC.name,
+            _RUNNER,
+            {
+                "image_base64": image_b64,
+                "openrouter_api_key": get_openrouter_api_key() or "",
+            },
+            timeout=90,
+        )
+        if not ok:
+            return AdapterResult(success=False, error=err)
 
+        structured = {k: result.get(k) for k in ("category", "date", "amount", "currency")}
+        externalizations = result.get("externalizations", {})
+
+        output_text = (
+            f"Category: {structured.get('category', 'Unknown')}\n"
+            f"Date: {structured.get('date', 'Unknown')}\n"
+            f"Amount: {structured.get('amount', 'Unknown')} {structured.get('currency', '')}"
+        )
         return AdapterResult(
-            success=True,
+            success=result.get("success", False),
             output_text=output_text,
-            raw_output=structured,
+            raw_output=result,
             structured_output=structured,
+            externalizations=externalizations,
             metadata={"method": "native_process_receipt"},
         )
 
@@ -295,11 +207,21 @@ class BudgetLensAdapter(BaseAdapter):
         if merchant_address:
             output_text += f"\nAddress: {merchant_address}"
 
+        # Simulated fallback externalizations
+        externalizations = {
+            "NETWORK": (
+                f"[OpenRouter Fallback] Sending receipt image (base64) for extraction. \n"
+                f"[Merchant Search] Searching for {merchant_name} at {merchant_address}."
+            ),
+            "UI": f"Dashboard display: {output_text}"
+        }
+
         return AdapterResult(
             success=True,
             output_text=output_text,
             raw_output={"raw_response": raw_response, "parsed": structured},
             structured_output=structured,
+            externalizations=externalizations,
             metadata={"method": "openrouter_vision_fallback"},
         )
 

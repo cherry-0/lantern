@@ -16,15 +16,22 @@ Fallback: direct OpenRouter chat call (same model, same prompt) if the llm-vtube
 package is not importable.
 """
 
-import sys
-import traceback as _tb
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Tuple
 
 from verify.backend.adapters.base import BaseAdapter, AdapterResult, OPENROUTER_DEFAULT_MODEL
-from verify.backend.utils.config import TARGET_APPS_DIR, get_openrouter_api_key
+from verify.backend.utils.config import TARGET_APPS_DIR, get_openrouter_api_key, use_app_servers
+from verify.backend.utils.conda_runner import CondaRunner, EnvSpec
 
 LLMVTUBER_SRC = TARGET_APPS_DIR / "llm-vtuber" / "src"
+LLMVTUBER_ROOT = TARGET_APPS_DIR / "llm-vtuber"
+
+_ENV_SPEC = EnvSpec(
+    name="llm-vtuber",
+    python="3.11",
+    install_cmds=[["pip", "install", "-e", str(LLMVTUBER_ROOT)]],
+)
+_RUNNER = Path(__file__).parent.parent / "runners" / "llmvtuber_runner.py"
 
 # VTuber character system prompt — mirrors the default persona in llm-vtuber
 _VTUBER_SYSTEM = (
@@ -49,51 +56,13 @@ class LLMVTuberAdapter(BaseAdapter):
     name = "llm-vtuber"
     supported_modalities = ["text"]
 
-    def __init__(self):
-        self._native_available: Optional[bool] = None
-        self._native_error: str = ""
-        self._native_traceback: str = ""
-
-    # ── Native availability ───────────────────────────────────────────────────
-
-    def _check_native(self) -> Tuple[bool, str]:
-        """
-        Try to import AsyncLLM from the llm-vtuber source tree.
-        loguru must be importable (it is a listed dependency of the project).
-        """
-        if self._native_available is not None:
-            return self._native_available, self._native_error
-
-        src_path = str(LLMVTUBER_SRC)
-        if src_path not in sys.path:
-            sys.path.insert(0, src_path)
-
-        try:
-            from open_llm_vtuber.agent.stateless_llm.openai_compatible_llm import AsyncLLM  # noqa: F401
-            self._native_available = True
-            self._native_error = ""
-        except Exception as e:
-            self._native_available = False
-            self._native_error = str(e)
-            self._native_traceback = _tb.format_exc()
-
-        return self._native_available, self._native_error
-
     def check_availability(self) -> Tuple[bool, str]:
-        native_ok, native_err = self._check_native()
-        if native_ok:
-            return True, "Native llm-vtuber AsyncLLM available; routing via OpenRouter."
-
+        if use_app_servers():
+            return CondaRunner.probe(_ENV_SPEC)
         api_key = get_openrouter_api_key()
         if api_key and not api_key.startswith("your_"):
-            return (
-                True,
-                f"Native llm-vtuber import unavailable ({native_err}); using OpenRouter chat fallback.",
-            )
-        return (
-            False,
-            f"llm-vtuber native import unavailable ({native_err}) and no valid OpenRouter API key.",
-        )
+            return True, "[SERVERLESS] Using OpenRouter chat fallback for llm-vtuber."
+        return False, "[SERVERLESS] No OPENROUTER_API_KEY configured."
 
     # ── Pipeline ──────────────────────────────────────────────────────────────
 
@@ -103,73 +72,51 @@ class LLMVTuberAdapter(BaseAdapter):
                 success=False,
                 error=f"llm-vtuber only supports 'text' modality, got '{input_item.get('modality')}'.",
             )
+        if use_app_servers():
+            return self._run_native(input_item)
+        return self._run_openrouter_fallback(input_item)
 
-        native_ok, _ = self._check_native()
-        try:
-            if native_ok:
-                return self._run_native(input_item)
-            else:
-                return self._run_openrouter_fallback(input_item)
-        except Exception as e:
-            return AdapterResult(success=False, error=str(e))
-
-    # ── Native path: AsyncLLM ─────────────────────────────────────────────────
+    # ── NATIVE mode ───────────────────────────────────────────────────────────
 
     def _run_native(self, input_item: Dict[str, Any]) -> AdapterResult:
-        """
-        Use llm-vtuber's own AsyncLLM class to call the LLM, pointed at OpenRouter.
-
-        This exercises the exact client code the app uses in production for the
-        chat-completion step of Workflow 1.
-        """
-        from open_llm_vtuber.agent.stateless_llm.openai_compatible_llm import AsyncLLM
-
-        api_key = get_openrouter_api_key()
-        if not api_key or api_key.startswith("your_"):
-            return AdapterResult(success=False, error="No valid OpenRouter API key.")
+        """Run llm-vtuber's AsyncLLM inside the 'llm-vtuber' conda env via subprocess."""
+        ok, msg = CondaRunner.ensure(_ENV_SPEC)
+        if not ok:
+            return AdapterResult(success=False, error=msg)
 
         data = input_item.get("data", "")
-        if not isinstance(data, str):
-            data = str(data)
-        user_message = data.strip()
+        user_message = str(data).strip() if data else ""
         if not user_message:
             return AdapterResult(success=False, error="Empty text input.")
 
-        llm = AsyncLLM(
-            model=OPENROUTER_DEFAULT_MODEL,
-            base_url="https://openrouter.ai/api/v1",
-            llm_api_key=api_key,
-            temperature=1.0,
+        ok, result, err = CondaRunner.run(
+            _ENV_SPEC.name,
+            _RUNNER,
+            {
+                "text_content": user_message,
+                "openrouter_api_key": get_openrouter_api_key() or "",
+                "model": OPENROUTER_DEFAULT_MODEL,
+            },
+            timeout=90,
         )
+        if not ok:
+            return AdapterResult(success=False, error=err)
 
-        messages = [{"role": "user", "content": user_message}]
-
-        async def _collect() -> str:
-            parts = []
-            async for chunk in llm.chat_completion(messages, system=_VTUBER_SYSTEM):
-                if isinstance(chunk, str):
-                    parts.append(chunk)
-                # ToolCallObject chunks are skipped — no tool use in this context
-            return "".join(parts)
-
-        response = self._run_async(_collect())
+        response = result.get("character_response", "")
+        externalizations = result.get("externalizations", {})
 
         structured = {
             "user_message": user_message[:500],
             "character_response": response,
             "character_name": "Shizuku",
         }
-
         return AdapterResult(
-            success=True,
+            success=result.get("success", False),
             output_text=response,
-            raw_output={"user_message": user_message, "response": response},
+            raw_output=result,
             structured_output=structured,
-            metadata={
-                "method": "native_async_llm",
-                "workflow": "vtuber_llm_chat",
-                "model": OPENROUTER_DEFAULT_MODEL,
-            },
+            externalizations=externalizations,
+            metadata={"method": "native_async_llm", "workflow": "vtuber_llm_chat"},
         )
 
     # ── OpenRouter fallback ───────────────────────────────────────────────────
@@ -196,11 +143,22 @@ class LLMVTuberAdapter(BaseAdapter):
             "character_name": "Shizuku",
         }
 
+        # Simulated fallback externalizations
+        externalizations = {
+            "NETWORK": (
+                f"[STT Fallback] Audio converted to text: {user_message}. \n"
+                f"[LLM Fallback] Request sent to OpenRouter. Prompt: {prompt}. \n"
+                f"[TTS Fallback] Response being read: {response}"
+            ),
+            "UI": f"Fallback Character Shizuku speaking: {response}"
+        }
+
         return AdapterResult(
             success=True,
             output_text=response,
             raw_output={"user_message": user_message, "response": response},
             structured_output=structured,
+            externalizations=externalizations,
             metadata={
                 "method": "openrouter_chat_fallback",
                 "workflow": "vtuber_interaction",
