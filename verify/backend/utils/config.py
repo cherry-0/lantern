@@ -96,6 +96,18 @@ def get_openrouter_api_key() -> Optional[str]:
     return get_env("OPENROUTER_API_KEY") or get_env("OPENROUTER_KEY")
 
 
+def is_debug() -> bool:
+    """
+    Return True when DEBUG=true is set in .env or environment.
+
+    Controls externalization fallback behaviour in serverless adapters:
+      True  → placeholder "example output" when no real data is captured
+      False → realistic-looking hardcoded strings (default)
+    """
+    val = get_env("DEBUG", "false") or "false"
+    return val.strip().lower() in ("1", "true", "yes")
+
+
 def use_app_servers() -> bool:
     """
     Return True when USE_APP_SERVERS is set to a truthy value in .env or environment.
