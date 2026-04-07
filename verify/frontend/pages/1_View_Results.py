@@ -430,6 +430,72 @@ def _render_aggregated_chart(items: list, attributes: list):
     st.caption("Average inferability score across all items (lower is better after perturbation).")
 
 
+def _get_cache_dir_for_run(run_config: dict) -> Path | None:
+    """Reconstruct the cache directory path from a run config dict."""
+    try:
+        import hashlib
+        parts = {
+            "app": run_config.get("app_name", ""),
+            "dataset": run_config.get("dataset_name", ""),
+            "modality": run_config.get("modality", ""),
+            "attributes": sorted(run_config.get("attributes", [])),
+            "perturbation": run_config.get("perturbation_method", ""),
+            "evaluation": run_config.get("evaluation_method", "openrouter"),
+        }
+        payload = json.dumps(parts, sort_keys=True)
+        key = hashlib.sha256(payload.encode()).hexdigest()[:16]
+        outputs_root = LANTERN_ROOT / "verify" / "outputs"
+        candidate = outputs_root / f"cache_{key}"
+        return candidate if candidate.exists() else None
+    except Exception:
+        return None
+
+
+def _render_delete_section(run_dir: str, run_config: dict):
+    """Render the 'Delete this record' button with confirmation."""
+    import shutil
+
+    st.markdown("#### Danger Zone")
+
+    cache_dir = _get_cache_dir_for_run(run_config)
+    cache_note = f"`{Path(cache_dir).name}`" if cache_dir else "_(no matching cache found)_"
+
+    st.caption(
+        f"This will permanently delete the run directory and its associated cache.\n\n"
+        f"- Run directory: `{Path(run_dir).name}`\n"
+        f"- Cache: {cache_note}"
+    )
+
+    confirmed = st.checkbox("I understand this cannot be undone", key="delete_confirm")
+    if st.button("🗑️ Delete this record", type="primary", disabled=not confirmed):
+        errors = []
+
+        # Delete run directory
+        run_path = Path(run_dir)
+        if run_path.exists():
+            try:
+                shutil.rmtree(run_path)
+            except Exception as e:
+                errors.append(f"Run dir: {e}")
+
+        # Delete cache directory
+        if cache_dir and cache_dir.exists():
+            try:
+                shutil.rmtree(cache_dir)
+            except Exception as e:
+                errors.append(f"Cache dir: {e}")
+
+        if errors:
+            st.error("Deletion completed with errors:\n" + "\n".join(errors))
+        else:
+            st.success("Record deleted successfully.")
+
+        # Clear session state so the page resets
+        for key in ("vr_report", "vr_run_config", "vr_run_dir", "delete_confirm"):
+            st.session_state.pop(key, None)
+        st.rerun()
+
+
 def _list_output_dirs() -> list[Path]:
     """Return all non-cache run directories under verify/outputs/, newest first."""
     outputs_root = LANTERN_ROOT / "verify" / "outputs"
@@ -637,6 +703,10 @@ def main():
 
     for result in items:
         _render_item_result(result, dataset_name, modality, run_dir=run_dir_loaded)
+
+    # ── Delete record ──────────────────────────────────────────────────────
+    st.divider()
+    _render_delete_section(run_dir_loaded, run_config)
 
 
 if __name__ == "__main__":
