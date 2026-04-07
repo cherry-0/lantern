@@ -173,6 +173,7 @@ class BaseAdapter(ABC):
         model: Optional[str] = None,
         max_tokens: int = 1024,
         timeout: int = 60,
+        extra_body: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         Send a prompt to OpenRouter and return the response text.
@@ -215,6 +216,14 @@ class BaseAdapter(ABC):
         else:
             content = prompt
 
+        body: Dict[str, Any] = {
+            "model": used_model,
+            "messages": [{"role": "user", "content": content}],
+            "max_tokens": max_tokens,
+        }
+        if extra_body:
+            body.update(extra_body)
+
         resp = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
             headers={
@@ -223,11 +232,7 @@ class BaseAdapter(ABC):
                 "HTTP-Referer": "https://github.com/Verify",
                 "X-Title": "Verify",
             },
-            json={
-                "model": used_model,
-                "messages": [{"role": "user", "content": content}],
-                "max_tokens": max_tokens,
-            },
+            json=body,
             timeout=timeout,
         )
         resp.raise_for_status()

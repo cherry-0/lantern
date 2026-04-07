@@ -1,0 +1,804 @@
+"""
+Input-Output Comparison — stage-wise privacy attribute exposure analysis.
+
+Compares privacy attribute presence across three stages for each dataset item:
+    1. Input  — binary labels from dataset annotations
+    2. Raw inferred output  — evaluator assessment of the app's output text
+    3. Externalized results — evaluator assessment of externalization channels
+
+Does NOT apply perturbation.  Runs the original app pipeline only.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+from typing import Any, Dict, Generator, List, Optional, Tuple
+
+LANTERN_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+VERIFY_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(LANTERN_ROOT) not in sys.path:
+    sys.path.insert(0, str(LANTERN_ROOT))
+
+import streamlit as st
+
+st.set_page_config(
+    page_title="Input-Output Comparison — Verify",
+    page_icon="🔬",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# ─── Constants ────────────────────────────────────────────────────────────────
+
+KNOWN_APPS = [
+    "momentag", "clone", "snapdo", "xend", "budget-lens",
+    "deeptutor", "llm-vtuber", "skin-disease-detection", "google-ai-edge-gallery",
+]
+
+STAGE_INPUT = "Input"
+STAGE_OUTPUT = "Raw Output"
+STAGE_EXT = "Externalized"
+STAGES = [STAGE_INPUT, STAGE_OUTPUT, STAGE_EXT]
+
+STAGE_COLORS = {
+    STAGE_INPUT: "#5bc0de",
+    STAGE_OUTPUT: "#d9534f",
+    STAGE_EXT: "#f0ad4e",
+}
+
+
+# ─── Config loaders ───────────────────────────────────────────────────────────
+
+@st.cache_data
+def _load_unified_attrs() -> List[str]:
+    path = VERIFY_ROOT / "config" / "attribute_list_unified.txt"
+    if not path.exists():
+        return []
+    return [
+        line.strip()
+        for line in path.read_text().splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+
+
+@st.cache_resource
+def _load_config():
+    from verify.backend.utils.config import load_dataset_list, list_target_apps
+    return {
+        "datasets": load_dataset_list(),
+        "apps": list_target_apps(),
+    }
+
+
+# ─── Pipeline runner ──────────────────────────────────────────────────────────
+
+def _build_ext_text(externalizations: Dict[str, str]) -> str:
+    """Join all externalization channels into a single evaluable string."""
+    if not externalizations:
+        return ""
+    return "\n".join(
+        f"[{channel.upper()}] {content}"
+        for channel, content in externalizations.items()
+    )
+
+
+def run_comparison_pipeline(
+    app_name: str,
+    dataset_name: str,
+    modality: str,
+    unified_attrs: List[str],
+    max_items: Optional[int] = None,
+) -> Generator[Dict[str, Any], None, None]:
+    """
+    Generator that yields one result dict per dataset item.
+
+    Result dict schema:
+        filename        str
+        status          "success" | "failed"
+        error           str | None
+        modality        str
+        input_item      dict              — full loader item
+        input_labels    dict[str, int]    — binary, from label_mapper
+        output_text     str
+        externalizations dict[str, str]
+        ext_text        str               — joined externalization channels
+        output_eval     dict[str, {...}]  — evaluator results for raw output
+        ext_eval        dict[str, {...}]  — evaluator results for externalizations
+        output_eval_ok  bool
+        ext_eval_ok     bool
+        output_eval_error str | None
+        ext_eval_error  str | None
+    """
+    from verify.backend.adapters import get_adapter
+    from verify.backend.datasets.loader import iter_dataset
+    from verify.backend.datasets.label_mapper import get_input_labels
+    from verify.backend.evaluation_method.evaluator import evaluate_inferability
+
+    adapter = get_adapter(app_name)
+    if adapter is None:
+        yield {"type": "error", "error": f"No adapter registered for '{app_name}'."}
+        return
+
+    for ok, item, err in iter_dataset(dataset_name, modality, max_items=max_items):
+        filename = item.get("filename", "unknown")
+
+        if not ok:
+            yield {
+                "filename": filename,
+                "status": "failed",
+                "error": err or "Dataset load error",
+                "modality": modality,
+                "input_item": item,
+                "input_labels": {},
+                "output_text": "",
+                "externalizations": {},
+                "ext_text": "",
+                "output_eval": {},
+                "ext_eval": {},
+                "output_eval_ok": False,
+                "ext_eval_ok": False,
+                "output_eval_error": None,
+                "ext_eval_error": None,
+            }
+            continue
+
+        # 1. Map input labels
+        input_labels = get_input_labels(item, unified_attrs)
+
+        # 2. Run app pipeline (original only, no perturbation)
+        try:
+            adapter._reset_openrouter_calls()
+            result = adapter.run_pipeline(item)
+        except Exception as e:
+            yield {
+                "filename": filename,
+                "status": "failed",
+                "error": f"Pipeline error: {e}",
+                "modality": modality,
+                "input_item": item,
+                "input_labels": input_labels,
+                "output_text": "",
+                "externalizations": {},
+                "ext_text": "",
+                "output_eval": {},
+                "ext_eval": {},
+                "output_eval_ok": False,
+                "ext_eval_ok": False,
+                "output_eval_error": None,
+                "ext_eval_error": None,
+            }
+            continue
+
+        if not result.success:
+            yield {
+                "filename": filename,
+                "status": "failed",
+                "error": result.error or "Adapter returned failure.",
+                "modality": modality,
+                "input_item": item,
+                "input_labels": input_labels,
+                "output_text": "",
+                "externalizations": {},
+                "ext_text": "",
+                "output_eval": {},
+                "ext_eval": {},
+                "output_eval_ok": False,
+                "ext_eval_ok": False,
+                "output_eval_error": None,
+                "ext_eval_error": None,
+            }
+            continue
+
+        output_text = result.output_text or ""
+        externalizations = result.externalizations or {}
+        ext_text = _build_ext_text(externalizations)
+
+        # 3. Evaluate raw output
+        out_ok, out_eval, out_err = evaluate_inferability(output_text, unified_attrs)
+
+        # 4. Evaluate externalized results (skip if empty)
+        if ext_text.strip():
+            ext_ok, ext_eval, ext_err = evaluate_inferability(ext_text, unified_attrs)
+        else:
+            ext_ok, ext_eval, ext_err = True, {}, None
+
+        yield {
+            "filename": filename,
+            "status": "success",
+            "error": None,
+            "modality": modality,
+            "input_item": item,
+            "input_labels": input_labels,
+            "output_text": output_text,
+            "externalizations": externalizations,
+            "ext_text": ext_text,
+            "output_eval": out_eval,
+            "ext_eval": ext_eval,
+            "output_eval_ok": out_ok,
+            "ext_eval_ok": ext_ok,
+            "output_eval_error": out_err,
+            "ext_eval_error": ext_err,
+        }
+
+
+# ─── Visualization helpers ────────────────────────────────────────────────────
+
+def _display_image(b64_str: str | None, data=None):
+    try:
+        if b64_str:
+            import base64, io
+            from PIL import Image as PILImage
+            img = PILImage.open(io.BytesIO(base64.b64decode(b64_str)))
+            st.image(img, use_container_width=True)
+        elif data is not None:
+            st.image(data, use_container_width=True)
+        else:
+            st.warning("No image available.")
+    except Exception as e:
+        st.error(f"Could not display image: {e}")
+
+
+def _attr_badges_vertical(
+    attrs: List[str],
+    color: str = "#5bc0de",
+    empty_msg: str = "None",
+):
+    """Show a list of attribute names as vertical stacked coloured badges."""
+    if not attrs:
+        st.caption(empty_msg)
+        return
+    st.markdown(
+        "".join(
+            f'<div style="margin:3px 0">'
+            f'<span style="background:{color};color:white;padding:4px 12px;'
+            f'border-radius:5px;font-size:0.88em;display:inline-block">{a}</span>'
+            f"</div>"
+            for a in attrs
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def _input_label_badges(input_labels: Dict[str, int], unified_attrs: List[str]):
+    """Show positive input attributes as vertical coloured badges."""
+    positives = [a for a in unified_attrs if input_labels.get(a, 0) == 1]
+    _attr_badges_vertical(positives, color="#5bc0de", empty_msg="No annotated attributes.")
+
+
+def _stage_table(
+    input_labels: Dict[str, int],
+    output_eval: Dict[str, Any],
+    ext_eval: Dict[str, Any],
+    unified_attrs: List[str],
+):
+    """
+    Full-width HTML table: attribute × 3 stages.
+    Cells with a positive result show ✅ on a light-green background.
+    """
+    _CHECK = "✅"
+    _BG_YES = "background:#d4f5d4;"
+    _BG_NO = "background:#fafafa;"
+    _TD_BASE = (
+        "text-align:center;padding:6px 10px;border:1px solid #e0e0e0;"
+        "font-size:0.95em;width:18%;"
+    )
+    _TH_BASE = (
+        "text-align:center;padding:7px 10px;border:1px solid #d0d0d0;"
+        "background:#f0f0f0;font-size:0.9em;font-weight:600;"
+    )
+    _ATTR_TD = (
+        "text-align:left;padding:6px 12px;border:1px solid #e0e0e0;"
+        "font-size:0.95em;font-weight:500;width:46%;"
+    )
+
+    rows_html = []
+    for attr in unified_attrs:
+        in_val = input_labels.get(attr, 0) == 1
+        out_entry = output_eval.get(attr, {})
+        out_val = isinstance(out_entry, dict) and bool(out_entry.get("inferable"))
+        ext_entry = ext_eval.get(attr, {})
+        ext_val = isinstance(ext_entry, dict) and bool(ext_entry.get("inferable"))
+
+        def cell(flag: bool) -> str:
+            bg = _BG_YES if flag else _BG_NO
+            content = _CHECK if flag else ""
+            return f'<td style="{_TD_BASE}{bg}">{content}</td>'
+
+        rows_html.append(
+            f'<tr>'
+            f'<td style="{_ATTR_TD}">{attr}</td>'
+            f'{cell(in_val)}{cell(out_val)}{cell(ext_val)}'
+            f'</tr>'
+        )
+
+    table_html = f"""
+<table style="width:100%;border-collapse:collapse;margin-top:6px">
+  <thead>
+    <tr>
+      <th style="{_TH_BASE}text-align:left;width:46%">Attribute</th>
+      <th style="{_TH_BASE}width:18%">{STAGE_INPUT}</th>
+      <th style="{_TH_BASE}width:18%">{STAGE_OUTPUT}</th>
+      <th style="{_TH_BASE}width:18%">{STAGE_EXT}</th>
+    </tr>
+  </thead>
+  <tbody>
+    {"".join(rows_html)}
+  </tbody>
+</table>
+"""
+    st.markdown(table_html, unsafe_allow_html=True)
+
+
+def _reasoning_expander(
+    output_eval: Dict[str, Any],
+    ext_eval: Dict[str, Any],
+    unified_attrs: List[str],
+    key_suffix: str = "",
+):
+    """Collapsible reasoning panel: one row per attribute, side-by-side output vs ext."""
+    with st.expander("Reasoning details", expanded=False):
+        col_out, col_ext = st.columns(2)
+        with col_out:
+            st.markdown(f"**{STAGE_OUTPUT}**")
+            for attr in unified_attrs:
+                entry = output_eval.get(attr)
+                if not isinstance(entry, dict):
+                    continue
+                icon = "🔴" if entry.get("inferable") else "🟢"
+                reason = entry.get("reasoning", "—")
+                st.markdown(
+                    f'{icon} <span style="font-size:0.9em"><b>{attr}</b></span>',
+                    unsafe_allow_html=True,
+                )
+                st.caption(reason)
+        with col_ext:
+            st.markdown(f"**{STAGE_EXT}**")
+            if not ext_eval:
+                st.caption("No externalizations captured.")
+            else:
+                for attr in unified_attrs:
+                    entry = ext_eval.get(attr)
+                    if not isinstance(entry, dict):
+                        continue
+                    icon = "🔴" if entry.get("inferable") else "🟢"
+                    reason = entry.get("reasoning", "—")
+                    st.markdown(
+                        f'{icon} <span style="font-size:0.9em"><b>{attr}</b></span>',
+                        unsafe_allow_html=True,
+                    )
+                    st.caption(reason)
+
+
+def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
+    """Render one per-item expander."""
+    filename = result["filename"]
+    status = result["status"]
+    modality = result["modality"]
+    input_item = result.get("input_item", {})
+
+    status_icon = {"success": "✅", "failed": "❌"}.get(status, "")
+
+    # Build expander title suffix from input labels
+    positives = [a for a in unified_attrs if result.get("input_labels", {}).get(a, 0) == 1]
+    label_suffix = f"  —  🏷 {', '.join(positives)}" if positives else ""
+    # Also show data_type for PrivacyLens items
+    data_type = input_item.get("data_type", "")
+    if data_type and not positives:
+        label_suffix = f"  —  📄 {data_type}"
+
+    with st.expander(f"{status_icon} {filename}{label_suffix}", expanded=(status == "failed")):
+        if status == "failed":
+            st.error(f"Error: {result.get('error', 'Unknown error')}")
+            return
+
+        # ── Top row: Input (left) | Outputs (right) ──────────────────────
+        col_in, col_out = st.columns([1, 2])
+
+        with col_in:
+            st.markdown("**Input**")
+            if modality == "image":
+                _display_image(input_item.get("image_base64"), input_item.get("data"))
+            elif modality == "text":
+                text = input_item.get("text_content", "")
+                st.text_area(
+                    "", value=text, height=220, disabled=True,
+                    label_visibility="collapsed",
+                    key=f"ioc_input_text_{idx}",
+                )
+            else:
+                frames = input_item.get("data") or []
+                if frames:
+                    cols = st.columns(min(len(frames), 2))
+                    for c, f in zip(cols, frames[:2]):
+                        with c:
+                            st.image(f, use_container_width=True)
+                else:
+                    st.info("No media available.")
+
+            st.caption("**Annotated attributes:**")
+            # _input_label_badges(result.get("input_labels", {}), unified_attrs)
+
+        with col_out:
+            out_col, ext_col = st.columns(2)
+
+            with out_col:
+                st.markdown(f"**{STAGE_OUTPUT}**")
+                output_text = result.get("output_text", "")
+                st.text_area(
+                    "", value=output_text, height=200, disabled=True,
+                    label_visibility="collapsed",
+                    key=f"ioc_out_{idx}",
+                )
+                # Inferred attributes (vertical badges)
+                st.markdown(
+                    '<span style="font-size:0.85em;color:#888">Inferred attributes:</span>',
+                    unsafe_allow_html=True,
+                )
+                out_inferred = [
+                    a for a in unified_attrs
+                    if isinstance(result.get("output_eval", {}).get(a), dict)
+                    and result["output_eval"][a].get("inferable")
+                ]
+                # _attr_badges_vertical(out_inferred, color="#d9534f", empty_msg="None inferred")
+
+            with ext_col:
+                st.markdown(f"**{STAGE_EXT}**")
+                ext_text = result.get("ext_text", "")
+                if ext_text.strip():
+                    st.text_area(
+                        "", value=ext_text, height=200, disabled=True,
+                        label_visibility="collapsed",
+                        key=f"ioc_ext_{idx}",
+                    )
+                else:
+                    st.text_area(
+                        "", value="No externalizations captured.", height=200,
+                        disabled=True, label_visibility="collapsed",
+                        key=f"ioc_ext_{idx}",
+                    )
+                # Inferred attributes (vertical badges)
+                st.markdown(
+                    '<span style="font-size:0.85em;color:#888">Inferred attributes:</span>',
+                    unsafe_allow_html=True,
+                )
+                ext_inferred = [
+                    a for a in unified_attrs
+                    if isinstance(result.get("ext_eval", {}).get(a), dict)
+                    and result["ext_eval"][a].get("inferable")
+                ]
+                # _attr_badges_vertical(ext_inferred, color="#f0ad4e", empty_msg="None inferred")
+
+        st.divider()
+
+        # ── Heatmap: 3 stages × N attributes ─────────────────────────────
+        st.markdown("**Stage-wise attribute presence**")
+
+        if result.get("output_eval_error"):
+            st.warning(f"Output evaluation error: {result['output_eval_error']}")
+        if result.get("ext_eval_error"):
+            st.warning(f"Externalization evaluation error: {result['ext_eval_error']}")
+
+        _stage_table(
+            result.get("input_labels", {}),
+            result.get("output_eval", {}),
+            result.get("ext_eval", {}),
+            unified_attrs,
+        )
+
+        # ── Reasoning ─────────────────────────────────────────────────────
+        _reasoning_expander(
+            result.get("output_eval", {}),
+            result.get("ext_eval", {}),
+            unified_attrs,
+            key_suffix=str(idx),
+        )
+
+
+def _render_aggregated(all_results: List[Dict[str, Any]], unified_attrs: List[str]):
+    """
+    Attribute-wise positive rate across all items for the three stages.
+    Positive rate = fraction of items where the attribute was marked 1 / inferable.
+    """
+    import pandas as pd
+    import altair as alt
+
+    success = [r for r in all_results if r.get("status") == "success"]
+    if not success:
+        st.info("No successful items to aggregate.")
+        return
+
+    n = len(success)
+    rows = []
+    for attr in unified_attrs:
+        input_rate = sum(
+            r.get("input_labels", {}).get(attr, 0) for r in success
+        ) / n
+
+        out_rate = sum(
+            1 if (
+                isinstance(r.get("output_eval", {}).get(attr), dict)
+                and r["output_eval"][attr].get("inferable")
+            ) else 0
+            for r in success
+        ) / n
+
+        ext_rate = sum(
+            1 if (
+                isinstance(r.get("ext_eval", {}).get(attr), dict)
+                and r["ext_eval"][attr].get("inferable")
+            ) else 0
+            for r in success
+        ) / n
+
+        rows += [
+            {"Attribute": attr, "Stage": STAGE_INPUT, "Positive Rate": input_rate},
+            {"Attribute": attr, "Stage": STAGE_OUTPUT, "Positive Rate": out_rate},
+            {"Attribute": attr, "Stage": STAGE_EXT, "Positive Rate": ext_rate},
+        ]
+
+    df = pd.DataFrame(rows)
+
+    chart = (
+        alt.Chart(df)
+        .mark_bar()
+        .encode(
+            x=alt.X("Attribute:N", sort=unified_attrs,
+                    axis=alt.Axis(labelAngle=-40, labelFontSize=10)),
+            xOffset=alt.XOffset("Stage:N", sort=STAGES),
+            y=alt.Y("Positive Rate:Q", scale=alt.Scale(domain=[0, 1]),
+                    title="Positive rate"),
+            color=alt.Color(
+                "Stage:N",
+                sort=STAGES,
+                scale=alt.Scale(
+                    domain=STAGES,
+                    range=[STAGE_COLORS[s] for s in STAGES],
+                ),
+            ),
+            tooltip=["Attribute", "Stage", alt.Tooltip("Positive Rate:Q", format=".2f")],
+        )
+        .properties(
+            height=280,
+            title=f"Attribute-wise positive rate across {n} item(s)",
+        )
+    )
+    st.altair_chart(chart, use_container_width=True)
+    st.caption(
+        f"Blue = Input annotation positive rate · "
+        f"Red = Raw output inferability rate · "
+        f"Amber = Externalized result inferability rate"
+    )
+
+
+# ─── Main UI ──────────────────────────────────────────────────────────────────
+
+def main():
+    st.title("🔬 Input-Output Comparison")
+    st.markdown(
+        "Stage-wise comparison of privacy attribute exposure: "
+        "**Input** (dataset labels) → **Raw Output** (app inference) → "
+        "**Externalized** (network/storage/logging channels)."
+    )
+
+    config = _load_config()
+    unified_attrs = _load_unified_attrs()
+    datasets = config["datasets"]
+    all_apps = config["apps"]
+
+    recognized_apps = [a for a in all_apps if a in KNOWN_APPS]
+    other_apps = [a for a in all_apps if a not in KNOWN_APPS]
+
+    # ── Sidebar ───────────────────────────────────────────────────────────────
+    with st.sidebar:
+        st.header("Configuration")
+
+        # App
+        st.subheader("Target App")
+        app_options = recognized_apps + [f"{a} (unrecognized)" for a in other_apps]
+        if not app_options:
+            st.error("No target apps found in target-apps/.")
+            return
+        selected_app_display = st.selectbox("App", app_options, key="ioc_app")
+        selected_app = selected_app_display.split(" (")[0]
+
+        # Check adapter availability
+        if selected_app in KNOWN_APPS:
+            try:
+                from verify.backend.adapters import get_adapter
+                adapter = get_adapter(selected_app)
+                if adapter:
+                    avail, msg = adapter.check_availability()
+                    if avail:
+                        st.success(f"Available: {msg}")
+                    else:
+                        st.error(f"Unavailable: {msg}")
+                    app_available = avail
+                else:
+                    st.error("No adapter registered.")
+                    app_available = False
+            except Exception as e:
+                st.error(f"Adapter check error: {e}")
+                app_available = False
+        else:
+            app_available = False
+            st.warning("Unrecognized app — no adapter available.")
+
+        st.divider()
+
+        # Dataset
+        st.subheader("Dataset")
+        if not datasets:
+            st.error("No datasets in config/dataset_list.txt.")
+            return
+        selected_dataset = st.selectbox("Dataset", datasets, key="ioc_dataset")
+
+        st.divider()
+
+        # Modality
+        st.subheader("Modality")
+        selected_modality = st.selectbox(
+            "Modality", ["image", "text", "video"], key="ioc_modality"
+        )
+
+        st.divider()
+
+        # Unified attributes
+        st.subheader("Attributes")
+        if not unified_attrs:
+            st.warning("attribute_list_unified.txt not found or empty.")
+        else:
+            st.caption(f"{len(unified_attrs)} unified attributes loaded.")
+            st.markdown(", ".join(f"`{a}`" for a in unified_attrs))
+
+        st.divider()
+
+        # Item limit
+        st.subheader("Item Limit")
+        limit_enabled = st.checkbox("Limit items", value=True, key="ioc_limit_en")
+        max_items = None
+        if limit_enabled:
+            max_items = int(
+                st.number_input("Max items", min_value=1, value=5, step=1, key="ioc_max")
+            )
+
+        st.divider()
+
+        run_clicked = st.button(
+            "▶ Run Comparison",
+            type="primary",
+            disabled=not (app_available and unified_attrs),
+            use_container_width=True,
+        )
+        if not app_available:
+            st.caption(f"App '{selected_app}' is not available.")
+        if not unified_attrs:
+            st.caption("No attributes configured.")
+
+    # ── Session state ─────────────────────────────────────────────────────────
+    for key, default in [
+        ("ioc_results", []),
+        ("ioc_processing", False),
+        ("ioc_items_processed", 0),
+        ("ioc_items_total", 0),
+        ("ioc_run_config", {}),
+        ("ioc_current_item", ""),
+    ]:
+        if key not in st.session_state:
+            st.session_state[key] = default
+
+    # Start a new run
+    if run_clicked:
+        st.session_state.ioc_results = []
+        st.session_state.ioc_processing = True
+        st.session_state.ioc_items_processed = 0
+        st.session_state.ioc_current_item = ""
+        st.session_state.ioc_run_config = {
+            "app": selected_app,
+            "dataset": selected_dataset,
+            "modality": selected_modality,
+            "max_items": max_items,
+        }
+
+        from verify.frontend.utils import count_dataset_items
+        total = count_dataset_items(selected_dataset, selected_modality)
+        st.session_state.ioc_items_total = (
+            min(total, max_items) if max_items else total
+        )
+
+        st.session_state["_ioc_generator"] = run_comparison_pipeline(
+            app_name=selected_app,
+            dataset_name=selected_dataset,
+            modality=selected_modality,
+            unified_attrs=unified_attrs,
+            max_items=max_items,
+        )
+        st.rerun()
+
+    # Process one item per rerun
+    if st.session_state.ioc_processing and "_ioc_generator" in st.session_state:
+        gen = st.session_state["_ioc_generator"]
+        try:
+            item = next(gen)
+
+            if isinstance(item, dict) and item.get("type") == "error":
+                st.error(f"Pipeline error: {item.get('error')}")
+                st.session_state.ioc_processing = False
+            else:
+                st.session_state.ioc_results.append(item)
+                st.session_state.ioc_items_processed += 1
+                st.session_state.ioc_current_item = item.get("filename", "")
+            st.rerun()
+
+        except StopIteration:
+            st.session_state.ioc_processing = False
+            st.session_state.pop("_ioc_generator", None)
+            st.rerun()
+        except Exception as e:
+            st.error(f"Unexpected error: {e}")
+            st.session_state.ioc_processing = False
+            st.rerun()
+
+    # ── Display ───────────────────────────────────────────────────────────────
+
+    # Progress
+    if st.session_state.ioc_processing:
+        rc = st.session_state.ioc_run_config
+        processed = st.session_state.ioc_items_processed
+        total = st.session_state.ioc_items_total
+        current = st.session_state.ioc_current_item
+
+        st.markdown(
+            f"**{rc.get('app')}** · {rc.get('dataset')} · {rc.get('modality')}"
+        )
+        if total > 0:
+            st.progress(
+                min(processed / total, 1.0),
+                text=f"Item {processed} / {total}"
+                + (f"  —  `{current}`" if current else ""),
+            )
+        else:
+            st.progress(0, text=f"{processed} items processed")
+
+    results = st.session_state.ioc_results
+    if not results and not st.session_state.ioc_processing:
+        st.markdown(
+            """
+            ### How to use this page
+
+            1. Select a **target app** and **dataset** in the sidebar.
+            2. Choose the **modality** that matches the dataset.
+            3. Optionally limit the number of items processed.
+            4. Click **▶ Run Comparison**.
+
+            For each item the page will show:
+            - **Input** image or text with its annotated privacy labels
+            - **Raw app output** and **externalized channel results**
+            - A **heatmap** comparing attribute presence across all three stages
+            - An **aggregated chart** across all items (positive rate per attribute)
+            """
+        )
+        return
+
+    # Aggregated chart (shown while running and after)
+    if results:
+        rc = st.session_state.ioc_run_config
+        n = len(results)
+        st.subheader(
+            f"Results — {rc.get('app', '')} / {rc.get('dataset', '')} "
+            f"/ {rc.get('modality', '')} ({n} item{'s' if n != 1 else ''})"
+        )
+
+        if not st.session_state.ioc_processing:
+            st.divider()
+            st.subheader("Aggregated Attribute-wise Positive Rate")
+            _render_aggregated(results, unified_attrs)
+
+        # Per-item results
+        st.divider()
+        for idx, result in enumerate(results):
+            _render_item(result, unified_attrs, idx)
+
+
+if __name__ == "__main__":
+    main()

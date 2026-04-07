@@ -174,7 +174,14 @@ class SnapdoAdapter(BaseAdapter):
 
         import sys
         try:
-            raw = self._call_openrouter(prompt, image_b64=image_b64, max_tokens=1024)
+            # Disable thinking: thinking models (e.g. Gemini 2.5 Pro) consume
+            # most of max_tokens on internal reasoning, truncating the JSON output.
+            raw = self._call_openrouter(
+                prompt,
+                image_b64=image_b64,
+                max_tokens=2048,
+                extra_body={"thinking": {"type": "disabled"}},
+            )
             match = re.search(r"\{.*\}", raw, re.DOTALL)
             if match:
                 parsed = json.loads(match.group())
