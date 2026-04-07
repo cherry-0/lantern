@@ -1,0 +1,27 @@
+# Unified attribute list — union of text and image attribute lists.
+# Text-only attributes: location, identity, marital status
+# Image-only attributes: face, race, nudity, height, weight, disability,
+#   ethnic_clothing, religion, medical, sports, formal, uniforms, casual,
+#   color, haircolor, troupe
+# Shared (both): age, gender
+location
+identity
+marital status
+face
+race
+age
+gender
+nudity
+height
+weight
+disability
+ethnic_clothing
+religion
+medical
+sports
+formal
+uniforms
+casual
+color
+haircolor
+troupe
