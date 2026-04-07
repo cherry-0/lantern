@@ -196,7 +196,10 @@ class CloneAdapter(BaseAdapter):
     def _run_serverless(self, frames: List[Any]) -> AdapterResult:
         """Direct OpenRouter vision call, same prompt as native mode."""
         try:
-            description = self._describe_frames(frames)
+            # Route through _call_openrouter so the call is tracked for externalization capture.
+            # For multi-frame inputs, use only the first frame (single image_b64 parameter).
+            image_b64 = _encode_pil_b64(frames[0])
+            description = self._call_openrouter(_FRAME_PROMPT, image_b64=image_b64, max_tokens=512)
         except Exception as e:
             return AdapterResult(success=False, error=str(e))
 

@@ -206,68 +206,73 @@ def evaluate_inferability(
     if not key or key.startswith("your_"):
         return False, {}, "No valid OpenRouter API key available for evaluation."
 
-    try:
-        import requests
+    import re
+    import requests
 
-        prompt = _build_eval_prompt(output_text, attributes)
+    prompt = _build_eval_prompt(output_text, attributes)
+    last_error: str = ""
 
-        resp = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://github.com/Verify",
-                "X-Title": "Verify",
-            },
-            json={
-                "model": EVAL_MODEL,
-                "messages": [
-                    {"role": "system", "content": EVAL_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                "max_tokens": 1024,
-                "response_format": {"type": "json_object"},
-            },
-            timeout=60,
-        )
-        resp.raise_for_status()
-        raw_content = resp.json()["choices"][0]["message"]["content"].strip()
-
-        # Parse JSON response
+    for attempt in range(5):
         try:
-            results = json.loads(raw_content)
-        except json.JSONDecodeError:
-            # Try to extract JSON from the response if wrapped in markdown
-            import re
+            resp = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://github.com/Verify",
+                    "X-Title": "Verify",
+                },
+                json={
+                    "model": EVAL_MODEL,
+                    "messages": [
+                        {"role": "system", "content": EVAL_SYSTEM_PROMPT},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "max_tokens": 4096,
+                    "response_format": {"type": "json_object"},
+                },
+                timeout=60,
+            )
+            resp.raise_for_status()
+            raw_content = resp.json()["choices"][0]["message"]["content"].strip()
 
-            json_match = re.search(r"\{.*\}", raw_content, re.DOTALL)
-            if json_match:
-                results = json.loads(json_match.group())
-            else:
-                return False, {}, f"Could not parse JSON from evaluator response: {raw_content[:200]}"
+            # Strip control characters that can appear in Gemini responses
+            raw_content = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", raw_content)
 
-        # Normalize results structure
-        normalized: Dict[str, Any] = {}
-        for attr in attributes:
-            if attr in results:
-                entry = results[attr]
-                normalized[attr] = {
-                    "inferable": bool(entry.get("inferable", False)),
-                    "score": float(entry.get("score", 0.5)),
-                    "reasoning": str(entry.get("reasoning", "")),
-                }
-            else:
-                # Attribute missing from response — default to uncertain
-                normalized[attr] = {
-                    "inferable": False,
-                    "score": 0.5,
-                    "reasoning": "Evaluator did not assess this attribute.",
-                }
+            # Parse JSON response
+            try:
+                results = json.loads(raw_content)
+            except json.JSONDecodeError:
+                json_match = re.search(r"\{.*\}", raw_content, re.DOTALL)
+                if json_match:
+                    results = json.loads(json_match.group())
+                else:
+                    last_error = f"Could not parse JSON from evaluator response: {raw_content[:200]}"
+                    continue  # retry
 
-        return True, normalized, None
+            # Normalize results structure
+            normalized: Dict[str, Any] = {}
+            for attr in attributes:
+                if attr in results:
+                    entry = results[attr]
+                    normalized[attr] = {
+                        "inferable": bool(entry.get("inferable", False)),
+                        "score": float(entry.get("score", 0.5)),
+                        "reasoning": str(entry.get("reasoning", "")),
+                    }
+                else:
+                    normalized[attr] = {
+                        "inferable": False,
+                        "score": 0.5,
+                        "reasoning": "Evaluator did not assess this attribute.",
+                    }
 
-    except Exception as e:
-        return False, {}, f"Evaluation API call failed: {e}"
+            return True, normalized, None
+
+        except Exception as e:
+            last_error = f"Evaluation API call failed: {e}"
+
+    return False, {}, last_error
 
 
 def evaluate_both(

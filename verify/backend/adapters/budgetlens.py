@@ -168,7 +168,7 @@ class BudgetLensAdapter(BaseAdapter):
         path = input_item.get("path", "")
         image_b64 = input_item.get("image_base64")
 
-        if image_b64 is None:
+        if not image_b64:
             image_b64 = _encode_image_b64(data if data is not None else path)
 
         prompt = (

@@ -21,7 +21,26 @@ MOMENTAG_BACKEND = TARGET_APPS_DIR / "momentag" / "backend"
 _ENV_SPEC = EnvSpec(
     name="momentag",
     python="3.13",
-    install_cmds=[["pip", "install", "-e", str(MOMENTAG_BACKEND)]],
+    install_cmds=[
+        [
+            "pip",
+            "install",
+            "django==5.2.7",
+            "djangorestframework==3.16.1",
+            "django-environ==0.12.0",
+            "torch==2.8.0",
+            "torchvision==0.23.0",
+            "transformers==4.57.0",
+            "qdrant-client==1.15.1",
+            "pillow==11.3.0",
+            "numpy==2.3.3",
+            "sentence-transformers==5.1.1",
+            "faiss-cpu>=1.12.0",
+            "scikit-learn",
+            "networkx",
+            "python-dotenv",
+        ]
+    ],
     cwd=MOMENTAG_BACKEND,
 )
 _RUNNER = Path(__file__).parent.parent / "runners" / "momentag_runner.py"

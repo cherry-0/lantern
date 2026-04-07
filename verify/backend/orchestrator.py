@@ -313,9 +313,9 @@ class Orchestrator:
             # for image, text attributes for text), so the comparison is always
             # within the same vocabulary — a direct set intersection suffices.
             item_labels: List[str] = (
-                item.get("privacy_labels")           # HR-VISPR / image datasets
-                or item.get("data_type_attributes")  # PrivacyLens text dataset
-                or []
+                item.get("privacy_labels", [])           # HR-VISPR / image datasets
+                + item.get("sroie_entity_attrs", [])     # SROIE mapped attributes
+                + item.get("data_type_attributes", [])  # PrivacyLens text dataset
             )
             if item_labels and not (set(item_labels) & set(self.attributes)):
                 continue  # no overlap — skip
@@ -342,6 +342,8 @@ class Orchestrator:
 
             # --- Step 2: Run pipeline on original input ---
             try:
+                if hasattr(self._adapter, "_reset_openrouter_calls"):
+                    self._adapter._reset_openrouter_calls()
                 orig_result = self._adapter.run_pipeline(item)
             except Exception as e:
                 orig_result = None
@@ -409,6 +411,8 @@ class Orchestrator:
 
             # --- Step 4: Run pipeline on perturbed input ---
             try:
+                if hasattr(self._adapter, "_reset_openrouter_calls"):
+                    self._adapter._reset_openrouter_calls()
                 pert_pipeline_result = self._adapter.run_pipeline(perturbed_item)
             except Exception as e:
                 pert_pipeline_result = None
@@ -449,8 +453,8 @@ class Orchestrator:
 
             # --- Step 5: Evaluate inferability ---
             eval_results = evaluate_both(
-                original_output=orig_result.output_text,
-                perturbed_output=pert_pipeline_result.output_text,
+                original_output=orig_result.combined_output,
+                perturbed_output=pert_pipeline_result.combined_output,
                 attributes=self.attributes,
             )
 

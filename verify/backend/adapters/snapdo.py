@@ -174,7 +174,7 @@ class SnapdoAdapter(BaseAdapter):
 
         import sys
         try:
-            raw = self._call_openrouter(prompt, image_b64=image_b64, max_tokens=256)
+            raw = self._call_openrouter(prompt, image_b64=image_b64, max_tokens=1024)
             match = re.search(r"\{.*\}", raw, re.DOTALL)
             if match:
                 parsed = json.loads(match.group())
