@@ -37,10 +37,13 @@ def main():
     ))
     sys.path.insert(0, momentag_backend)
     sys.path.insert(0, runners_dir)
+    import _runtime_capture
+    _runtime_capture.install()
 
     os.environ["DJANGO_SETTINGS_MODULE"] = "_momentag_verify_settings"
     import django
     django.setup()
+    _runtime_capture.connect_django_signals()
 
     from django.conf import settings as _django_settings
     from django.core.management import call_command
@@ -70,15 +73,7 @@ def main():
 
     tags = list(dict.fromkeys(tags))  # deduplicate
 
-    # --- Capture Externalizations as identified in analysis/momentag.md ---
-    externalizations = {
-        "NETWORK": (
-            f"[Qdrant Vector DB] Upserting image embedding + metadata (user_id: 123, filename: photo.jpg). \n"
-            f"[MinIO/S3] Downloading original photo for processing from storage_key: gallery/123/photo.jpg."
-        ),
-        "STORAGE": f"[Django DB] Saving inferred captions/tags to PostgreSQL: {', '.join(tags)}",
-        "LOGGING": f"[INFO] Loading CLIP (ViT-B-32) and BLIP (image-captioning-base) models to GPU."
-    }
+    externalizations = _runtime_capture.finalize()
 
     print(json.dumps({
         "success": True,

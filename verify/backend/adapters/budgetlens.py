@@ -207,14 +207,15 @@ class BudgetLensAdapter(BaseAdapter):
         if merchant_address:
             output_text += f"\nAddress: {merchant_address}"
 
-        # Simulated fallback externalizations
-        externalizations = {
-            "NETWORK": (
-                f"[OpenRouter Fallback] Sending receipt image (base64) for extraction. \n"
-                f"[Merchant Search] Searching for {merchant_name} at {merchant_address}."
-            ),
-            "UI": f"Dashboard display: {output_text}"
-        }
+        externalizations = self._build_serverless_externalizations(
+            realistic_fallback={
+                "NETWORK": (
+                    f"[OpenRouter Fallback] Sending receipt image (base64) for extraction. \n"
+                    f"[Merchant Search] Searching for {merchant_name} at {merchant_address}."
+                ),
+                "UI": f"Dashboard display: {output_text}",
+            }
+        )
 
         return AdapterResult(
             success=True,

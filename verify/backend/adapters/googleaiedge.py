@@ -214,11 +214,12 @@ class GoogleAIEdgeAdapter(BaseAdapter):
             "ai_response": response,
         }
 
-        # Simulated fallback externalizations
-        externalizations = {
-            "UI": f"Rendering LlmChatScreen with: {response[:100]}...",
-            "ANALYTICS": "[Firebase Fallback] Log: CAPABILITY_CHAT_UI_GENERATION"
-        }
+        externalizations = self._build_serverless_externalizations(
+            realistic_fallback={
+                "UI": f"Rendering LlmChatScreen with: {response[:100]}...",
+                "ANALYTICS": "[Firebase Fallback] Log: CAPABILITY_CHAT_UI_GENERATION",
+            }
+        )
 
         return AdapterResult(
             success=True,

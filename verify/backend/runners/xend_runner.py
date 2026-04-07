@@ -41,6 +41,8 @@ def main():
     # runners_dir must come first so _xend_verify_settings is importable
     sys.path.insert(0, xend_backend)
     sys.path.insert(0, runners_dir)
+    import _runtime_capture
+    _runtime_capture.install()
 
     # Load xend .env first (real values take precedence over dummy defaults)
     env_file = os.path.join(xend_backend, ".env")
@@ -60,6 +62,7 @@ def main():
     os.environ["DJANGO_SETTINGS_MODULE"] = "_xend_verify_settings"
     import django
     django.setup()
+    _runtime_capture.connect_django_signals()
 
     # Create the SQLite schema on first run (fast no-op on subsequent runs)
     from django.conf import settings as _django_settings
@@ -100,15 +103,7 @@ def main():
     body = (body_chain.invoke(inputs) or "").strip()
     print("[xend] Inference complete.", file=sys.stderr, flush=True)
 
-    # --- Capture Externalizations as identified in analysis/xend.md ---
-    externalizations = {
-        "NETWORK": (
-            "[Gmail API] list_emails: Fetching recent 'SENT' messages for style analysis. \n"
-            "[Redis Pub/Sub] publish: Streaming generated tokens to 'xend-fiveis-dev.duckdns.org'."
-        ),
-        "STORAGE": f"[Django DB] MailAnalysisResult.objects.create(): Saving inferred style (lexical, emotional, grammar) for {subject[:50]}...",
-        "LOGGING": f"DEBUG: apps.ai.services: Attempt 1: Generated subject: {subject}"
-    }
+    externalizations = _runtime_capture.finalize()
 
     print(json.dumps({
         "success": True,

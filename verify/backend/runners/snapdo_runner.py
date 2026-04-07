@@ -42,6 +42,8 @@ def main():
 
     runners_dir = os.path.dirname(os.path.abspath(__file__))
     sys.path.insert(0, runners_dir)
+    import _runtime_capture
+    _runtime_capture.install()
     from _runner_log import log_input
     log_input("snapdo", "image", data.get("path", "<base64>"))
 
@@ -64,6 +66,7 @@ def main():
     os.environ["DJANGO_SETTINGS_MODULE"] = "server.settings"
     import django
     django.setup()
+    _runtime_capture.connect_django_signals()
 
     print("[snapdo] Loading VLMService ...", file=sys.stderr, flush=True)
     from snapdo.services.vlm_service import VLMService
@@ -82,14 +85,7 @@ def main():
     raw = service.verify_evidence(image_b64, constraint, model=model)
     print("[snapdo] Inference complete.", file=sys.stderr, flush=True)
 
-    # --- Capture Externalizations as identified in analysis/snapdo.md ---
-    externalizations = {
-        "NETWORK": (
-            "[OpenAI Vision] Sending evidence photo + task constraint to gpt-4o-mini for verification. \n"
-            "[OpenAI Vision] infer_location: Analyzing visual cues (landmarks, vegetation) for GPS inference."
-        ),
-        "LOGGING": f"DEBUG: snapdo.services.vlm_service: Verdict: {raw.get('verdict', 'UNKNOWN')}, Confidence: {raw.get('confidence', 'N/A')}"
-    }
+    externalizations = _runtime_capture.finalize()
 
     print(json.dumps({
         "success": True,

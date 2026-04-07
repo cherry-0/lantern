@@ -202,10 +202,12 @@ class CloneAdapter(BaseAdapter):
 
         activity, details, summary = _parse_description(description)
 
-        externalizations = {
-            "NETWORK": "[OpenRouter Fallback] Direct vision request with sampled frames.",
-            "UI": f"Displaying generated summary: {summary}",
-        }
+        externalizations = self._build_serverless_externalizations(
+            realistic_fallback={
+                "NETWORK": "[OpenRouter Fallback] Direct vision request with sampled frames.",
+                "UI": f"Displaying generated summary: {summary}",
+            }
+        )
 
         return AdapterResult(
             success=True,

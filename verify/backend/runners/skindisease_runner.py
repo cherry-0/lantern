@@ -81,6 +81,8 @@ def main():
 
     runners_dir = os.path.dirname(os.path.abspath(__file__))
     sys.path.insert(0, runners_dir)
+    import _runtime_capture
+    _runtime_capture.install()
     from _runner_log import log_input
     log_input("skin-disease", "image", data.get("path", "<base64>"))
 
@@ -107,15 +109,7 @@ def main():
         except Exception as e:
             errors.append(f"{name}: {e}")
 
-    # --- Capture Externalizations as identified in analysis/skin-disease-detection.md ---
-    externalizations = {
-        "NETWORK": (
-            "[Email/WhatsApp] Intent: Sending lesion photo + classification results to oncologist. \n"
-            "[Google Maps API] HTTP GET: Nearby search for 'dermatologist' near current GPS coordinates."
-        ),
-        "STORAGE": "[Firebase Realtime DB] push().set(): Saving user contact info and lesion inquiry history.",
-        "LOGGING": f"DEBUG: classifier.dart: Inference completed in 124ms. Top prediction: {results.get('cancer', {}).get('label', 'N/A')}"
-    }
+    externalizations = _runtime_capture.finalize()
 
     print(json.dumps({
         "success": bool(results),

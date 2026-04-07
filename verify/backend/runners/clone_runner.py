@@ -72,6 +72,8 @@ def main():
     ))
     sys.path.insert(0, clone_server)
     sys.path.insert(0, runners_dir)
+    import _runtime_capture
+    _runtime_capture.install()
 
     from _runner_log import log_input
     log_input("clone", "image", data.get("path", f"<{len(frames_b64)} frame(s)>"))
@@ -94,6 +96,7 @@ def main():
     os.environ["DJANGO_SETTINGS_MODULE"] = "_clone_verify_settings"
     import django
     django.setup()
+    _runtime_capture.connect_django_signals()
 
     from django.conf import settings as _django_settings
     from django.core.management import call_command
@@ -161,21 +164,7 @@ def main():
 
     activity, details, summary = _parse_description(description)
 
-    externalizations = {
-        "NETWORK": (
-            f"[OpenRouter API] Sending multimodal payload ({len(frames_b64)} frame(s) + prompt) "
-            "to vision model for screen activity description."
-        ),
-        "STORAGE": (
-            f"[Django ORM] ChatSession.objects.create(): Session '{filename[:50]}' "
-            f"(id={session_id}) saved to clone_verify.sqlite3. "
-            f"[Django ORM] ChatMessage.objects.create(): Vision description stored as user message."
-        ),
-        "LOGGING": (
-            f"DEBUG: clone.runner: Frames={len(frames_b64)}, Session={session_id}, "
-            f"Activity={activity[:60]}"
-        ),
-    }
+    externalizations = _runtime_capture.finalize()
 
     print(json.dumps({
         "success": True,

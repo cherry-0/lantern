@@ -143,15 +143,16 @@ class LLMVTuberAdapter(BaseAdapter):
             "character_name": "Shizuku",
         }
 
-        # Simulated fallback externalizations
-        externalizations = {
-            "NETWORK": (
-                f"[STT Fallback] Audio converted to text: {user_message}. \n"
-                f"[LLM Fallback] Request sent to OpenRouter. Prompt: {prompt}. \n"
-                f"[TTS Fallback] Response being read: {response}"
-            ),
-            "UI": f"Fallback Character Shizuku speaking: {response}"
-        }
+        externalizations = self._build_serverless_externalizations(
+            realistic_fallback={
+                "NETWORK": (
+                    f"[STT Fallback] Audio converted to text: {user_message}. \n"
+                    f"[LLM Fallback] Request sent to OpenRouter. Prompt: {prompt}. \n"
+                    f"[TTS Fallback] Response being read: {response}"
+                ),
+                "UI": f"Fallback Character Shizuku speaking: {response}",
+            }
+        )
 
         return AdapterResult(
             success=True,

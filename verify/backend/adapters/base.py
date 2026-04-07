@@ -176,6 +176,7 @@ class BaseAdapter(ABC):
     ) -> str:
         """
         Send a prompt to OpenRouter and return the response text.
+        Records each call in self._openrouter_calls for externalization capture.
 
         Args:
             prompt:     User message text.
@@ -194,6 +195,9 @@ class BaseAdapter(ABC):
         import requests
         from verify.backend.utils.config import get_openrouter_api_key
 
+        if not hasattr(self, "_openrouter_calls"):
+            self._openrouter_calls: List[Dict[str, Any]] = []
+
         api_key = get_openrouter_api_key()
         if not api_key or api_key.startswith("your_"):
             raise RuntimeError(
@@ -201,6 +205,7 @@ class BaseAdapter(ABC):
                 "Set it in the .env file at the Lantern root."
             )
 
+        used_model = model or OPENROUTER_DEFAULT_MODEL
         content: Any
         if image_b64:
             content = [
@@ -219,11 +224,58 @@ class BaseAdapter(ABC):
                 "X-Title": "Verify",
             },
             json={
-                "model": model or OPENROUTER_DEFAULT_MODEL,
+                "model": used_model,
                 "messages": [{"role": "user", "content": content}],
                 "max_tokens": max_tokens,
             },
             timeout=timeout,
         )
         resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+        response_text = resp.json()["choices"][0]["message"]["content"]
+
+        # Record this call for externalization capture
+        self._openrouter_calls.append({
+            "model": used_model,
+            "has_image": bool(image_b64),
+            "status": resp.status_code,
+            "prompt_preview": prompt[:200],
+            "response_preview": response_text[:200],
+        })
+
+        return response_text
+
+    def _reset_openrouter_calls(self) -> None:
+        """Clear the per-item call log. Called by orchestrator before each run_pipeline."""
+        self._openrouter_calls = []
+
+    def _build_serverless_externalizations(
+        self,
+        realistic_fallback: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, str]:
+        """
+        Build externalizations dict from real captured OpenRouter calls.
+
+        Priority:
+          1. Real captured calls (self._openrouter_calls) — always preferred.
+          2. DEBUG=true  → placeholder "example output" for each channel.
+          3. DEBUG=false → realistic_fallback strings (passed by each adapter).
+        """
+        from verify.backend.utils.config import is_debug
+
+        calls = getattr(self, "_openrouter_calls", [])
+        if calls:
+            lines: List[str] = []
+            for c in calls:
+                kind = "vision" if c["has_image"] else "text"
+                lines.append(
+                    f"[POST] https://openrouter.ai/api/v1/chat/completions"
+                    f" ({c['model']}, {kind}) → {c['status']}"
+                )
+                lines.append(f"  ↳ Prompt: {c['prompt_preview']}")
+                lines.append(f"  ↳ Response: {c['response_preview']}")
+            return {"NETWORK": "\n".join(lines)}
+
+        if is_debug():
+            return {"NETWORK": "example output", "UI": "example output"}
+
+        return realistic_fallback or {}

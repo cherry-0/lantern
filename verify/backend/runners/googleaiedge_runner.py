@@ -52,6 +52,8 @@ def main():
 
     runners_dir = os.path.dirname(os.path.abspath(__file__))
     sys.path.insert(0, runners_dir)
+    import _runtime_capture
+    _runtime_capture.install()
     from _runner_log import log_input
     content = image_desc if modality == "image" else user_message
     log_input("google-ai-edge", modality, content)
@@ -87,12 +89,7 @@ def main():
     response = outputs[0]["generated_text"][-1]["content"]
     print(f"[google-ai-edge] Inference complete.", file=sys.stderr, flush=True)
 
-    # --- Capture Externalizations as identified in analysis/google-ai-edge-gallery.md ---
-    externalizations = {
-        "UI": f"[WebView Log] JS Skill: Processing visual request. Result: {response[:100]}...",
-        "INTENT": f"[Android Intent] Action: ACTION_SENDTO. Data: mailto:?body={response[:50]}",
-        "ANALYTICS": f"[Firebase] Event: GALLERY_GENERATION_COMPLETE. Model: {model_id}"
-    }
+    externalizations = _runtime_capture.finalize()
 
     print(json.dumps({
         "success": True,

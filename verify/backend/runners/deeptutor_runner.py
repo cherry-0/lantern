@@ -48,6 +48,8 @@ def main():
     ))
     sys.path.insert(0, deeptutor_root)
     sys.path.insert(0, runners_dir)
+    import _runtime_capture
+    _runtime_capture.install()
 
     from _runner_log import log_input
     log_input("deeptutor", "text", text)
@@ -76,16 +78,7 @@ def main():
     response = asyncio.run(_collect())
     print("[deeptutor] Inference complete.", file=sys.stderr, flush=True)
 
-    # --- Capture Externalizations as identified in analysis/deeptutor.md ---
-    externalizations = {
-        "NETWORK": (
-            f"[RAG Embedding] Sending document chunks to OpenAI Embedding API for vectorization. \n"
-            f"[LLM Request] Sending student query + retrieved RAG context to {model} at OpenRouter. \n"
-            f"[RAG Retrieval] Matching query against local LlamaIndex vector store."
-        ),
-        "BUS": f"[Event Bus] Publishing CAPABILITY_COMPLETE event: {{'user_input': '{text[:200]}...', 'task_id': '{context.session_id}'}}",
-        "LOGGING": f"DEBUG: deeptutor.runtime.orchestrator: Processing Stage 3 (Embedding) for session {context.session_id}"
-    }
+    externalizations = _runtime_capture.finalize()
 
     print(json.dumps({
         "success": True,

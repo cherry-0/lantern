@@ -42,11 +42,14 @@ def main():
     ))
     sys.path.insert(0, budgetlens_root)
     sys.path.insert(0, runners_dir)
+    import _runtime_capture
+    _runtime_capture.install()
 
     # Use verify-specific settings: SQLite DB + dummy env var fallbacks
     os.environ["DJANGO_SETTINGS_MODULE"] = "_budgetlens_verify_settings"
     import django
     django.setup()
+    _runtime_capture.connect_django_signals()
 
     # Create the SQLite schema on first run
     from django.conf import settings as _django_settings
@@ -75,15 +78,7 @@ def main():
     finally:
         os.unlink(tmp.name)
 
-    # --- Capture Externalizations as identified in analysis/budget-lens.md ---
-    externalizations = {
-        "NETWORK": (
-            f"[OpenAI Request] Sending receipt image (base64) to gpt-4o-mini for extraction. \n"
-            f"[Exchange Rate Request] Fetching rate for {currency} on {expense_date} via requests.get()."
-        ),
-        "STORAGE": f"Saving to Expense model: category={category}, date={expense_date}, amount={amount}, currency={currency}",
-        "LOGGING": f"DEBUG: OpenAI extracted: {{'category': '{category}', 'date': '{expense_date}', 'amount': '{amount}', 'currency': '{currency}'}}"
-    }
+    externalizations = _runtime_capture.finalize()
 
     print(json.dumps({
         "success": True,

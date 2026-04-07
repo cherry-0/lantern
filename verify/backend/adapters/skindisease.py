@@ -170,11 +170,12 @@ class SkinDiseaseAdapter(BaseAdapter):
         structured = self._parse_json(raw_response)
         output_text = self._format_output(structured)
 
-        # Simulated fallback externalizations
-        externalizations = {
-            "NETWORK": "[OpenRouter Fallback] Direct vision request for three TFLite classifiers.",
-            "UI": f"Rendering patient results: {output_text[:100]}..."
-        }
+        externalizations = self._build_serverless_externalizations(
+            realistic_fallback={
+                "NETWORK": "[OpenRouter Fallback] Direct vision request for three TFLite classifiers.",
+                "UI": f"Rendering patient results: {output_text[:100]}...",
+            }
+        )
 
         return AdapterResult(
             success=True,

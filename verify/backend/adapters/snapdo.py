@@ -300,11 +300,12 @@ class SnapdoAdapter(BaseAdapter):
             f"Explanation: {explanation}"
         )
 
-        # Simulated fallback externalizations
-        externalizations = {
-            "NETWORK": "[OpenRouter Fallback] Sending verification request for proof-of-work photo.",
-            "UI": f"Verification Banner: {verdict} - {explanation[:50]}..."
-        }
+        externalizations = self._build_serverless_externalizations(
+            realistic_fallback={
+                "NETWORK": "[OpenRouter Fallback] Sending verification request for proof-of-work photo.",
+                "UI": f"Verification Banner: {verdict} - {explanation[:50]}...",
+            }
+        )
 
         return AdapterResult(
             success=True,

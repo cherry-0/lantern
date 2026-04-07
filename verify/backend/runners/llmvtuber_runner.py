@@ -43,6 +43,8 @@ def main():
     ))
     sys.path.insert(0, llmvtuber_src)
     sys.path.insert(0, runners_dir)
+    import _runtime_capture
+    _runtime_capture.install()
 
     from _runner_log import log_input
     log_input("llm-vtuber", "text", user_message)
@@ -69,16 +71,7 @@ def main():
     response = asyncio.run(_collect())
     print("[llm-vtuber] Inference complete.", file=sys.stderr, flush=True)
 
-    # --- Capture Externalizations as identified in analysis/llm-vtuber.md ---
-    externalizations = {
-        "NETWORK": (
-            f"[STT Request] Sending raw audio data to Whisper API. \n"
-            f"[LLM Request] Model: {model}. System: {_VTUBER_SYSTEM}. Message: {user_message}. \n"
-            f"[TTS Request] Converting to voice: {response}"
-        ),
-        "UI": f"Live2D character performing expressive animations while speaking: {response}",
-        "STORAGE": f"Saving to chat_history.json: {{'user': '{user_message}', 'ai': '{response}'}}"
-    }
+    externalizations = _runtime_capture.finalize()
 
     print(json.dumps({
         "success": True,

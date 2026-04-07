@@ -145,11 +145,12 @@ class MomentagAdapter(BaseAdapter):
 
         output_text = f"Caption: {caption}\nTags: {', '.join(tags)}"
 
-        # Simulated fallback externalizations
-        externalizations = {
-            "NETWORK": "[OpenRouter Fallback] Direct vision request for captions/tags.",
-            "UI": f"Rendering search result thumbnails for: {', '.join(tags[:3])}..."
-        }
+        externalizations = self._build_serverless_externalizations(
+            realistic_fallback={
+                "NETWORK": "[OpenRouter Fallback] Direct vision request for captions/tags.",
+                "UI": f"Rendering search result thumbnails for: {', '.join(tags[:3])}...",
+            }
+        )
 
         return AdapterResult(
             success=True,

@@ -119,11 +119,12 @@ class XendAdapter(BaseAdapter):
                 body = "\n".join(lines[i + 1:]).strip()
                 break
 
-        # Simulated fallback externalizations
-        externalizations = {
-            "NETWORK": "[OpenRouter Fallback] Direct email generation request.",
-            "UI": f"Rendering email draft with subject: {subject}"
-        }
+        externalizations = self._build_serverless_externalizations(
+            realistic_fallback={
+                "NETWORK": "[OpenRouter Fallback] Direct email generation request.",
+                "UI": f"Rendering email draft with subject: {subject}",
+            }
+        )
 
         return AdapterResult(
             success=True,
