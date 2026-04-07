@@ -92,6 +92,46 @@ def _row(tag: str, lines: list[str]) -> None:
             _emit(f"  {pad}{line}")
 
 
+def log_setup_start(app_name: str, python: str) -> None:
+    """
+    Always-on banner printed when one-time conda env setup begins.
+
+    Example:
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    ⚙ SETUP   skin-disease-detection   (one-time)
+    ──────────────────────────────────────────────────────────────────────
+      Creating conda env with Python 3.10 ...
+    """
+    _emit()
+    _emit(_BAR)
+    _emit(f"⚙ SETUP   {app_name}   (one-time)")
+    _emit(_SEP)
+    _row("ENV", [f"Creating conda env  python={python}  ..."])
+
+
+def log_setup_step(cmd: list[str]) -> None:
+    """Print a single install step inside an open setup block."""
+    label = " ".join(cmd[:4])          # e.g. "pip install tflite-runtime pillow"
+    _row("INSTALL", [f"{label}  ..."])
+
+
+def log_setup_done(ok: bool, error: str = "") -> None:
+    """
+    Always-on footer that closes the setup block.
+
+    Example (success):
+      STATUS    ✔  Done — env ready.
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    """
+    if ok:
+        _row("STATUS", ["✔  Done — env ready."])
+    else:
+        _row("STATUS", [f"✘  FAILED"])
+        if error:
+            _row("ERROR", _wrap(error[:400], indent=_TAG_W + 2))
+    _emit(_BAR)
+
+
 def log_availability(
     app_name: str,
     available: bool,
