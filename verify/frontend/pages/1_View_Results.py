@@ -314,6 +314,12 @@ def _render_item_result(result: dict, dataset_name: str, modality: str, run_dir:
                     disabled=True,
                     key=f"orig_out_{filename}",
                 )
+                exts = orig_out.get("externalizations", {})
+                if exts:
+                    with st.expander("🌐 Captured Externalizations", expanded=True):
+                        for channel, content in exts.items():
+                            st.markdown(f"**[{channel}]**")
+                            st.caption(content)
                 structured = orig_out.get("structured_output", {})
                 if structured:
                     with st.expander("Structured output"):
@@ -331,6 +337,12 @@ def _render_item_result(result: dict, dataset_name: str, modality: str, run_dir:
                     disabled=True,
                     key=f"pert_out_{filename}",
                 )
+                exts = pert_out.get("externalizations", {})
+                if exts:
+                    with st.expander("🌐 Captured Externalizations", expanded=True):
+                        for channel, content in exts.items():
+                            st.markdown(f"**[{channel}]**")
+                            st.caption(content)
                 structured = pert_out.get("structured_output", {})
                 if structured:
                     with st.expander("Structured output"):

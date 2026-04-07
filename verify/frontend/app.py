@@ -279,6 +279,15 @@ def _render_item_result(result: dict):
                     disabled=True,
                     key=f"orig_out_{filename}",
                 )
+                
+                # Render Externalizations
+                exts = orig_out.get("externalizations", {})
+                if exts:
+                    with st.expander("🌐 Captured Externalizations", expanded=True):
+                        for channel, content in exts.items():
+                            st.markdown(f"**[{channel}]**")
+                            st.caption(content)
+
                 structured = orig_out.get("structured_output", {})
                 if structured:
                     with st.expander("Structured output"):
@@ -296,6 +305,15 @@ def _render_item_result(result: dict):
                     disabled=True,
                     key=f"pert_out_{filename}",
                 )
+
+                # Render Externalizations
+                exts = pert_out.get("externalizations", {})
+                if exts:
+                    with st.expander("🌐 Captured Externalizations", expanded=True):
+                        for channel, content in exts.items():
+                            st.markdown(f"**[{channel}]**")
+                            st.caption(content)
+
                 structured = pert_out.get("structured_output", {})
                 if structured:
                     with st.expander("Structured output"):
@@ -490,7 +508,7 @@ def main():
         else:
             selected_attributes = []
             for attr in all_attributes:
-                if st.checkbox(attr.capitalize(), value=True, key=f"attr_{attr}"):
+                if st.checkbox(attr.capitalize(), value=False, key=f"attr_{attr}"):
                     selected_attributes.append(attr)
 
         st.divider()
