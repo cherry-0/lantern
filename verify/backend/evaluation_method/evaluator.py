@@ -28,7 +28,15 @@ def _load_system_prompt() -> str:
     try:
         with open(PROMPT_FILE, "r") as f:
             data = yaml.safe_load(f)
-            return data.get("EVAL_SYSTEM_PROMPT", "").strip()
+            base_prompt = data.get("EVAL_SYSTEM_PROMPT", "").strip()
+            # Add guidance for multi-channel externalizations
+            channel_guidance = (
+                "\n\nNote: The input may contain data from multiple externalization channels labeled "
+                "with [UI], [NETWORK], [STORAGE], or [LOGGING]. You must evaluate all channels "
+                "for potential privacy attribute inferability. For example, a raw image sent via [NETWORK] "
+                "may leak more PII than the summarized [UI] output."
+            )
+            return base_prompt + channel_guidance
     except Exception as e:
         # Fallback in case of loading error
         return "You are a sophisticated privacy analyst. Evaluate privacy attributes inferability."
