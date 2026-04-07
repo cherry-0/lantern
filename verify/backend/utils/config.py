@@ -96,6 +96,18 @@ def get_openrouter_api_key() -> Optional[str]:
     return get_env("OPENROUTER_API_KEY") or get_env("OPENROUTER_KEY")
 
 
+def use_app_servers() -> bool:
+    """
+    Return True when USE_APP_SERVERS is set to a truthy value in .env or environment.
+
+    Controls the global adapter execution mode:
+      True  → HTTP / native pipeline  (requires target app servers to be running)
+      False → OpenRouter serverless fallback  (no target app dependency)
+    """
+    val = get_env("USE_APP_SERVERS", "false") or "false"
+    return val.strip().lower() in ("1", "true", "yes")
+
+
 def get_openai_api_key() -> Optional[str]:
     """Return OpenAI API key from environment."""
     return get_env("OPENAI_API_KEY")

@@ -14,7 +14,6 @@ bordered block that shows input, inference module, and output at a glance.
 from __future__ import annotations
 
 import os
-import sys
 import textwrap
 from typing import Any, Dict, Optional
 
@@ -91,6 +90,48 @@ def _row(tag: str, lines: list[str]) -> None:
             _emit(f"  {label}{line}")
         else:
             _emit(f"  {pad}{line}")
+
+
+def log_availability(
+    app_name: str,
+    available: bool,
+    message: str,
+    traceback_str: str = "",
+) -> None:
+    """
+    Always-on (not VERBOSE-gated) log block printed when an adapter is checked.
+    Shows OK/FAIL status, the reason message, and — on failure — the full
+    traceback from the native import attempt so config problems are obvious.
+
+    Example (failure):
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    ✦ AVAILABILITY   snapdo
+    ──────────────────────────────────────────────────────────────────────
+      STATUS    FAIL
+      REASON    Native snapdo pipeline unavailable (No module named
+                'django'); using OpenRouter fallback.
+      TRACE     Traceback (most recent call last):
+                  File ".../adapters/snapdo.py", line 74, in _check_native
+                    import django
+                ModuleNotFoundError: No module named 'django'
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    """
+    icon = "✔" if available else "✘"
+    status_word = "OK  " if available else "FAIL"
+
+    _emit()
+    _emit(_BAR)
+    _emit(f"{'✦'} AVAILABILITY   {app_name}")
+    _emit(_SEP)
+    _row("STATUS", [f"{icon}  {status_word}"])
+    _row("REASON", _wrap(message, indent=_TAG_W + 2))
+    if not available and traceback_str.strip():
+        tb_lines = traceback_str.strip().splitlines()
+        _row("TRACE", tb_lines[:1])
+        pad = " " * (_TAG_W + 2)
+        for line in tb_lines[1:]:
+            _emit(f"  {pad}{line}")
+    _emit(_BAR)
 
 
 def log_inference(
