@@ -1,8 +1,13 @@
 """
 Runtime externalization capture — stdlib-only, safe for all conda envs.
 
-Intercepts real network calls (requests + httpx), Django ORM saves, and
-relevant log records during native pipeline execution.
+Intercepts real network calls (urllib3 + httpx + aiohttp), Django ORM saves,
+and relevant log records during native pipeline execution.
+
+Network capture layers:
+  urllib3  — covers all requests-based calls AND boto3/direct urllib3 calls
+  httpx    — covers LangChain, OpenAI SDK ≥1.0, litellm (sync + async)
+  aiohttp  — covers async frameworks using aiohttp (future apps)
 
 Usage in runners:
     # 1. After sys.path.insert(0, runners_dir):
@@ -57,6 +62,12 @@ _INTERESTING_KEYWORDS = {
 _SKIP_URL_FRAGMENTS = {"/static/", "/favicon.ico", "/health", "/__debug__"}
 
 
+def _record_network(method: str, url: str, status: int) -> None:
+    """Append a network event if the URL is not filtered."""
+    if not any(frag in url for frag in _SKIP_URL_FRAGMENTS):
+        _network_events.append(f"[{method.upper()}] {url[:120]} → {status}")
+
+
 class _CaptureHandler(logging.Handler):
     """Logging handler that records relevant log records to _log_events."""
 
@@ -86,7 +97,7 @@ class _CaptureHandler(logging.Handler):
 
 def install() -> None:
     """
-    Patch requests and httpx to intercept all HTTP calls, and install
+    Patch urllib3, httpx, and aiohttp to intercept all HTTP calls, and install
     the logging capture handler.  Safe to call multiple times (no-op after first).
     """
     global _installed
@@ -94,26 +105,32 @@ def install() -> None:
         return
     _installed = True
 
-    # ── Patch requests ─────────────────────────────────────────────────────────
+    # ── Patch urllib3 ──────────────────────────────────────────────────────────
+    # urllib3 is the transport layer under requests AND boto3, so patching here
+    # captures both without needing a separate requests patch.
     try:
-        import requests as _requests
+        import urllib3.connectionpool as _pool
 
-        _orig_req = _requests.Session.request
+        _orig_urlopen = _pool.HTTPConnectionPool.urlopen
 
-        def _patched_request(self, method: str, url: str, **kwargs):
-            resp = _orig_req(self, method, url, **kwargs)
-            url_str = str(url)
-            if not any(frag in url_str for frag in _SKIP_URL_FRAGMENTS):
-                _network_events.append(
-                    f"[{method.upper()}] {url_str[:120]} → {resp.status_code}"
-                )
+        def _patched_urlopen(self, method: str, url: str, **kwargs):
+            resp = _orig_urlopen(self, method, url, **kwargs)
+            # Reconstruct full URL from pool host/port/scheme
+            scheme = getattr(self, "scheme", "https" if "HTTPS" in type(self).__name__ else "http")
+            port = self.port
+            default_port = 443 if scheme == "https" else 80
+            port_str = f":{port}" if port and port != default_port else ""
+            full_url = f"{scheme}://{self.host}{port_str}{url}"
+            _record_network(method, full_url, resp.status)
             return resp
 
-        _requests.Session.request = _patched_request
+        _pool.HTTPConnectionPool.urlopen = _patched_urlopen
     except ImportError:
         pass
 
     # ── Patch httpx (sync) ─────────────────────────────────────────────────────
+    # httpx is used by LangChain, OpenAI SDK ≥1.0, litellm — does NOT go
+    # through urllib3, so a separate patch is required.
     try:
         import httpx as _httpx
 
@@ -121,11 +138,7 @@ def install() -> None:
 
         def _patched_sync_send(self, request, **kwargs):
             resp = _orig_sync_send(self, request, **kwargs)
-            url_str = str(request.url)
-            if not any(frag in url_str for frag in _SKIP_URL_FRAGMENTS):
-                _network_events.append(
-                    f"[{request.method}] {url_str[:120]} → {resp.status_code}"
-                )
+            _record_network(request.method, str(request.url), resp.status_code)
             return resp
 
         _httpx.Client.send = _patched_sync_send
@@ -135,14 +148,27 @@ def install() -> None:
 
         async def _patched_async_send(self, request, **kwargs):
             resp = await _orig_async_send(self, request, **kwargs)
-            url_str = str(request.url)
-            if not any(frag in url_str for frag in _SKIP_URL_FRAGMENTS):
-                _network_events.append(
-                    f"[ASYNC {request.method}] {url_str[:120]} → {resp.status_code}"
-                )
+            _record_network(f"ASYNC {request.method}", str(request.url), resp.status_code)
             return resp
 
         _httpx.AsyncClient.send = _patched_async_send
+    except ImportError:
+        pass
+
+    # ── Patch aiohttp ──────────────────────────────────────────────────────────
+    # aiohttp is used by some async frameworks and future target apps.
+    # None of the current 9 apps use aiohttp, but the patch is cheap to add.
+    try:
+        import aiohttp as _aiohttp
+
+        _orig_aiohttp_request = _aiohttp.ClientSession._request
+
+        async def _patched_aiohttp_request(self, method: str, str_or_url, **kwargs):
+            resp = await _orig_aiohttp_request(self, method, str_or_url, **kwargs)
+            _record_network(f"ASYNC {method}", str(str_or_url), resp.status)
+            return resp
+
+        _aiohttp.ClientSession._request = _patched_aiohttp_request
     except ImportError:
         pass
 
@@ -186,8 +212,17 @@ def finalize() -> dict:
     """
     result: dict = {}
 
-    if _network_events:
-        result["NETWORK"] = "\n".join(_network_events[:15])
+    # Deduplicate network events (urllib3 and httpx may both fire for the same
+    # call if a library wraps urllib3 inside httpx — rare but possible)
+    seen_net: set = set()
+    deduped_net: list = []
+    for entry in _network_events:
+        if entry not in seen_net:
+            seen_net.add(entry)
+            deduped_net.append(entry)
+
+    if deduped_net:
+        result["NETWORK"] = "\n".join(deduped_net[:15])
 
     if _storage_events:
         result["STORAGE"] = "\n".join(_storage_events[:10])
