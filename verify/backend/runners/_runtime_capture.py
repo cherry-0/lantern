@@ -25,9 +25,13 @@ import logging
 import sys
 
 # ── Internal state ─────────────────────────────────────────────────────────────
-_network_events: list = []
-_storage_events: list = []
-_log_events: list = []
+_events: dict[str, list[dict]] = {
+    "NETWORK": [],
+    "STORAGE": [],
+    "LOGGING": [],
+    "UI": [],
+}
+_current_phase: str = "DURING"  # "DURING" or "POST"
 _installed: bool = False
 
 # Logger names whose DEBUG/INFO output is too noisy to include
@@ -62,14 +66,32 @@ _INTERESTING_KEYWORDS = {
 _SKIP_URL_FRAGMENTS = {"/static/", "/favicon.ico", "/health", "/__debug__"}
 
 
+def set_phase(phase: str) -> None:
+    """Set the current execution phase: 'DURING' or 'POST'."""
+    global _current_phase
+    if phase in ["DURING", "POST"]:
+        _current_phase = phase
+
+
+def _record_event(channel: str, content: str) -> None:
+    """Append an event to the specified channel with current phase metadata."""
+    _events[channel].append({"phase": _current_phase, "content": content})
+
+
+def record_ui_event(action: str, details: str = "") -> None:
+    """Manually record a UI event (useful for headless runners)."""
+    msg = f"[{action.upper()}] {details}" if details else f"[{action.upper()}]"
+    _record_event("UI", msg)
+
+
 def _record_network(method: str, url: str, status: int) -> None:
     """Append a network event if the URL is not filtered."""
     if not any(frag in url for frag in _SKIP_URL_FRAGMENTS):
-        _network_events.append(f"[{method.upper()}] {url[:120]} → {status}")
+        _record_event("NETWORK", f"[{method.upper()}] {url[:120]} → {status}")
 
 
 class _CaptureHandler(logging.Handler):
-    """Logging handler that records relevant log records to _log_events."""
+    """Logging handler that records relevant log records to _events['LOGGING']."""
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
@@ -79,7 +101,7 @@ class _CaptureHandler(logging.Handler):
             # Always keep WARNING+ regardless of source
             if record.levelno >= logging.WARNING:
                 msg = self.format(record)
-                _log_events.append(msg[:300])
+                _record_event("LOGGING", msg[:300])
                 return
 
             # Filter out noisy Django / framework namespaces at DEBUG/INFO
@@ -90,7 +112,7 @@ class _CaptureHandler(logging.Handler):
             msg_lower = record.getMessage().lower()
             if any(kw in msg_lower for kw in _INTERESTING_KEYWORDS):
                 msg = self.format(record)
-                _log_events.append(msg[:300])
+                _record_event("LOGGING", msg[:300])
         except Exception:
             pass
 
@@ -125,7 +147,7 @@ def install() -> None:
             return resp
 
         _pool.HTTPConnectionPool.urlopen = _patched_urlopen
-    except ImportError:
+    except (ImportError, AttributeError):
         pass
 
     # ── Patch httpx (sync) ─────────────────────────────────────────────────────
@@ -152,12 +174,10 @@ def install() -> None:
             return resp
 
         _httpx.AsyncClient.send = _patched_async_send
-    except ImportError:
+    except (ImportError, AttributeError):
         pass
 
     # ── Patch aiohttp ──────────────────────────────────────────────────────────
-    # aiohttp is used by some async frameworks and future target apps.
-    # None of the current 9 apps use aiohttp, but the patch is cheap to add.
     try:
         import aiohttp as _aiohttp
 
@@ -169,7 +189,27 @@ def install() -> None:
             return resp
 
         _aiohttp.ClientSession._request = _patched_aiohttp_request
-    except ImportError:
+    except (ImportError, AttributeError):
+        pass
+
+    # ── Patch FastAPI/Starlette WebSocket (UI Tracking) ────────────────────────
+    # Captures data pushed to the frontend.
+    try:
+        from starlette.websockets import WebSocket as _WS
+
+        _orig_send_text = _WS.send_text
+        async def _patched_send_text(self, data: str):
+            record_ui_event("PUSH", data[:500])
+            return await _orig_send_text(self, data)
+        _WS.send_text = _patched_send_text
+
+        _orig_send_json = _WS.send_json
+        async def _patched_send_json(self, data: any, **kwargs):
+            import json
+            record_ui_event("PUSH", json.dumps(data)[:500])
+            return await _orig_send_json(self, data, **kwargs)
+        _WS.send_json = _patched_send_json
+    except (ImportError, AttributeError):
         pass
 
     # ── Install logging handler ────────────────────────────────────────────────
@@ -193,9 +233,7 @@ def connect_django_signals() -> None:
 
         def _on_save(sender, instance, created: bool, **kwargs):
             action = "CREATE" if created else "UPDATE"
-            _storage_events.append(
-                f"[{sender.__name__}] {action}: {str(instance)[:150]}"
-            )
+            _record_event("STORAGE", f"[{sender.__name__}] {action}: {str(instance)[:150]}")
 
         post_save.connect(_on_save, weak=False)
     except Exception:
@@ -204,40 +242,37 @@ def connect_django_signals() -> None:
 
 def finalize() -> dict:
     """
-    Return the captured externalizations dict.
-    Call this after inference is complete.
+    Return the captured externalizations dict, organized by phase.
+    Call this after inference and post-inference actions are complete.
 
-    Returns a dict with any of: NETWORK, STORAGE, LOGGING.
-    Empty channels are omitted.
+    Returns:
+        {
+            "DURING": {"NETWORK": "...", "UI": "...", ...},
+            "POST": {"NETWORK": "...", "UI": "...", ...}
+        }
     """
-    result: dict = {}
+    result: dict = {"DURING": {}, "POST": {}}
 
-    # Deduplicate network events (urllib3 and httpx may both fire for the same
-    # call if a library wraps urllib3 inside httpx — rare but possible)
-    seen_net: set = set()
-    deduped_net: list = []
-    for entry in _network_events:
-        if entry not in seen_net:
-            seen_net.add(entry)
-            deduped_net.append(entry)
+    for channel, events in _events.items():
+        for phase in ["DURING", "POST"]:
+            phase_events = [e["content"] for e in events if e["phase"] == phase]
+            if not phase_events:
+                continue
 
-    if deduped_net:
-        result["NETWORK"] = "\n".join(deduped_net[:15])
+            # Deduplicate and cap
+            seen = set()
+            deduped = []
+            cap = 15 if channel == "NETWORK" else (10 if channel == "STORAGE" else 8)
+            for entry in phase_events:
+                if entry not in seen:
+                    seen.add(entry)
+                    deduped.append(entry)
+                if len(deduped) >= cap:
+                    break
 
-    if _storage_events:
-        result["STORAGE"] = "\n".join(_storage_events[:10])
+            result[phase][channel] = "\n".join(deduped)
 
-    # Filter log events — deduplicate and cap
-    seen: set = set()
-    filtered_logs: list = []
-    for entry in _log_events:
-        key = entry[:80]  # rough dedup key
-        if key not in seen:
-            seen.add(key)
-            filtered_logs.append(entry)
-        if len(filtered_logs) >= 8:
-            break
-    if filtered_logs:
-        result["LOGGING"] = "\n".join(filtered_logs)
-
+    # If result["POST"] is empty, move all to flat dict for backward compat if needed,
+    # but orchestrator will be updated to handle this nested structure.
     return result
+

@@ -33,17 +33,31 @@ class AdapterResult:
     def combined_output(self) -> str:
         """
         Concatenates all externalized results into a single string for evaluation.
-        If no externalizations are present, falls back to output_text.
+        Handles nested phase-aware externalizations (DURING/POST) and falls back
+        to a flat dict or output_text if needed.
         """
         if not self.externalizations:
             return self.output_text
 
         parts = []
-        # Include primary UI output if available and not redundant
+
+        # Handle phase-aware structure: {"DURING": {...}, "POST": {...}}
+        if "DURING" in self.externalizations or "POST" in self.externalizations:
+            for phase in ["DURING", "POST"]:
+                phase_data = self.externalizations.get(phase, {})
+                if not phase_data:
+                    continue
+                
+                parts.append(f"=== PHASE: {phase} ===")
+                for channel, content in phase_data.items():
+                    parts.append(f"[{channel.upper()}] {content}")
+            
+            return "\n".join(parts)
+
+        # Fallback for old flat dictionary structure
         if self.output_text and "UI" not in self.externalizations:
             parts.append(f"[UI] {self.output_text}")
 
-        # Add all other channels
         for channel, content in self.externalizations.items():
             parts.append(f"[{channel.upper()}] {content}")
 

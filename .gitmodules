@@ -28,3 +28,6 @@
 [submodule "target-apps/tool-neuron"]
 	path = target-apps/tool-neuron
 	url = https://github.com/Siddhesh2377/ToolNeuron.git
+[submodule "target-apps/chat-driven-expense-tracker"]
+	path = target-apps/chat-driven-expense-tracker
+	url = https://github.com/pr0ximaCent/Langchain-Chat-Driven-Expense-Tracker-.git

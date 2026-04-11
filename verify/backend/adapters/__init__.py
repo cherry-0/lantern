@@ -11,6 +11,7 @@ from verify.backend.adapters.deeptutor import DeepTutorAdapter
 from verify.backend.adapters.llmvtuber import LLMVTuberAdapter
 from verify.backend.adapters.skindisease import SkinDiseaseAdapter
 from verify.backend.adapters.googleaiedge import GoogleAIEdgeAdapter
+from verify.backend.adapters.toolneuron import ToolNeuronAdapter
 
 # Registry: name → adapter class
 ADAPTER_REGISTRY: Dict[str, Type[BaseAdapter]] = {
@@ -23,6 +24,7 @@ ADAPTER_REGISTRY: Dict[str, Type[BaseAdapter]] = {
     "llm-vtuber": LLMVTuberAdapter,
     "skin-disease-detection": SkinDiseaseAdapter,
     "google-ai-edge-gallery": GoogleAIEdgeAdapter,
+    "tool-neuron": ToolNeuronAdapter,
 }
 
 

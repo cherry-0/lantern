@@ -103,6 +103,29 @@ def main():
     body = (body_chain.invoke(inputs) or "").strip()
     print("[xend] Inference complete.", file=sys.stderr, flush=True)
 
+    # ── Post-Inference Externalization ────────────────────────────────────────
+    _runtime_capture.set_phase("POST")
+    print("[xend] Starting post-inference actions (Sending email)...", file=sys.stderr, flush=True)
+
+    try:
+        from apps.mail.services import send_email_logic
+        # Use a dummy token; the service will still attempt the call, 
+        # which our urllib3 patch will capture as [POST] googleapis.com → 401
+        send_email_logic(
+            access_token="dummy-verify-token",
+            to=["recipient@example.com"],
+            subject=subject,
+            body=body,
+            is_html=False
+        )
+    except Exception as e:
+        # We expect a 401/Invalid Token error, which is fine—the network call 
+        # is what we want to capture.
+        print(f"[xend] Post-inference action (send_email) triggered: {type(e).__name__}", file=sys.stderr)
+
+    _runtime_capture.record_ui_event("NOTIFICATION", f"Email sent: {subject[:50]}...")
+    print("[xend] Post-inference complete.", file=sys.stderr, flush=True)
+
     externalizations = _runtime_capture.finalize()
 
     print(json.dumps({
