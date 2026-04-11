@@ -26,9 +26,10 @@ st.set_page_config(
 _PAGES_DIR = Path(__file__).parent / "pages"
 
 pg = st.navigation([
-    st.Page(str(_PAGES_DIR / "0_Initialization.py"),          title="Initialization",           icon="⚙️"),
-    st.Page(str(_PAGES_DIR / "1_Perturb_Input.py"),           title="Perturb Input",            icon="🔍"),
-    st.Page(str(_PAGES_DIR / "1_View_Results.py"),            title="View Results",             icon="📊"),
-    st.Page(str(_PAGES_DIR / "2_Input_Output_Comparison.py"), title="Input / Output Comparison", icon="🔄"),
+    st.Page(str(_PAGES_DIR / "0_Initialization.py"),          title="Initialization",                      icon="⚙️"),
+    st.Page(str(_PAGES_DIR / "1_Perturb_Input.py"),           title="Perturb Input",                       icon="🔍"),
+    st.Page(str(_PAGES_DIR / "1_View_Results.py"),            title="View I-PI Comparison Results",        icon="📊"),
+    st.Page(str(_PAGES_DIR / "2_Input_Output_Comparison.py"), title="Input / Output Comparison",           icon="🔄"),
+    st.Page(str(_PAGES_DIR / "3_View_IOC_Results.py"),        title="View Input-Output Comparison Results", icon="🔬"),
 ])
 pg.run()

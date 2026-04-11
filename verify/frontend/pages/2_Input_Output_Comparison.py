@@ -143,6 +143,19 @@ def run_comparison_pipeline(
 
     cache_dir = _ioc_cache_dir(app_name, dataset_name, modality) if use_cache else None
 
+    # Save run config on first use so the View IOC Results page can discover this cache
+    if cache_dir is not None:
+        run_config_path = cache_dir / "run_config.json"
+        if not run_config_path.exists():
+            cache_module.save_run_config(cache_dir, {
+                "app_name": app_name,
+                "dataset_name": dataset_name,
+                "modality": modality,
+                "unified_attrs": unified_attrs,
+                "perturbation_method": "ioc_comparison",
+                "evaluation_method": "openrouter",
+            })
+
     for ok, item, err in iter_dataset(dataset_name, modality, max_items=max_items):
         filename = item.get("filename", "unknown")
 
@@ -259,6 +272,7 @@ def run_comparison_pipeline(
             "output_eval_error": out_err,
             "ext_eval_error": ext_err,
             "from_cache": False,
+            "prompt_text": pipeline_result.metadata.get("prompt_text", ""),
         }
 
         # ── Save to cache (strip PIL objects before serializing) ──────────────
@@ -288,32 +302,6 @@ def _display_image(b64_str: str | None, data=None):
     except Exception as e:
         st.error(f"Could not display image: {e}")
 
-
-def _attr_badges_vertical(
-    attrs: List[str],
-    color: str = "#5bc0de",
-    empty_msg: str = "None",
-):
-    """Show a list of attribute names as vertical stacked coloured badges."""
-    if not attrs:
-        st.caption(empty_msg)
-        return
-    st.markdown(
-        "".join(
-            f'<div style="margin:3px 0">'
-            f'<span style="background:{color};color:white;padding:4px 12px;'
-            f'border-radius:5px;font-size:0.88em;display:inline-block">{a}</span>'
-            f"</div>"
-            for a in attrs
-        ),
-        unsafe_allow_html=True,
-    )
-
-
-def _input_label_badges(input_labels: Dict[str, int], unified_attrs: List[str]):
-    """Show positive input attributes as vertical coloured badges."""
-    positives = [a for a in unified_attrs if input_labels.get(a, 0) == 1]
-    _attr_badges_vertical(positives, color="#5bc0de", empty_msg="No annotated attributes.")
 
 
 def _stage_table(
@@ -384,7 +372,6 @@ def _reasoning_expander(
     output_eval: Dict[str, Any],
     ext_eval: Dict[str, Any],
     unified_attrs: List[str],
-    key_suffix: str = "",
 ):
     """Collapsible reasoning panel: one row per attribute, side-by-side output vs ext."""
     with st.expander("Reasoning details", expanded=False):
@@ -450,6 +437,10 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
             st.markdown("**Input**")
             if modality == "image":
                 _display_image(input_item.get("image_base64"), input_item.get("data"))
+                prompt_text = result.get("prompt_text", "").strip()
+                if prompt_text:
+                    st.caption("**Prompt sent to model:**")
+                    st.text(prompt_text)
             elif modality == "text":
                 text = input_item.get("text_content", "")
                 st.text_area(
@@ -481,18 +472,6 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
                     label_visibility="collapsed",
                     key=f"ioc_out_{idx}",
                 )
-                # Inferred attributes (vertical badges)
-                st.markdown(
-                    '<span style="font-size:0.85em;color:#888">Inferred attributes:</span>',
-                    unsafe_allow_html=True,
-                )
-                out_inferred = [
-                    a for a in unified_attrs
-                    if isinstance(result.get("output_eval", {}).get(a), dict)
-                    and result["output_eval"][a].get("inferable")
-                ]
-                # _attr_badges_vertical(out_inferred, color="#d9534f", empty_msg="None inferred")
-
             with ext_col:
                 st.markdown(f"**{STAGE_EXT}**")
                 ext_text = result.get("ext_text", "")
@@ -508,17 +487,6 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
                         disabled=True, label_visibility="collapsed",
                         key=f"ioc_ext_{idx}",
                     )
-                # Inferred attributes (vertical badges)
-                st.markdown(
-                    '<span style="font-size:0.85em;color:#888">Inferred attributes:</span>',
-                    unsafe_allow_html=True,
-                )
-                ext_inferred = [
-                    a for a in unified_attrs
-                    if isinstance(result.get("ext_eval", {}).get(a), dict)
-                    and result["ext_eval"][a].get("inferable")
-                ]
-                # _attr_badges_vertical(ext_inferred, color="#f0ad4e", empty_msg="None inferred")
 
         st.divider()
 
@@ -542,7 +510,6 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
             result.get("output_eval", {}),
             result.get("ext_eval", {}),
             unified_attrs,
-            key_suffix=str(idx),
         )
 
 
