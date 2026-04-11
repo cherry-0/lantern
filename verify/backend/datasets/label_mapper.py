@@ -176,6 +176,50 @@ def privacylens_to_unified(item: Dict[str, Any], unified_attrs: List[str]) -> Di
     return result
 
 
+# ── SynthPAI mapper ──────────────────────────────────────────────────────────
+
+def synthpai_to_unified(profile: Dict[str, Any], unified_attrs: List[str]) -> Dict[str, int]:
+    """
+    Map SynthPAI profile fields to the unified attribute list.
+
+    SynthPAI provides complete ground-truth profiles for synthetic Reddit personas.
+    All profile fields are always populated (the dataset guarantees completeness).
+
+    Mapping rules (conservative — only text-applicable attributes):
+        age               → age             (numeric age is present)
+        sex               → gender          (binary sex field is present)
+        city_country      → location        (current city/country is present)
+        relationship_status → marital status (relationship status is present)
+        occupation        → identity        (job/profession is a key identity attribute)
+
+    Image-only biometric attributes (face, race, nudity, height, weight, …) are
+    always 0: SynthPAI items are text posts, not images.
+    """
+    result = {attr: 0 for attr in unified_attrs}
+
+    if str(profile.get("age", "")).strip() not in ("", "None", "null"):
+        if "age" in result:
+            result["age"] = 1
+
+    if str(profile.get("sex", "")).strip() not in ("", "None", "null"):
+        if "gender" in result:
+            result["gender"] = 1
+
+    if str(profile.get("city_country", "")).strip() not in ("", "None", "null"):
+        if "location" in result:
+            result["location"] = 1
+
+    if str(profile.get("relationship_status", "")).strip() not in ("", "None", "null"):
+        if "marital status" in result:
+            result["marital status"] = 1
+
+    if str(profile.get("occupation", "")).strip() not in ("", "None", "null"):
+        if "identity" in result:
+            result["identity"] = 1
+
+    return result
+
+
 # ── Generic / HR-VISPR direct mapper ─────────────────────────────────────────
 
 def generic_to_unified(privacy_labels: List[str], unified_attrs: List[str]) -> Dict[str, int]:
@@ -203,6 +247,10 @@ def get_input_labels(item: Dict[str, Any], unified_attrs: List[str]) -> Dict[str
     if label_source == "sroie_entities":
         entities = item.get("sroie_entities") or {}
         return sroie_to_unified(entities, unified_attrs)
+
+    if label_source == "synthpai":
+        profile = item.get("synthpai_profile") or {}
+        return synthpai_to_unified(profile, unified_attrs)
 
     if "seed" in item or "vignette" in item or "trajectory" in item:
         return privacylens_to_unified(item, unified_attrs)

@@ -514,8 +514,9 @@ def _hf_row_to_item(row: Dict[str, Any], source: str, idx: int) -> Dict[str, Any
     """
     Convert a single HuggingFace dataset row into a Verify item dict.
 
-    Handles the PrivacyLens schema (seed / vignette / trajectory structs) and
-    falls back to a generic JSON dump for other HF datasets.
+    Handles the PrivacyLens schema (seed / vignette / trajectory structs),
+    the SynthPAI schema (text + profile + id), and falls back to a generic
+    JSON dump for other HF datasets.
     """
     item: Dict[str, Any] = {
         "modality": "text",
@@ -523,6 +524,23 @@ def _hf_row_to_item(row: Dict[str, Any], source: str, idx: int) -> Dict[str, Any
         "filename": f"row_{idx:05d}",
         "raw": row,
     }
+
+    # SynthPAI schema: each row is a Reddit-style post from a synthetic persona.
+    # Key fields: text (post content), profile (ground-truth private attributes), id.
+    profile = row.get("profile")
+    if "text" in row and isinstance(profile, dict) and "sex" in profile:
+        post_text = row.get("text", "")
+        persona = row.get("username") or row.get("author") or ""
+        thread = row.get("thread_id", "")
+        item["filename"] = row.get("id") or f"row_{idx:05d}"
+        item["synthpai_profile"] = profile
+        item["synthpai_thread"] = thread
+        item["synthpai_author"] = row.get("author", "")
+        item["synthpai_username"] = persona
+        item["label_source"] = "synthpai"
+        item["text_content"] = post_text
+        item["data"] = post_text
+        return item
 
     # PrivacyLens schema: nested seed / vignette / trajectory dicts
     if "vignette" in row and "trajectory" in row:
