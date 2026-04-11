@@ -76,6 +76,9 @@ class BaseAdapter(ABC):
     # Modalities this adapter can process: "image", "text", "video"
     supported_modalities: List[str] = []
 
+    # EnvSpec for conda-based adapters; None for serverless/API-only adapters
+    env_spec = None
+
     @abstractmethod
     def check_availability(self) -> Tuple[bool, str]:
         """
@@ -102,6 +105,20 @@ class BaseAdapter(ABC):
         Returns:
             AdapterResult with success flag and output.
         """
+
+    def initialize(self) -> Tuple[bool, str]:
+        """
+        Create the conda environment and install dependencies for this adapter.
+
+        For conda-based adapters (env_spec is set) this calls CondaRunner.ensure().
+        For serverless/API-only adapters this is a no-op.
+
+        Returns (ok, message).
+        """
+        if self.env_spec is None:
+            return True, "No environment setup required."
+        from verify.backend.utils.conda_runner import CondaRunner
+        return CondaRunner.ensure(self.env_spec)
 
     def get_display_label(self) -> str:
         """Return a short display label (used in UI dropdowns)."""

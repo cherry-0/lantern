@@ -101,6 +101,7 @@ class CloneAdapter(BaseAdapter):
 
     name = "clone"
     supported_modalities = ["image", "video"]
+    env_spec = _ENV_SPEC
 
     # ── Availability ──────────────────────────────────────────────────────────
 

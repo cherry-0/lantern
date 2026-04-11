@@ -84,6 +84,7 @@ class GoogleAIEdgeAdapter(BaseAdapter):
 
     name = "google-ai-edge-gallery"
     supported_modalities = ["image", "text"]
+    env_spec = _ENV_SPEC
 
     def __init__(self):
         self._model_id: str = get_env("GOOGLE_AI_EDGE_MODEL_ID") or _DEFAULT_MODEL_ID

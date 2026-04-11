@@ -92,6 +92,7 @@ class BudgetLensAdapter(BaseAdapter):
 
     name = "budget-lens"
     supported_modalities = ["image"]
+    env_spec = _ENV_SPEC
 
     def check_availability(self) -> Tuple[bool, str]:
         if use_app_servers():

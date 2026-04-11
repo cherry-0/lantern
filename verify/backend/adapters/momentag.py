@@ -22,24 +22,9 @@ _ENV_SPEC = EnvSpec(
     name="momentag",
     python="3.13",
     install_cmds=[
-        [
-            "pip",
-            "install",
-            "django==5.2.7",
-            "djangorestframework==3.16.1",
-            "django-environ==0.12.0",
-            "torch==2.8.0",
-            "torchvision==0.23.0",
-            "transformers==4.57.0",
-            "qdrant-client==1.15.1",
-            "pillow==11.3.0",
-            "numpy==2.3.3",
-            "sentence-transformers==5.1.1",
-            "faiss-cpu>=1.12.0",
-            "scikit-learn",
-            "networkx",
-            "python-dotenv",
-        ]
+        # Export exact locked deps from uv.lock, install into the conda env via pip.
+        # This is equivalent to `uv sync` but targets the active Python rather than .venv.
+        ["bash", "-c", "uv export --frozen --no-hashes --no-dev | pip install -r /dev/stdin"],
     ],
     cwd=MOMENTAG_BACKEND,
 )
@@ -76,6 +61,7 @@ class MomentagAdapter(BaseAdapter):
 
     name = "momentag"
     supported_modalities = ["image"]
+    env_spec = _ENV_SPEC
 
     def check_availability(self) -> Tuple[bool, str]:
         if use_app_servers():

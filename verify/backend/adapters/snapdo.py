@@ -60,6 +60,7 @@ class SnapdoAdapter(BaseAdapter):
 
     name = "snapdo"
     supported_modalities = ["image"]
+    env_spec = _ENV_SPEC
 
     def __init__(self):
         self._native_available: Optional[bool] = None

@@ -78,6 +78,7 @@ class SkinDiseaseAdapter(BaseAdapter):
 
     name = "skin-disease-detection"
     supported_modalities = ["image"]
+    env_spec = _ENV_SPEC
 
     def check_availability(self) -> Tuple[bool, str]:
         if use_app_servers():

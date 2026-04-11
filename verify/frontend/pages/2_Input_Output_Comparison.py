@@ -746,7 +746,6 @@ def main():
         rc = st.session_state.ioc_run_config
         processed = st.session_state.ioc_items_processed
         total = st.session_state.ioc_items_total
-        current = st.session_state.ioc_current_item
 
         st.markdown(
             f"**{rc.get('app')}** · {rc.get('dataset')} · {rc.get('modality')}"
@@ -754,11 +753,14 @@ def main():
         if total > 0:
             st.progress(
                 min(processed / total, 1.0),
-                text=f"Item {processed} / {total}"
-                + (f"  —  `{current}`" if current else ""),
+                text=f"Processed {processed} / {total}",
             )
         else:
-            st.progress(0, text=f"{processed} items processed")
+            st.progress(0, text=f"Processed {processed} item{'s' if processed != 1 else ''}")
+
+        next_num = processed + 1
+        if total == 0 or next_num <= total:
+            st.caption(f"⏳ Processing item {next_num}" + (f" of {total}" if total > 0 else "") + "…")
 
     results = st.session_state.ioc_results
     if not results and not st.session_state.ioc_processing:
