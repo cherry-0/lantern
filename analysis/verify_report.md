@@ -153,23 +153,31 @@ snapdo already uses SQLite with a hardcoded `SECRET_KEY` — no shim needed.
 
 ### 5.1 `_runtime_capture.py` (runner-side, stdlib-only)
 
-`verify/backend/runners/_runtime_capture.py` is a self-contained module (no verify package imports, works in any conda env). It captures actual runtime I/O from the app during execution.
+`verify/backend/runners/_runtime_capture.py` is a self-contained module (no verify package imports, works in any conda env). It captures actual runtime I/O from the app during execution, organized into two phases: **DURING_INFERENCE** and **POST_INFERENCE**.
 
-**`install()`** patches three transport layers:
-- `requests.Session.request` — captures HTTP requests/responses (URL, method, status)
+**`install()`** patches four transport layers:
+- `requests.Session.request` (via `urllib3`) — captures HTTP requests/responses (URL, method, status)
 - `httpx.Client.send` — captures sync httpx calls (used by LangChain, some Django apps)
 - `httpx.AsyncClient.send` — captures async httpx calls
+- `starlette.websockets.WebSocket` — captures `send_text` and `send_json` calls to the frontend
+
+**`set_phase(phase)`** — sets the current phase to `"DURING"` or `"POST"`.
+
+**`record_ui_event(action, details)`** — manually records a UI action (e.g. `[NOTIFICATION]`, `[ANIMATION]`) for headless runners.
 
 **`connect_django_signals()`** — call after `django.setup()` to hook `post_save` signal for model persistence events.
 
-**Log filtering** — installs a `logging.Handler` at DEBUG level. Keeps WARNING+ always; keeps DEBUG/INFO only if the log record name or message contains inference-relevant keywords (`inference`, `llm`, `model`, `verdict`, `category`, `mail`, `tutor`, `response`, etc.). Skips noisy internals (`django.db.backends`, `urllib3`, `asyncio`, `transformers`, etc.).
+**Log filtering** — installs a `logging.Handler` at DEBUG level. Keeps WARNING+ always; keeps DEBUG/INFO only if the log record name or message contains inference-relevant keywords.
 
-**`finalize() → dict`** — returns captured channels, caps applied:
-- `NETWORK`: up to 15 entries, formatted as `[METHOD] URL → STATUS`
-- `STORAGE`: up to 10 Django model save events
-- `LOGGING`: up to 8 deduplicated log lines
+**`finalize() → dict`** — returns captured channels nested by phase:
+```json
+{
+  "DURING": {"NETWORK": "...", "LOGGING": "..."},
+  "POST": {"NETWORK": "...", "UI": "...", "STORAGE": "..." }
+}
+```
 
-Empty channels are omitted from the returned dict.
+Empty channels or phases are omitted from the returned dict.
 
 ### 5.2 `_openrouter_calls` tracking (adapter-side, serverless only)
 
@@ -206,7 +214,11 @@ Priority order (first match wins):
 
 ### 5.4 What is shown in the UI
 
-`View Results` page (`verify/frontend/pages/1_View_Results.py`) shows externalizations for both the original and perturbed pipeline results in a `🌐 Captured Externalizations` expander within the Inference Results section. Each channel is shown as a bold header + caption text.
+Both the live `Perturb Input` page and the `View Results` page show externalizations grouped into two distinct steps:
+1. **Step 1: Inference Process** (captured during the `DURING` phase)
+2. **Step 2: Externalization / UI** (captured during the `POST` phase)
+
+Each step uses bold headers and italicized channel names (e.g. *NETWORK*, *UI*) to clearly distinguish between the app's "thought process" and its "actions."
 
 ---
 
@@ -244,7 +256,9 @@ Priority order (first match wins):
 ---
 
 ### xend
-**Native:** `CondaRunner.run(xend_runner.py)` — bootstraps Django with `_xend_verify_settings`, imports `subject_chain` and `body_chain` from `apps.ai.services.chains`, invokes both with a structured inputs dict (body, subject, language, recipients, etc.).
+**Native:** `CondaRunner.run(xend_runner.py)` — bootstraps Django with `_xend_verify_settings`, imports `subject_chain` and `body_chain` from `apps.ai.services.chains`, and invokes both. 
+
+**Post-Inference Action:** Calls the actual `apps.mail.services.send_email_logic` with the generated result. This triggers a real network request to `googleapis.com`, captured as a 401 (Unauthorized) due to the dummy token, verifying that the app successfully attempted to externalize the email.
 
 **Serverless:** OpenRouter with xend's email-drafting persona; produces `subject` + `body`.
 
@@ -277,7 +291,11 @@ Priority order (first match wins):
 ---
 
 ### llm-vtuber
-**Native:** `CondaRunner.run(llmvtuber_runner.py)` — imports `AsyncLLM` from `open_llm_vtuber.agent.stateless_llm.openai_compatible_llm`, calls `llm.chat_completion(messages, system=_VTUBER_SYSTEM)` async. Captures externalizations: STT (Whisper), LLM, TTS requests; Live2D UI rendering; chat_history.json storage.
+**Native:** `CondaRunner.run(llmvtuber_runner.py)` — imports `AsyncLLM` from `open_llm_vtuber.agent.stateless_llm.openai_compatible_llm`, calls `llm.chat_completion(messages, system=_VTUBER_SYSTEM)` async. 
+
+**Post-Inference Actions:** 
+1. **Real TTS**: Triggers the app's actual `EdgeTTS` engine with the response text, resulting in a captured network request to `speech.platform.bing.com`.
+2. **UI Push**: Simulates pushing the response and animations to the frontend via the patched WebSocket system, appearing as `[PUSH]` and `[DISPLAY_TEXT]` UI events.
 
 **Serverless:** OpenRouter with the same Shizuku VTuber system prompt.
 
@@ -663,3 +681,15 @@ Dataset item
 | llm-vtuber | CondaRunner → AsyncLLM | OpenRouter text | text |
 | skin-disease | CondaRunner → 3× TFLite | OpenRouter vision | image |
 | google-ai-edge | CondaRunner → HuggingFace transformers | OpenRouter text+vision | image, text |
+
+---
+
+## 12. Future TODOs
+
+- **Expand Post-Inference Coverage**: 
+    - Add actual S3/Boto3 upload tracking for `budget-lens` (post-inference archival).
+    - Capture RAG vector database updates after a chat session completes.
+- **Improved UI Timeline**: Add a dedicated "Timeline" view to the frontend to visualize the sequence of network/UI events chronologically.
+- **Cross-Phase Data Flow**: Track whether specific private data discovered during inference (e.g. an address) is the same data being externalized in the post-inference phase.
+- **Regression Testing**: Implement automated checks that fail if a runner's captured externalizations do not contain expected "Post-Inference" events (e.g. `xend` must always attempt a Gmail API call).
+- **Transport Layer Support**: Add patches for more communication layers like `gRPC` or `socket.io` if future apps require them.
