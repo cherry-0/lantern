@@ -99,7 +99,7 @@ def main():
     # ── "Initialize All" button ───────────────────────────────────────────────
     col_hdr, col_all = st.columns([5, 2])
     with col_all:
-        if st.button("Initialize All", use_container_width=True, disabled=any_running):
+        if st.button("Initialize All", width="stretch", disabled=any_running):
             for app_name, adapter in adapters.items():
                 existing = st.session_state._init_futures.get(app_name)
                 if existing is not None and not existing.done():
@@ -159,7 +159,7 @@ def main():
                 else "Re-initialize" if already_ready
                 else "Initialize"
             )
-            if st.button(btn_label, key=f"init_{app_name}", disabled=is_running, use_container_width=True):
+            if st.button(btn_label, key=f"init_{app_name}", disabled=is_running, width="stretch"):
                 future = st.session_state._executor.submit(adapter.initialize)
                 st.session_state._init_futures[app_name] = future
                 st.session_state._init_results.pop(app_name, None)

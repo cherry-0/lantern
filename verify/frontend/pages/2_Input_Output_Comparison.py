@@ -83,12 +83,31 @@ def _build_ext_text(externalizations: Dict[str, str]) -> str:
     )
 
 
+def _ioc_cache_dir(app_name: str, dataset_name: str, modality: str) -> "Path":
+    """Return the IOC-specific cache directory (distinct from perturb-input caches)."""
+    from verify.backend.utils import cache as cache_module
+    # Use "ioc_comparison" as perturbation_method so the SHA256 key never
+    # collides with any perturb-input cache (which always has a real method name).
+    return cache_module.get_cache_dir(
+        app_name, dataset_name, modality, [], "ioc_comparison"
+    )
+
+
+def _strip_nonserializable(item: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Return a copy of an input_item safe to serialize to JSON.
+    Removes PIL Image objects (stored under 'data') but keeps image_base64 strings.
+    """
+    return {k: v for k, v in item.items() if k != "data"}
+
+
 def run_comparison_pipeline(
     app_name: str,
     dataset_name: str,
     modality: str,
     unified_attrs: List[str],
     max_items: Optional[int] = None,
+    use_cache: bool = True,
 ) -> Generator[Dict[str, Any], None, None]:
     """
     Generator that yields one result dict per dataset item.
@@ -109,22 +128,36 @@ def run_comparison_pipeline(
         ext_eval_ok     bool
         output_eval_error str | None
         ext_eval_error  str | None
+        from_cache      bool
     """
     from verify.backend.adapters import get_adapter
     from verify.backend.datasets.loader import iter_dataset
     from verify.backend.datasets.label_mapper import get_input_labels
     from verify.backend.evaluation_method.evaluator import evaluate_inferability
+    from verify.backend.utils import cache as cache_module
 
     adapter = get_adapter(app_name)
     if adapter is None:
         yield {"type": "error", "error": f"No adapter registered for '{app_name}'."}
         return
 
+    cache_dir = _ioc_cache_dir(app_name, dataset_name, modality) if use_cache else None
+
     for ok, item, err in iter_dataset(dataset_name, modality, max_items=max_items):
         filename = item.get("filename", "unknown")
 
+        # ── Cache check ───────────────────────────────────────────────────────
+        if cache_dir is not None:
+            cached = cache_module.load_item_cache(cache_dir, filename)
+            if cached is not None:
+                # Restore PIL-less input_item if it was stripped before saving
+                cached.setdefault("input_item", item)
+                cached["from_cache"] = True
+                yield cached
+                continue
+
         if not ok:
-            yield {
+            result = {
                 "filename": filename,
                 "status": "failed",
                 "error": err or "Dataset load error",
@@ -140,7 +173,9 @@ def run_comparison_pipeline(
                 "ext_eval_ok": False,
                 "output_eval_error": None,
                 "ext_eval_error": None,
+                "from_cache": False,
             }
+            yield result
             continue
 
         # 1. Map input labels
@@ -149,9 +184,9 @@ def run_comparison_pipeline(
         # 2. Run app pipeline (original only, no perturbation)
         try:
             adapter._reset_openrouter_calls()
-            result = adapter.run_pipeline(item)
+            pipeline_result = adapter.run_pipeline(item)
         except Exception as e:
-            yield {
+            result = {
                 "filename": filename,
                 "status": "failed",
                 "error": f"Pipeline error: {e}",
@@ -167,14 +202,16 @@ def run_comparison_pipeline(
                 "ext_eval_ok": False,
                 "output_eval_error": None,
                 "ext_eval_error": None,
+                "from_cache": False,
             }
+            yield result
             continue
 
-        if not result.success:
-            yield {
+        if not pipeline_result.success:
+            result = {
                 "filename": filename,
                 "status": "failed",
-                "error": result.error or "Adapter returned failure.",
+                "error": pipeline_result.error or "Adapter returned failure.",
                 "modality": modality,
                 "input_item": item,
                 "input_labels": input_labels,
@@ -187,11 +224,13 @@ def run_comparison_pipeline(
                 "ext_eval_ok": False,
                 "output_eval_error": None,
                 "ext_eval_error": None,
+                "from_cache": False,
             }
+            yield result
             continue
 
-        output_text = result.output_text or ""
-        externalizations = result.externalizations or {}
+        output_text = pipeline_result.output_text or ""
+        externalizations = pipeline_result.externalizations or {}
         ext_text = _build_ext_text(externalizations)
 
         # 3. Evaluate raw output
@@ -203,7 +242,7 @@ def run_comparison_pipeline(
         else:
             ext_ok, ext_eval, ext_err = True, {}, None
 
-        yield {
+        result = {
             "filename": filename,
             "status": "success",
             "error": None,
@@ -219,7 +258,18 @@ def run_comparison_pipeline(
             "ext_eval_ok": ext_ok,
             "output_eval_error": out_err,
             "ext_eval_error": ext_err,
+            "from_cache": False,
         }
+
+        # ── Save to cache (strip PIL objects before serializing) ──────────────
+        if cache_dir is not None:
+            saveable = {
+                **result,
+                "input_item": _strip_nonserializable(item),
+            }
+            cache_module.save_item_cache(cache_dir, filename, saveable)
+
+        yield result
 
 
 # ─── Visualization helpers ────────────────────────────────────────────────────
@@ -230,9 +280,9 @@ def _display_image(b64_str: str | None, data=None):
             import base64, io
             from PIL import Image as PILImage
             img = PILImage.open(io.BytesIO(base64.b64decode(b64_str)))
-            st.image(img, use_container_width=True)
+            st.image(img, width="stretch")
         elif data is not None:
-            st.image(data, use_container_width=True)
+            st.image(data, width="stretch")
         else:
             st.warning("No image available.")
     except Exception as e:
@@ -378,6 +428,7 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
     input_item = result.get("input_item", {})
 
     status_icon = {"success": "✅", "failed": "❌"}.get(status, "")
+    from_cache = " (cached)" if result.get("from_cache") else ""
 
     # Build expander title suffix from input labels
     positives = [a for a in unified_attrs if result.get("input_labels", {}).get(a, 0) == 1]
@@ -387,7 +438,7 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
     if data_type and not positives:
         label_suffix = f"  —  📄 {data_type}"
 
-    with st.expander(f"{status_icon} {filename}{label_suffix}", expanded=(status == "failed")):
+    with st.expander(f"{status_icon} {filename}{from_cache}{label_suffix}", expanded=(status == "failed")):
         if status == "failed":
             st.error(f"Error: {result.get('error', 'Unknown error')}")
             return
@@ -402,7 +453,7 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
             elif modality == "text":
                 text = input_item.get("text_content", "")
                 st.text_area(
-                    "", value=text, height=220, disabled=True,
+                    "input_text", value=text, height=220, disabled=True,
                     label_visibility="collapsed",
                     key=f"ioc_input_text_{idx}",
                 )
@@ -412,7 +463,7 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
                     cols = st.columns(min(len(frames), 2))
                     for c, f in zip(cols, frames[:2]):
                         with c:
-                            st.image(f, use_container_width=True)
+                            st.image(f, width="stretch")
                 else:
                     st.info("No media available.")
 
@@ -426,7 +477,7 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
                 st.markdown(f"**{STAGE_OUTPUT}**")
                 output_text = result.get("output_text", "")
                 st.text_area(
-                    "", value=output_text, height=200, disabled=True,
+                    "output_text", value=output_text, height=200, disabled=True,
                     label_visibility="collapsed",
                     key=f"ioc_out_{idx}",
                 )
@@ -447,13 +498,13 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
                 ext_text = result.get("ext_text", "")
                 if ext_text.strip():
                     st.text_area(
-                        "", value=ext_text, height=200, disabled=True,
+                        "externalized_text", value=ext_text, height=200, disabled=True,
                         label_visibility="collapsed",
                         key=f"ioc_ext_{idx}",
                     )
                 else:
                     st.text_area(
-                        "", value="No externalizations captured.", height=200,
+                        "externalized_text_empty", value="No externalizations captured.", height=200,
                         disabled=True, label_visibility="collapsed",
                         key=f"ioc_ext_{idx}",
                     )
@@ -563,7 +614,7 @@ def _render_aggregated(all_results: List[Dict[str, Any]], unified_attrs: List[st
             title=f"Attribute-wise positive rate across {n} item(s)",
         )
     )
-    st.altair_chart(chart, use_container_width=True)
+    st.altair_chart(chart, width="stretch")
     st.caption(
         f"Blue = Input annotation positive rate · "
         f"Red = Raw output inferability rate · "
@@ -664,11 +715,16 @@ def main():
 
         st.divider()
 
+        # Cache option
+        use_cache = st.checkbox(
+            "Use cache (skip already-processed items)", value=True, key="ioc_use_cache"
+        )
+
         run_clicked = st.button(
             "▶ Run Comparison",
             type="primary",
             disabled=not (app_available and unified_attrs),
-            use_container_width=True,
+            width="stretch",
         )
         if not app_available:
             st.caption(f"App '{selected_app}' is not available.")
@@ -683,6 +739,7 @@ def main():
         ("ioc_items_total", 0),
         ("ioc_run_config", {}),
         ("ioc_current_item", ""),
+        ("ioc_error", None),
     ]:
         if key not in st.session_state:
             st.session_state[key] = default
@@ -693,6 +750,7 @@ def main():
         st.session_state.ioc_processing = True
         st.session_state.ioc_items_processed = 0
         st.session_state.ioc_current_item = ""
+        st.session_state.ioc_error = None
         st.session_state.ioc_run_config = {
             "app": selected_app,
             "dataset": selected_dataset,
@@ -712,36 +770,38 @@ def main():
             modality=selected_modality,
             unified_attrs=unified_attrs,
             max_items=max_items,
+            use_cache=use_cache,
         )
         st.rerun()
 
-    # Process one item per rerun
-    if st.session_state.ioc_processing and "_ioc_generator" in st.session_state:
-        gen = st.session_state["_ioc_generator"]
-        try:
-            item = next(gen)
-
-            if isinstance(item, dict) and item.get("type") == "error":
-                st.error(f"Pipeline error: {item.get('error')}")
-                st.session_state.ioc_processing = False
-            else:
-                st.session_state.ioc_results.append(item)
-                st.session_state.ioc_items_processed += 1
-                st.session_state.ioc_current_item = item.get("filename", "")
-            st.rerun()
-
-        except StopIteration:
-            st.session_state.ioc_processing = False
-            st.session_state.pop("_ioc_generator", None)
-            st.rerun()
-        except Exception as e:
-            st.error(f"Unexpected error: {e}")
-            st.session_state.ioc_processing = False
-            st.rerun()
-
     # ── Display ───────────────────────────────────────────────────────────────
+    # Rendered BEFORE the processing block so it is visible on every rerun
+    # (st.rerun() stops execution, so anything after it is skipped).
 
-    # Progress
+    if st.session_state.ioc_error:
+        st.error(st.session_state.ioc_error)
+
+    results = st.session_state.ioc_results
+
+    if not results and not st.session_state.ioc_processing and not st.session_state.ioc_error:
+        st.markdown(
+            """
+            ### How to use this page
+
+            1. Select a **target app** and **dataset** in the sidebar.
+            2. Choose the **modality** that matches the dataset.
+            3. Optionally limit the number of items processed.
+            4. Click **▶ Run Comparison**.
+
+            For each item the page will show:
+            - **Input** image or text with its annotated privacy labels
+            - **Raw app output** and **externalized channel results**
+            - A **heatmap** comparing attribute presence across all three stages
+            - An **aggregated chart** across all items (positive rate per attribute)
+            """
+        )
+
+    # Progress (shown while processing)
     if st.session_state.ioc_processing:
         rc = st.session_state.ioc_run_config
         processed = st.session_state.ioc_items_processed
@@ -762,27 +822,7 @@ def main():
         if total == 0 or next_num <= total:
             st.caption(f"⏳ Processing item {next_num}" + (f" of {total}" if total > 0 else "") + "…")
 
-    results = st.session_state.ioc_results
-    if not results and not st.session_state.ioc_processing:
-        st.markdown(
-            """
-            ### How to use this page
-
-            1. Select a **target app** and **dataset** in the sidebar.
-            2. Choose the **modality** that matches the dataset.
-            3. Optionally limit the number of items processed.
-            4. Click **▶ Run Comparison**.
-
-            For each item the page will show:
-            - **Input** image or text with its annotated privacy labels
-            - **Raw app output** and **externalized channel results**
-            - A **heatmap** comparing attribute presence across all three stages
-            - An **aggregated chart** across all items (positive rate per attribute)
-            """
-        )
-        return
-
-    # Aggregated chart (shown while running and after)
+    # Results (accumulate as items complete)
     if results:
         rc = st.session_state.ioc_run_config
         n = len(results)
@@ -796,10 +836,35 @@ def main():
             st.subheader("Aggregated Attribute-wise Positive Rate")
             _render_aggregated(results, unified_attrs)
 
-        # Per-item results
         st.divider()
         for idx, result in enumerate(results):
             _render_item(result, unified_attrs, idx)
+
+    # ── Process one item per rerun ────────────────────────────────────────────
+    # Kept AFTER the display block so progress/results are visible before this
+    # triggers st.rerun().
+    if st.session_state.ioc_processing and "_ioc_generator" in st.session_state:
+        gen = st.session_state["_ioc_generator"]
+        try:
+            item = next(gen)
+
+            if isinstance(item, dict) and item.get("type") == "error":
+                st.session_state.ioc_error = f"Pipeline error: {item.get('error')}"
+                st.session_state.ioc_processing = False
+            else:
+                st.session_state.ioc_results.append(item)
+                st.session_state.ioc_items_processed += 1
+                st.session_state.ioc_current_item = item.get("filename", "")
+            st.rerun()
+
+        except StopIteration:
+            st.session_state.ioc_processing = False
+            st.session_state.pop("_ioc_generator", None)
+            st.rerun()
+        except Exception as e:
+            st.session_state.ioc_error = f"Unexpected error: {e}"
+            st.session_state.ioc_processing = False
+            st.rerun()
 
 
 if __name__ == "__main__":

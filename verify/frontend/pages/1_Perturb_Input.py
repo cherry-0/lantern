@@ -91,20 +91,24 @@ def _display_image(b64_str: str | None, data=None, caption: str = ""):
             import io
             img_data = base64.b64decode(b64_str)
             img = PILImage.open(io.BytesIO(img_data))
-            st.image(img, caption=caption, use_container_width=True)
+            st.image(img, caption=caption, width="stretch")
         elif data is not None:
-            st.image(data, caption=caption, use_container_width=True)
+            st.image(data, caption=caption, width="stretch")
         else:
             st.warning("No image data available.")
     except Exception as e:
         st.error(f"Could not display image: {e}")
 
 
-def _display_text(text: str, label: str = ""):
+def _display_text(text: str, label: str = "", key_suffix: str = ""):
     """Display text content in a styled box."""
     if label:
         st.markdown(f"**{label}**")
-    st.text_area("", value=text, height=200, disabled=True, label_visibility="collapsed")
+    
+    # Provide a unique label for accessibility, but keep it hidden.
+    unique_label = f"text_area_{key_suffix}" if key_suffix else "text_area"
+    st.text_area(unique_label, value=text, height=200, disabled=True, 
+                 label_visibility="collapsed", key=f"text_{key_suffix}")
 
 
 def _display_frames(frames: list, caption_prefix: str = "Frame"):
@@ -115,7 +119,7 @@ def _display_frames(frames: list, caption_prefix: str = "Frame"):
     cols = st.columns(min(len(frames), 4))
     for i, (col, frame) in enumerate(zip(cols, frames)):
         with col:
-            st.image(frame, caption=f"{caption_prefix} {i+1}", use_container_width=True)
+            st.image(frame, caption=f"{caption_prefix} {i+1}", width="stretch")
 
 
 def _eval_chart(eval_results: dict, stage_label: str):
@@ -164,7 +168,7 @@ def _eval_chart(eval_results: dict, stage_label: str):
         )
         .properties(height=200)
     )
-    st.altair_chart(chart, use_container_width=True)
+    st.altair_chart(chart, width="stretch")
 
 
 def _render_generated_task(result: dict):
@@ -245,7 +249,7 @@ def _render_item_result(result: dict):
             if modality == "image":
                 _display_image(result.get("_original_image_b64"), result.get("_original_data"))
             elif modality == "text":
-                _display_text(orig_input.get("text_content", ""), "")
+                _display_text(orig_input.get("text_content", ""), "", key_suffix=f"orig_{filename}")
             elif modality == "video":
                 _display_frames(result.get("_original_frames", []), "Frame")
 
@@ -255,7 +259,7 @@ def _render_item_result(result: dict):
             if modality == "image":
                 _display_image(result.get("_perturbed_image_b64"), result.get("_perturbed_data"))
             elif modality == "text":
-                _display_text(pert_input.get("text_content", ""), "")
+                _display_text(pert_input.get("text_content", ""), "", key_suffix=f"pert_{filename}")
             elif modality == "video":
                 _display_frames(result.get("_perturbed_frames", []), "Frame")
             if pert_info:
@@ -284,9 +288,25 @@ def _render_item_result(result: dict):
                 exts = orig_out.get("externalizations", {})
                 if exts:
                     with st.expander("🌐 Captured Externalizations", expanded=True):
-                        for channel, content in exts.items():
-                            st.markdown(f"**[{channel}]**")
-                            st.caption(content)
+                        # Handle phase-aware structure: {"DURING": {...}, "POST": {...}}
+                        if "DURING" in exts or "POST" in exts:
+                            for phase in ["DURING", "POST"]:
+                                phase_data = exts.get(phase, {})
+                                if not phase_data:
+                                    continue
+                                
+                                label = "Step 1: Inference Process" if phase == "DURING" else "Step 2: Externalization / UI"
+                                st.markdown(f"**{label}**")
+                                for channel, content in phase_data.items():
+                                    st.markdown(f"*{channel}*")
+                                    st.caption(content)
+                                if phase == "DURING" and "POST" in exts:
+                                    st.divider()
+                        else:
+                            # Fallback for old flat dictionary structure
+                            for channel, content in exts.items():
+                                st.markdown(f"**[{channel}]**")
+                                st.caption(content)
 
                 structured = orig_out.get("structured_output", {})
                 if structured:
@@ -310,9 +330,25 @@ def _render_item_result(result: dict):
                 exts = pert_out.get("externalizations", {})
                 if exts:
                     with st.expander("🌐 Captured Externalizations", expanded=True):
-                        for channel, content in exts.items():
-                            st.markdown(f"**[{channel}]**")
-                            st.caption(content)
+                        # Handle phase-aware structure: {"DURING": {...}, "POST": {...}}
+                        if "DURING" in exts or "POST" in exts:
+                            for phase in ["DURING", "POST"]:
+                                phase_data = exts.get(phase, {})
+                                if not phase_data:
+                                    continue
+                                
+                                label = "Step 1: Inference Process" if phase == "DURING" else "Step 2: Externalization / UI"
+                                st.markdown(f"**{label}**")
+                                for channel, content in phase_data.items():
+                                    st.markdown(f"*{channel}*")
+                                    st.caption(content)
+                                if phase == "DURING" and "POST" in exts:
+                                    st.divider()
+                        else:
+                            # Fallback for old flat dictionary structure
+                            for channel, content in exts.items():
+                                st.markdown(f"**[{channel}]**")
+                                st.caption(content)
 
                 structured = pert_out.get("structured_output", {})
                 if structured:
@@ -401,7 +437,7 @@ def _render_aggregated_chart(all_results: list, attributes: list):
         )
         .properties(height=250)
     )
-    st.altair_chart(chart, use_container_width=True)
+    st.altair_chart(chart, width="stretch")
     st.caption("Average inferability score across all items (lower is better after perturbation).")
 
 
@@ -530,7 +566,7 @@ def main():
             "▶ Verify",
             type="primary",
             disabled=not (app_available and selected_attributes),
-            use_container_width=True,
+            width="stretch",
         )
 
         if not selected_attributes:
@@ -591,54 +627,9 @@ def main():
         st.session_state._generator = orch.run()
         st.rerun()
 
-    # Process next item from generator
-    if st.session_state.processing and "_generator" in st.session_state:
-        gen = st.session_state._generator
-        try:
-            item = next(gen)
-            item_type = item.get("type", "item_result")
-
-            if item_type == "adapter_status":
-                icon = "✅" if item.get("available") else "❌"
-                msg = f"{icon} Adapter [{item.get('app_name')}]: {item.get('message')}"
-                st.session_state.status_messages.append(msg)
-                st.rerun()
-
-            elif item_type == "perturbation_status":
-                icon = "✅" if item.get("available") else "⚠️"
-                msg = f"{icon} Perturbation [{item.get('method')}]: {item.get('message')}"
-                st.session_state.status_messages.append(msg)
-                st.rerun()
-
-            elif item_type == "error":
-                st.session_state.status_messages.append(f"❌ Error: {item.get('error')}")
-                st.session_state.processing = False
-                st.rerun()
-
-            elif item_type == "summary":
-                st.session_state.summary = item
-                st.session_state.processing = False
-                if "_generator" in st.session_state:
-                    del st.session_state._generator
-                st.rerun()
-
-            elif item_type == "item_result":
-                st.session_state.results.append(item)
-                st.session_state.items_processed += 1
-                st.session_state.current_item = item.get("filename", "")
-                st.rerun()
-
-        except StopIteration:
-            st.session_state.processing = False
-            if "_generator" in st.session_state:
-                del st.session_state._generator
-            st.rerun()
-        except Exception as e:
-            st.session_state.status_messages.append(f"❌ Pipeline error: {e}")
-            st.session_state.processing = False
-            st.rerun()
-
     # ── Display ────────────────────────────────────────────────────────────
+    # Rendered BEFORE the processing block so it is visible on every rerun
+    # (st.rerun() stops execution, so anything after it is skipped).
 
     # Status messages
     for msg in st.session_state.status_messages:
@@ -728,7 +719,7 @@ def main():
                     ),
                 })
             if rows:
-                st.dataframe(pd.DataFrame(rows), use_container_width=True)
+                st.dataframe(pd.DataFrame(rows), width="stretch")
 
         # Download buttons
         st.subheader("Download Report")
@@ -743,7 +734,7 @@ def main():
                     data=json_path.read_text(),
                     file_name="verify_report.json",
                     mime="application/json",
-                    use_container_width=True,
+                    width="stretch",
                 )
             else:
                 st.info("JSON report not available.")
@@ -756,7 +747,7 @@ def main():
                     data=csv_path.read_text(),
                     file_name="verify_report.csv",
                     mime="text/csv",
-                    use_container_width=True,
+                    width="stretch",
                 )
             else:
                 st.info("CSV report not available.")
