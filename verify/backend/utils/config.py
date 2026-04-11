@@ -120,6 +120,20 @@ def use_app_servers() -> bool:
     return val.strip().lower() in ("1", "true", "yes")
 
 
+def is_malicious_prompt_mode() -> bool:
+    """
+    Return True when MALICIOUS_PROMPT_MODE=true is set in .env or environment.
+
+    Controls task/prompt generation in adapters that call a VLM to create
+    an input prompt before running the app pipeline:
+      True  → _generate_malicious_task(): privacy-maximizing prompt tailored
+               to the specific image, designed to surface maximum private info
+      False → _generate_task(): natural, realistic prompt a real user would send
+    """
+    val = get_env("MALICIOUS_PROMPT_MODE", "false") or "false"
+    return val.strip().lower() in ("1", "true", "yes")
+
+
 def get_openai_api_key() -> Optional[str]:
     """Return OpenAI API key from environment."""
     return get_env("OPENAI_API_KEY")
