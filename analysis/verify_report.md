@@ -612,24 +612,34 @@ OpenRouter is used in four distinct roles:
 
 ### Supported dataset formats
 
-| Format | Detection | Privacy labels | Attribute field |
-|---|---|---|---|
-| HR-VISPR | Split subdirs (val2017/test2017/train2017) + PKL/JSON labels | 18-class labels (age, face, gender, race, …) | `privacy_labels` |
-| SROIE2019 | `{split}/img/` + `{split}/entities/` | Entity field names (company, date, address, total) | `privacy_labels` + `sroie_entity_attrs` |
-| PrivacyLens (HF) | `dataset_dict.json` or `*.arrow` | Mapped from seed.data_type via pre-built PKL | `data_type_attributes` |
-| Flat files | Extension counting | None | — |
+| Format | Detection | Modality | Privacy labels | Label source field |
+|---|---|---|---|---|
+| HR-VISPR | Split subdirs (`val2017/test2017/train2017`) + PKL/JSON | image | 18-class labels (age, face, gender, race, …) | `privacy_labels` |
+| SROIE2019 | `{split}/img/` + `{split}/entities/` | image | Entity field names (company, date, address, total) | `label_source = "sroie_entities"` |
+| PrivacyLens (HF) | `dataset_dict.json` / `*.arrow` + `vignette`+`trajectory` fields | text | Mapped from `seed.data_type` via pre-built PKL | `data_type_attributes` |
+| SynthPAI (HF) | `dataset_dict.json` / `*.arrow` + `text`+`profile.sex` fields | text | Ground-truth profile (age, sex, city, occupation, relationship) | `label_source = "synthpai"` |
+| Flat files | Extension counting | any | None | — |
 
-### Attribute filtering (orchestrator lines 315–321)
+### Label mapper dispatch (`label_mapper.get_input_labels`)
 
-```python
-item_labels = (
-    item.get("privacy_labels")        # HR-VISPR / SROIE
-    or item.get("data_type_attributes")  # PrivacyLens
-    or []
-)
-if item_labels and not (set(item_labels) & set(self.attributes)):
-    continue  # skip — no overlap with selected attributes
-```
+| Condition | Mapper |
+|---|---|
+| `label_source == "sroie_entities"` | `sroie_to_unified(sroie_entities)` |
+| `label_source == "synthpai"` | `synthpai_to_unified(synthpai_profile)` |
+| `"seed"` or `"vignette"` or `"trajectory"` in item | `privacylens_to_unified(item)` |
+| `privacy_labels` present | `hrvispr_to_unified(privacy_labels)` |
+| otherwise | all zeros |
+
+### SynthPAI profile → unified attribute mapping
+
+| SynthPAI field | Unified attribute | Notes |
+|---|---|---|
+| `profile.age` | `age` | Always present (synthetic completeness) |
+| `profile.sex` | `gender` | Always present |
+| `profile.city_country` | `location` | Always present |
+| `profile.relationship_status` | `marital status` | Always present |
+| `profile.occupation` | `identity` | Occupation is a key PII attribute |
+| `profile.education`, `income`, `income_level` | — | Stored in item but not in unified list |
 
 Items with no labels are always included. Items with labels are skipped unless at least one label overlaps the selected attributes. The expander title in the UI shows `🏷 {labels}` (privacy_labels) or `📄 {data_type} → {attributes}` (PrivacyLens).
 
