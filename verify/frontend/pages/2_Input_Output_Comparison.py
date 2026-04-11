@@ -35,6 +35,7 @@ KNOWN_APPS = [
     "momentag", "clone", "snapdo", "xend", "budget-lens",
     "deeptutor", "llm-vtuber", "skin-disease-detection", "google-ai-edge-gallery",
     "tool-neuron",
+    "chat-driven-expense-tracker",
 ]
 
 STAGE_INPUT = "Input"
