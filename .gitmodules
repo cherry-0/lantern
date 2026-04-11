@@ -25,3 +25,6 @@
 [submodule "target-apps/deeptutor"]
 	path = target-apps/deeptutor
 	url = https://github.com/HKUDS/DeepTutor.git
+[submodule "target-apps/tool-neuron"]
+	path = target-apps/tool-neuron
+	url = https://github.com/Siddhesh2377/ToolNeuron.git

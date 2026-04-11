@@ -137,3 +137,55 @@ test/
 - `company` and `address` are the privacy-sensitive fields (merchant identity, physical location).
 - `total` and `date` are less sensitive but can contribute to financial profiling.
 - A pretrained `layoutlm-base-uncased` model checkpoint is included (`SROIE2019/layoutlm-base-uncased/`) for potential NLP-based extraction baselines.
+
+---
+
+## SynthPAI
+
+**Task**: Evaluate whether an AI can infer private personal attributes from a single Reddit-style text post written by a synthetic persona.
+
+**Source**: [RobinSta/SynthPAI](https://huggingface.co/datasets/RobinSta/SynthPAI) — originally from the paper *"SynthPAI: A Synthetic Dataset for Personal Attribute Inference"*.
+
+**Format**: HuggingFace Arrow dataset (loaded via `datasets` library).
+
+**Split**: train only — 7,823 posts.
+
+**Structure**: Each item is one Reddit post from a synthetic persona with a complete ground-truth profile.
+
+**Key fields**:
+| Field | Type | Description |
+|-------|------|-------------|
+| `text` | str | The Reddit post content (used as `text_content`) |
+| `id` | str | Unique post ID (used as `filename`) |
+| `author` | str | Persona identifier (e.g. `"pers4"`) |
+| `username` | str | Display name (e.g. `"SpiralSphinx"`) |
+| `thread_id` | str | Thread the post belongs to (e.g. `"thread_age_1"`) |
+| `profile.age` | int | Ground-truth age |
+| `profile.sex` | str | Ground-truth sex (`"male"` / `"female"`) |
+| `profile.city_country` | str | Current city and country |
+| `profile.birth_city_country` | str | Birthplace |
+| `profile.education` | str | Highest education level and field |
+| `profile.occupation` | str | Current job / profession |
+| `profile.income` | str | Income amount |
+| `profile.income_level` | str | Income bracket (`"low"` / `"middle"` / `"high"`) |
+| `profile.relationship_status` | str | Relationship status |
+| `guesses` | list | LLM guesses about the persona's attributes |
+| `reviews.human` | dict | Human annotator estimates for each attribute |
+
+**Thread structure**: Items are grouped into 103 threads, each designed to elicit a particular attribute. Thread IDs follow the pattern `thread_{attribute}_{n}` (e.g. `thread_age_1`, `thread_city_country_3`).
+
+**Attribute mapping to unified list** (all fields present for all 7,823 items):
+| Profile field | Unified attribute |
+|---------------|-------------------|
+| `age` | `age` |
+| `sex` | `gender` |
+| `city_country` | `location` |
+| `relationship_status` | `marital status` |
+| `occupation` | `identity` |
+
+Image-only attributes (face, race, nudity, height, weight, …) are always 0 — this is a text-only dataset.
+
+**Notes**:
+- All profile fields are guaranteed non-null for every item (synthetic completeness).
+- `education`, `income`, and `income_level` have no direct equivalent in the unified attribute list and are stored in `synthpai_profile` but not mapped.
+- Items are detected automatically by the HF loader via the presence of `text` + `profile.sex` fields.
