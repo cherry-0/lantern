@@ -168,7 +168,9 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
             else:
                 st.info("Media not stored in cache.")
 
-            st.caption("**Annotated attributes:**")
+            if positives:
+                st.caption("**Annotated attributes:**")
+                st.markdown("  ".join(f"`{a}`" for a in positives))
 
         with col_out:
             out_col, ext_col = st.columns(2)

@@ -21,6 +21,7 @@ Execution mode is controlled by USE_APP_SERVERS in .env:
 Both modes produce structurally identical outputs.
 """
 
+import atexit
 import base64
 import io
 from pathlib import Path
@@ -51,6 +52,9 @@ _ENV_SPEC = EnvSpec(
         "Pillow",
         "django-storages",
         "boto3",
+        "fastapi",
+        "uvicorn",
+        "pydantic"
     ]],
     cwd=_CLONE_SERVER,
 )
@@ -103,6 +107,56 @@ class CloneAdapter(BaseAdapter):
     supported_modalities = ["image", "video"]
     env_spec = _ENV_SPEC
 
+    def __init__(self):
+        self._server_process = None
+        self._server_port = None
+        atexit.register(self._cleanup_server)
+
+    def _cleanup_server(self):
+        if self._server_process is not None:
+            import sys
+            print(f"[clone] Shutting down local API server (port {self._server_port})...", file=sys.stderr, flush=True)
+            self._server_process.terminate()
+            self._server_process.wait()
+            self._server_process = None
+
+    def _start_server(self):
+        if self._server_process is not None and self._server_process.poll() is None:
+            return
+
+        import socket
+        import subprocess
+        import time
+        import requests
+        import sys
+
+        s = socket.socket()
+        s.bind(("", 0))
+        self._server_port = s.getsockname()[1]
+        s.close()
+
+        conda = CondaRunner.find_conda()
+        server_script = Path(__file__).parent.parent / "runners" / "clone_server.py"
+
+        print(f"[clone] Starting local API server on port {self._server_port}...", file=sys.stderr, flush=True)
+        self._server_process = subprocess.Popen(
+            [conda, "run", "-n", _ENV_SPEC.name, "python", str(server_script), "--port", str(self._server_port)],
+            stdout=subprocess.DEVNULL,
+            stderr=sys.stderr,
+        )
+
+        start_time = time.time()
+        while time.time() - start_time < 30:
+            try:
+                resp = requests.get(f"http://127.0.0.1:{self._server_port}/health")
+                if resp.status_code == 200:
+                    print("[clone] Server is ready.", file=sys.stderr, flush=True)
+                    return
+            except Exception:
+                time.sleep(1)
+        
+        raise RuntimeError("clone_server failed to start within 30 seconds.")
+
     # ── Availability ──────────────────────────────────────────────────────────
 
     def check_availability(self) -> Tuple[bool, str]:
@@ -143,7 +197,7 @@ class CloneAdapter(BaseAdapter):
     # ── NATIVE mode ───────────────────────────────────────────────────────────
 
     def _run_native(self, frames: List[Any], input_item: Dict[str, Any]) -> AdapterResult:
-        """CondaRunner: Django ORM session + OpenRouter vision inside 'clone' conda env."""
+        """CondaRunner: Django ORM session + OpenRouter vision inside 'clone' conda env via HTTP server."""
         ok, msg = CondaRunner.ensure(_ENV_SPEC)
         if not ok:
             return AdapterResult(success=False, error=msg)
@@ -152,20 +206,28 @@ class CloneAdapter(BaseAdapter):
         filename = input_item.get("filename", "verify-input")
         path = input_item.get("path", "")
 
-        ok, result, err = CondaRunner.run(
-            _ENV_SPEC.name,
-            _RUNNER,
-            {
+        import sys
+        try:
+            self._start_server()
+        except Exception as e:
+            return AdapterResult(success=False, error=f"Failed to start server: {e}")
+
+        try:
+            payload = {
                 "frames_base64": frames_b64,
                 "openrouter_api_key": get_openrouter_api_key() or "",
                 "model": OPENROUTER_DEFAULT_MODEL,
                 "filename": filename,
-                "path": path,
-            },
-            timeout=90,
-        )
-        if not ok:
-            return AdapterResult(success=False, error=err)
+            }
+            print("[clone] Sending inference request to local server...", file=sys.stderr, flush=True)
+            resp = requests.post(f"http://127.0.0.1:{self._server_port}/infer", json=payload, timeout=90)
+            resp.raise_for_status()
+            result = resp.json()
+        except Exception as e:
+            return AdapterResult(success=False, error=f"HTTP request to server failed: {e}")
+
+        if not result.get("success"):
+            return AdapterResult(success=False, error=result.get("error"))
 
         description = result.get("description", "")
         activity = result.get("activity", "")
@@ -175,7 +237,7 @@ class CloneAdapter(BaseAdapter):
         externalizations = result.get("externalizations", {})
 
         return AdapterResult(
-            success=result.get("success", False),
+            success=True,
             output_text=description,
             raw_output=result,
             structured_output={
@@ -186,7 +248,7 @@ class CloneAdapter(BaseAdapter):
             },
             externalizations=externalizations,
             metadata={
-                "method": "native_django_orm",
+                "method": "native_django_orm_server",
                 "session_id": session_id,
                 "frame_count": len(frames),
             },

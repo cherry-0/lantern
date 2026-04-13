@@ -226,3 +226,39 @@ def log_inference(
     else:
         _row("STATUS", [f"FAILED — {error_msg}"])
     _emit(_BAR)
+
+
+def log_perturbation(
+    *,
+    method_name: str,
+    filename: str,
+    attributes: List[str],
+    ok: bool,
+    error: Optional[str] = None,
+) -> None:
+    """
+    Emit one perturbation log block to stdout.
+
+    Example output:
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    ▶ PERTURBATION   Imago_Obscura   —   img001.jpg
+    ──────────────────────────────────────────────────────────────────────
+      ATTRIBUTES location, identity
+      STATUS    ✔  OK
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    """
+    if not is_verbose():
+        return
+
+    header = f"▶ PERTURBATION   {method_name}   —   {filename}"
+
+    _emit()
+    _emit(_BAR)
+    _emit(header)
+    _emit(_SEP)
+    _row("ATTRIBUTES", [", ".join(attributes)])
+    if ok:
+        _row("STATUS", ["✔  OK"])
+    else:
+        _row("STATUS", [f"✘  FAILED — {error or 'Unknown reason'}"])
+    _emit(_BAR)

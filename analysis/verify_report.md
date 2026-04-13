@@ -116,6 +116,8 @@ All runners call `log_input()` from `_runner_log.py` at startup to display the i
 
 All runners import `_runtime_capture` at the top (after sys.path setup) and call `_runtime_capture.install()` before any app code runs. Django-based runners additionally call `_runtime_capture.connect_django_signals()` after `django.setup()`.
 
+After inference completes, every runner calls `_runtime_capture.set_phase("POST")` before any post-inference actions (storage, network calls, UI pushes). This ensures that only post-inference externalizations are captured and returned by `finalize()`.
+
 ### Runner input/output contract
 
 | Runner | Input keys | Output keys |
@@ -169,15 +171,18 @@ snapdo already uses SQLite with a hardcoded `SECRET_KEY` — no shim needed.
 
 **Log filtering** — installs a `logging.Handler` at DEBUG level. Keeps WARNING+ always; keeps DEBUG/INFO only if the log record name or message contains inference-relevant keywords.
 
-**`finalize() → dict`** — returns captured channels nested by phase:
+**`finalize() → dict`** — returns only **POST-phase** captured channels as a flat dict:
 ```json
 {
-  "DURING": {"NETWORK": "...", "LOGGING": "..."},
-  "POST": {"NETWORK": "...", "UI": "...", "STORAGE": "..." }
+  "NETWORK": "...",
+  "UI": "...",
+  "STORAGE": "..."
 }
 ```
 
-Empty channels or phases are omitted from the returned dict.
+DURING-phase events (i.e., the LLM inference API calls themselves) are intentionally excluded — they are expected internals of the app's inference process, not privacy-relevant externalizations. Only POST-phase events reflect what the app does with the data *after* inference: persisting to databases, pushing to frontends, sending emails, etc.
+
+Empty channels are omitted from the returned dict.
 
 ### 5.2 `_openrouter_calls` tracking (adapter-side, serverless only)
 
@@ -214,18 +219,14 @@ Priority order (first match wins):
 
 ### 5.4 What is shown in the UI
 
-Both the live `Perturb Input` page and the `View Results` page show externalizations grouped into two distinct steps:
-1. **Step 1: Inference Process** (captured during the `DURING` phase)
-2. **Step 2: Externalization / UI** (captured during the `POST` phase)
-
-Each step uses bold headers and italicized channel names (e.g. *NETWORK*, *UI*) to clearly distinguish between the app's "thought process" and its "actions."
+Both the live `Perturb Input` page and the `View Results` page show externalizations as a flat list of channels (NETWORK, STORAGE, UI, LOGGING). Only POST-phase events — what the app does *after* inference — are displayed and evaluated. DURING-phase inference API calls are not shown because they are not privacy-relevant externalizations.
 
 ---
 
 ## 6. Per-Adapter Design
 
 ### clone
-**Native (`USE_APP_SERVERS=true`):** `CondaRunner.run(clone_runner.py)` — bootstraps Django with `_clone_verify_settings`, auto-migrates SQLite, creates/gets `verify@lantern.local` user via ORM, creates a ChatSession, describes frames via OpenRouter vision, persists ChatMessage. Captures externalizations via `_runtime_capture`.
+**Native (`USE_APP_SERVERS=true`):** `CondaRunner.run(clone_runner.py)` — bootstraps Django with `_clone_verify_settings`, auto-migrates SQLite, creates/gets `verify@lantern.local` user via ORM, creates a ChatSession, describes frames via OpenRouter vision. After inference, `set_phase("POST")` is called before Django ORM writes (`ChatMessage.objects.create`, `session.save`), capturing them as **STORAGE** externalizations.
 
 **Serverless:** Direct OpenRouter vision with `_FRAME_PROMPT`. Externalizations via `_build_serverless_externalizations()`.
 
@@ -234,7 +235,7 @@ Each step uses bold headers and italicized channel names (e.g. *NETWORK*, *UI*) 
 ---
 
 ### snapdo
-**Native:** `CondaRunner.run(snapdo_runner.py)` — bootstraps Django from `target-apps/snapdo/server`, calls `VLMService().verify_evidence(image_b64, constraint, model=model)` routed to OpenRouter via env-var injection.
+**Native:** `CondaRunner.run(snapdo_runner.py)` — bootstraps Django from `target-apps/snapdo/server`, calls `VLMService().verify_evidence(image_b64, constraint, model=model)` routed to OpenRouter via env-var injection. `set_phase("POST")` is set immediately after inference; snapdo has no post-inference storage actions, so externalizations are typically empty in native mode.
 
 **Serverless:** OpenRouter vision; pre-generates a realistic Todo task for the dataset item (cached per full file **path**, not filename, to avoid basename collisions) so the model has meaningful context for verification.
 
@@ -245,7 +246,7 @@ Each step uses bold headers and italicized channel names (e.g. *NETWORK*, *UI*) 
 ---
 
 ### momentag
-**Native:** `CondaRunner.run(momentag_runner.py)` — bootstraps Django, calls `gallery.gpu_tasks.get_image_captions(pil_image)` which runs CLIP (`clip-ViT-B-32`) for embeddings and BLIP (`blip-image-captioning-base`) for captions/keywords locally. Timeout: 180s.
+**Native:** `CondaRunner.run(momentag_runner.py)` — bootstraps Django, calls `gallery.gpu_tasks.get_image_captions(pil_image)` which runs CLIP (`clip-ViT-B-32`) for embeddings and BLIP (`blip-image-captioning-base`) for captions/keywords locally. `set_phase("POST")` is set after inference; momentag has no post-inference storage actions in the runner, so externalizations are typically empty in native mode. Timeout: 180s.
 
 **Serverless:** OpenRouter vision generates captions and tags in the same structure.
 
@@ -258,7 +259,7 @@ Each step uses bold headers and italicized channel names (e.g. *NETWORK*, *UI*) 
 ### xend
 **Native:** `CondaRunner.run(xend_runner.py)` — bootstraps Django with `_xend_verify_settings`, imports `subject_chain` and `body_chain` from `apps.ai.services.chains`, and invokes both. 
 
-**Post-Inference Action:** Calls the actual `apps.mail.services.send_email_logic` with the generated result. This triggers a real network request to `googleapis.com`, captured as a 401 (Unauthorized) due to the dummy token, verifying that the app successfully attempted to externalize the email.
+**Post-Inference Action:** After `set_phase("POST")`, calls `apps.mail.services.send_email_logic` with the generated result. This triggers a real network request to `googleapis.com`, captured as a 401 (Unauthorized) due to the dummy token — appearing as a **NETWORK** POST-phase externalization. This confirms the app attempted to send the email containing the private data.
 
 **Serverless:** OpenRouter with xend's email-drafting persona; produces `subject` + `body`.
 
@@ -269,7 +270,7 @@ Each step uses bold headers and italicized channel names (e.g. *NETWORK*, *UI*) 
 ---
 
 ### budget-lens
-**Native:** `CondaRunner.run(budgetlens_runner.py)` — bootstraps Django with `_budgetlens_verify_settings`, writes image to a temp JPEG, calls `process_receipt(path)` from `core.views`. Captures externalizations: OpenAI request, exchange rate API call, Expense model save.
+**Native:** `CondaRunner.run(budgetlens_runner.py)` — bootstraps Django with `_budgetlens_verify_settings`, writes image to a temp JPEG, calls `process_receipt(path)` from `core.views`. `set_phase("POST")` is called immediately after `process_receipt()` returns. Post-inference externalizations captured: exchange rate API network call (**NETWORK**) and `Expense` model Django ORM save (**STORAGE**).
 
 **Serverless:** OpenRouter vision extracts category, date, amount, currency plus `merchant_name` and `merchant_address` (relevant for SROIE ground-truth evaluation).
 
@@ -280,7 +281,7 @@ Each step uses bold headers and italicized channel names (e.g. *NETWORK*, *UI*) 
 ---
 
 ### deeptutor
-**Native:** `CondaRunner.run(deeptutor_runner.py)` — injects LLM env vars (`LLM_BINDING`, `LLM_HOST`, `LLM_API_KEY`, `LLM_MODEL`), imports `ChatOrchestrator` + `UnifiedContext` + `StreamEventType`, drives `orchestrator.handle(context)` async via `asyncio.run()`, collects `CONTENT` events. Captures externalizations: RAG embedding, LLM request, RAG retrieval, event bus, debug logging.
+**Native:** `CondaRunner.run(deeptutor_runner.py)` — injects LLM env vars (`LLM_BINDING`, `LLM_HOST`, `LLM_API_KEY`, `LLM_MODEL`), imports `ChatOrchestrator` + `UnifiedContext` + `StreamEventType`, drives `orchestrator.handle(context)` async via `asyncio.run()`, collects `CONTENT` events. `set_phase("POST")` is set after inference; deeptutor has no storage side-effects in the runner, so externalizations are typically empty in native mode.
 
 **Serverless:** OpenRouter with structured tutoring prompt (summary → key concepts → examples → caveats).
 
@@ -293,9 +294,9 @@ Each step uses bold headers and italicized channel names (e.g. *NETWORK*, *UI*) 
 ### llm-vtuber
 **Native:** `CondaRunner.run(llmvtuber_runner.py)` — imports `AsyncLLM` from `open_llm_vtuber.agent.stateless_llm.openai_compatible_llm`, calls `llm.chat_completion(messages, system=_VTUBER_SYSTEM)` async. 
 
-**Post-Inference Actions:** 
-1. **Real TTS**: Triggers the app's actual `EdgeTTS` engine with the response text, resulting in a captured network request to `speech.platform.bing.com`.
-2. **UI Push**: Simulates pushing the response and animations to the frontend via the patched WebSocket system, appearing as `[PUSH]` and `[DISPLAY_TEXT]` UI events.
+**Post-Inference Actions:** After `set_phase("POST")`:
+1. **Real TTS**: Triggers the app's actual `EdgeTTS` engine with the response text, resulting in a captured **NETWORK** request to `speech.platform.bing.com` — the character's speech audio is sent to Microsoft's cloud.
+2. **UI Push**: Simulates pushing the response and animations to the frontend via the patched WebSocket system, appearing as `[PUSH]` and `[DISPLAY_TEXT]` **UI** events.
 
 **Serverless:** OpenRouter with the same Shizuku VTuber system prompt.
 
@@ -306,7 +307,7 @@ Each step uses bold headers and italicized channel names (e.g. *NETWORK*, *UI*) 
 ---
 
 ### skin-disease-detection
-**Native:** `CondaRunner.run(skindisease_runner.py)` — loads all three `.tflite` model files from `target-apps/skin-disease-detection/app/assets/` via `tflite_runtime` (falls back to `tensorflow.lite`). Preprocessing mirrors the Dart classifier: center-crop → resize NEAREST to model input dimensions → normalize [0, 1] (or uint8 for quantized inputs). Handles quantized output via scale + zero_point dequantization. Logs each classifier result (label + confidence) to stderr.
+**Native:** `CondaRunner.run(skindisease_runner.py)` — loads all three `.tflite` model files from `target-apps/skin-disease-detection/app/assets/` via `tflite_runtime` (falls back to `tensorflow.lite`). Preprocessing mirrors the Dart classifier: center-crop → resize NEAREST to model input dimensions → normalize [0, 1] (or uint8 for quantized inputs). Handles quantized output via scale + zero_point dequantization. `set_phase("POST")` is set after all three classifiers complete; inference is fully local (no network), so externalizations are empty in native mode. Logs each classifier result (label + confidence) to stderr.
 
 **Serverless:** OpenRouter vision prompt replicates the three-classifier output structure with confidence scores.
 
@@ -320,7 +321,7 @@ Each step uses bold headers and italicized channel names (e.g. *NETWORK*, *UI*) 
 ---
 
 ### google-ai-edge-gallery
-**Native:** `CondaRunner.run(googleaiedge_runner.py)` — loads `transformers.pipeline("text-generation")` with `model_id` (default: `Qwen/Qwen2.5-1.5B-Instruct`), selects CUDA if available. The adapter first describes any image via OpenRouter (since small local models are typically text-only), then passes the description as `image_description` to the runner. Timeout: 300s (model download on first run).
+**Native:** `CondaRunner.run(googleaiedge_runner.py)` — loads `transformers.pipeline("text-generation")` with `model_id` (default: `Qwen/Qwen2.5-1.5B-Instruct`), selects CUDA if available. The adapter first describes any image via OpenRouter (since small local models are typically text-only), then passes the description as `image_description` to the runner. `set_phase("POST")` is set after inference; local transformer inference has no post-inference side-effects, so externalizations are empty in native mode. Timeout: 300s (model download on first run).
 
 **Serverless:** OpenRouter with the app's LlmChat system prompt; handles both text and image natively.
 
@@ -471,6 +472,10 @@ def main(data: dict) -> dict:
 
     # --- call the app's actual pipeline here ---
     response = "..."
+
+    # Switch to POST phase so any storage/network actions below are captured
+    _runtime_capture.set_phase("POST")
+    # --- post-inference storage/UI actions (if any) go here ---
 
     externalizations = _runtime_capture.finalize()
     return {
@@ -682,15 +687,15 @@ Dataset item
 
 | Adapter | Native strategy | Serverless strategy | Modality |
 |---|---|---|---|
-| clone | CondaRunner → Django ORM + OpenRouter vision | OpenRouter vision | image, video |
-| snapdo | CondaRunner → VLMService | OpenRouter vision + task gen | image |
-| momentag | CondaRunner → CLIP + BLIP | OpenRouter vision | image |
-| xend | CondaRunner → LangChain chains | OpenRouter text | text |
-| budget-lens | CondaRunner → process_receipt() | OpenRouter vision | image |
-| deeptutor | CondaRunner → ChatOrchestrator | OpenRouter text | text |
-| llm-vtuber | CondaRunner → AsyncLLM | OpenRouter text | text |
-| skin-disease | CondaRunner → 3× TFLite | OpenRouter vision | image |
-| google-ai-edge | CondaRunner → HuggingFace transformers | OpenRouter text+vision | image, text |
+| clone | HTTP Wrapper → Django ORM + OpenRouter vision | OpenRouter vision | image, video |
+| snapdo | HTTP Wrapper → VLMService | OpenRouter vision + task gen | image |
+| momentag | HTTP Wrapper → CLIP + BLIP | OpenRouter vision | image |
+| xend | HTTP Wrapper → LangChain chains | OpenRouter text | text |
+| budget-lens | HTTP Wrapper → process_receipt() | OpenRouter vision | image |
+| deeptutor | HTTP Wrapper → ChatOrchestrator | OpenRouter text | text |
+| llm-vtuber | HTTP Wrapper → AsyncLLM | OpenRouter text | text |
+| skin-disease | HTTP Wrapper → 3× TFLite | OpenRouter vision | image |
+| google-ai-edge | HTTP Wrapper → HuggingFace transformers | OpenRouter text+vision | image, text |
 
 ---
 
@@ -699,7 +704,40 @@ Dataset item
 - **Expand Post-Inference Coverage**: 
     - Add actual S3/Boto3 upload tracking for `budget-lens` (post-inference archival).
     - Capture RAG vector database updates after a chat session completes.
+- **Parallelize Orchestrator**: Since all apps (both heavy ML and lightweight API apps) have now been migrated to the stateful `HTTP Wrapper` pattern, the `Orchestrator`'s main loop can safely be parallelized using a `ThreadPoolExecutor` to process multiple items concurrently, dropping processing time significantly.
 - **Improved UI Timeline**: Add a dedicated "Timeline" view to the frontend to visualize the sequence of network/UI events chronologically.
 - **Cross-Phase Data Flow**: Track whether specific private data discovered during inference (e.g. an address) is the same data being externalized in the post-inference phase.
 - **Regression Testing**: Implement automated checks that fail if a runner's captured externalizations do not contain expected "Post-Inference" events (e.g. `xend` must always attempt a Gmail API call).
 - **Transport Layer Support**: Add patches for more communication layers like `gRPC` or `socket.io` if future apps require them.
+
+### HTTP API Wrapper vs. Native App Server
+
+To solve the significant performance bottleneck caused by spawning a new `conda run` process and reloading massive ML models for every single dataset item, two architectural changes were considered:
+
+#### 1. HTTP API Wrapper (Custom Server)
+Instead of a CLI script, we write a lightweight FastAPI/Flask script for each app (e.g., `googleaiedge_server.py`). `CondaRunner` starts this server once on a random port and keeps it alive. The Orchestrator sends HTTP POST requests with the input data to this local server.
+
+**Pros:**
+- **Zero Startup Overhead**: The model (e.g., Qwen) is loaded once into memory when the server starts. Processing an item takes milliseconds instead of minutes.
+- **Perfect Instrumentation**: We can easily call `_runtime_capture.install()` at the very top of our custom server script, ensuring we catch all network/storage events perfectly, just like the current CLI runners.
+- **Clean State Management**: The wrapper can expose a `/reset` endpoint to clear internal states (like chat history) between dataset items.
+
+**Cons:**
+- **Port Management**: `CondaRunner` needs logic to assign free ports, check if the server is healthy, and shut it down cleanly when the Verify run finishes.
+- **Memory Footprint**: Keeping multiple apps alive simultaneously (if a user switches apps quickly) could lead to OOM errors if we don't aggressively kill idle servers.
+
+#### 2. Running the Native App Server
+We use `CondaRunner` to execute the app's *actual* start command (e.g., `python run_server.py` for llm-vtuber, or `python manage.py runserver` for Django apps). The Orchestrator acts as a client, interacting with the app's real REST/WebSocket APIs.
+
+**Pros:**
+- **Maximum Fidelity**: This is the truest end-to-end test. We are interacting with the app exactly as the frontend would.
+- **No Custom Wrapper Code**: We don't have to write and maintain custom `_runner.py` scripts that manually wire together internal app functions.
+
+**Cons:**
+- **Nearly Impossible Instrumentation**: The biggest dealbreaker. Our `_runtime_capture.py` (which intercepts `requests`, `httpx`, and Django ORM saves) must be injected *inside* the running process. Hijacking a standard `uvicorn` or `manage.py` startup sequence without modifying the target app's source code is extremely brittle and often impossible.
+- **Complex Client Logic**: The Orchestrator adapters would become incredibly complex. Instead of calling a simple python function, they would have to implement WebSocket handshakes, handle authentication tokens, and parse complex API responses that differ wildly between apps.
+
+### Conclusion
+The **HTTP API Wrapper** is the clear winner for the `verify` framework's future optimization. 
+
+The native server approach completely breaks the `_runtime_capture` system, which is the entire point of the Verify app (to track externalizations). The wrapper approach solves the performance bottleneck (by keeping the model in memory) while preserving our ability to perfectly instrument the process from the inside.

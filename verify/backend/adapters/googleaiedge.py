@@ -33,6 +33,7 @@ GOOGLE_AI_EDGE_MODEL_ID     — HuggingFace model ID for native mode
 GOOGLE_AI_EDGE_MAX_TOKENS   — max new tokens for native mode  (default: 512)
 """
 
+import atexit
 import base64
 import io
 import json
@@ -58,7 +59,7 @@ _DEFAULT_MALICIOUS_QUERY = (
 _ENV_SPEC = EnvSpec(
     name="google-ai-edge-gallery",
     python="3.10",
-    install_cmds=[["pip", "install", "transformers", "accelerate", "torch", "pillow"]],
+    install_cmds=[["pip", "install", "transformers", "accelerate", "torch", "pillow", "fastapi", "uvicorn", "pydantic", "requests"]],
 )
 _RUNNER = Path(__file__).parent.parent / "runners" / "googleaiedge_runner.py"
 
@@ -106,6 +107,54 @@ class GoogleAIEdgeAdapter(BaseAdapter):
         # runs for the same image reuse the same generated prompt.
         self._task_cache: Dict[str, str] = {}
         self._malicious_task_cache: Dict[str, str] = {}
+        self._server_process = None
+        self._server_port = None
+        atexit.register(self._cleanup_server)
+
+    def _cleanup_server(self):
+        if self._server_process is not None:
+            import sys
+            print(f"[google-ai-edge] Shutting down local API server (port {self._server_port})...", file=sys.stderr, flush=True)
+            self._server_process.terminate()
+            self._server_process.wait()
+            self._server_process = None
+
+    def _start_server(self):
+        if self._server_process is not None and self._server_process.poll() is None:
+            return  # Already running
+
+        import socket
+        import subprocess
+        import time
+        import requests
+        import sys
+        
+        s = socket.socket()
+        s.bind(("", 0))
+        self._server_port = s.getsockname()[1]
+        s.close()
+
+        conda = CondaRunner.find_conda()
+        server_script = Path(__file__).parent.parent / "runners" / "googleaiedge_server.py"
+
+        print(f"[google-ai-edge] Starting local API server on port {self._server_port}...", file=sys.stderr, flush=True)
+        self._server_process = subprocess.Popen(
+            [conda, "run", "-n", _ENV_SPEC.name, "python", str(server_script), "--port", str(self._server_port)],
+            stdout=subprocess.DEVNULL,
+            stderr=sys.stderr,
+        )
+
+        start_time = time.time()
+        while time.time() - start_time < 30:
+            try:
+                resp = requests.get(f"http://127.0.0.1:{self._server_port}/health")
+                if resp.status_code == 200:
+                    print("[google-ai-edge] Server is ready.", file=sys.stderr, flush=True)
+                    return
+            except Exception:
+                time.sleep(1)
+        
+        raise RuntimeError("googleaiedge_server failed to start within 30 seconds.")
 
     # ── Task / prompt generation ──────────────────────────────────────────────
 
@@ -236,25 +285,37 @@ class GoogleAIEdgeAdapter(BaseAdapter):
     # ── NATIVE mode ───────────────────────────────────────────────────────────
 
     def _run_native(self, modality: str, *, image_b64: str = "", text_content: str = "") -> AdapterResult:
-        """Run HuggingFace transformers in the 'google-ai-edge-gallery' conda env."""
+        """Run HuggingFace transformers in the 'google-ai-edge-gallery' conda env via HTTP server."""
         ok, msg = CondaRunner.ensure(_ENV_SPEC)
         if not ok:
             return AdapterResult(success=False, error=msg)
 
-        ok, result, err = CondaRunner.run(
-            _ENV_SPEC.name,
-            _RUNNER,
-            {
+        import requests
+        import sys
+
+        try:
+            self._start_server()
+        except Exception as e:
+            return AdapterResult(success=False, error=f"Failed to start server: {e}")
+
+        try:
+            payload = {
                 "modality": modality,
                 "text_content": text_content,
                 "image_base64": image_b64,
                 "model_id": self._model_id,
                 "max_tokens": self._max_tokens,
-            },
-            timeout=300,  # model download + first inference can be slow
-        )
-        if not ok:
-            return AdapterResult(success=False, error=err)
+            }
+            print("[google-ai-edge] Sending inference request to local server...", file=sys.stderr, flush=True)
+            # Timeout is high because the first request triggers the actual model load
+            resp = requests.post(f"http://127.0.0.1:{self._server_port}/infer", json=payload, timeout=300)
+            resp.raise_for_status()
+            result = resp.json()
+        except Exception as e:
+            return AdapterResult(success=False, error=f"HTTP request to server failed: {e}")
+
+        if not result.get("success"):
+            return AdapterResult(success=False, error=result.get("error"))
 
         response = result.get("ai_response", "")
         externalizations = result.get("externalizations", {})
@@ -265,12 +326,12 @@ class GoogleAIEdgeAdapter(BaseAdapter):
             "model_id": result.get("model_id", self._model_id),
         }
         return AdapterResult(
-            success=result.get("success", False),
+            success=True,
             output_text=response,
             raw_output=result,
             structured_output=structured,
             externalizations=externalizations,
-            metadata={"method": "native_transformers", "model_id": self._model_id, "prompt_text": text_content},
+            metadata={"method": "native_transformers_server", "model_id": result.get("model_id", self._model_id), "prompt_text": text_content},
         )
 
     # ── SERVERLESS mode ───────────────────────────────────────────────────────

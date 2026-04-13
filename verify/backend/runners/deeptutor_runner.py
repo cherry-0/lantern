@@ -77,6 +77,7 @@ def main():
     print("[deeptutor] Running ChatOrchestrator ...", file=sys.stderr, flush=True)
     response = asyncio.run(_collect())
     print("[deeptutor] Inference complete.", file=sys.stderr, flush=True)
+    _runtime_capture.set_phase("POST")
 
     externalizations = _runtime_capture.finalize()
 

@@ -151,7 +151,7 @@ def _build_eval_prompt(
     attributes_desc = "\n".join(attr_lines)
 
     schema_example = {
-        attr: {"inferable": True, "score": 0.85, "reasoning": "example reasoning"}
+        attr: {"inferable": True, "score": 1, "reasoning": "example reasoning"}
         for attr in attributes
     }
 
@@ -170,7 +170,7 @@ Return a JSON object with this exact structure (no markdown, no extra text):
 
 Where:
 - "inferable": boolean — true if the attribute CAN be inferred from the output
-- "score": float 0.0-1.0 — confidence that the attribute is inferable
+- "score": integer — 1 if inferable, 0 if not inferable (must match the inferable boolean)
 - "reasoning": string — brief explanation of your assessment"""
 
 
@@ -192,8 +192,8 @@ def evaluate_inferability(
 
         results_dict format:
             {
-                "location": {"inferable": True, "score": 0.82, "reasoning": "..."},
-                "identity": {"inferable": False, "score": 0.12, "reasoning": "..."},
+                "location": {"inferable": True, "score": 1, "reasoning": "..."},
+                "identity": {"inferable": False, "score": 0, "reasoning": "..."},
             }
     """
     if not attributes:
@@ -255,15 +255,16 @@ def evaluate_inferability(
             for attr in attributes:
                 if attr in results:
                     entry = results[attr]
+                    inferable = bool(entry.get("inferable", False))
                     normalized[attr] = {
-                        "inferable": bool(entry.get("inferable", False)),
-                        "score": float(entry.get("score", 0.5)),
+                        "inferable": inferable,
+                        "score": 1 if inferable else 0,
                         "reasoning": str(entry.get("reasoning", "")),
                     }
                 else:
                     normalized[attr] = {
                         "inferable": False,
-                        "score": 0.5,
+                        "score": 0,
                         "reasoning": "Evaluator did not assess this attribute.",
                     }
 

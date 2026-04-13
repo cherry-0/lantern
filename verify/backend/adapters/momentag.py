@@ -7,7 +7,9 @@ Primary strategy: import gpu_tasks from the momentag app directly.
 Fallback: use OpenRouter vision model to generate image description and tags.
 """
 
+import atexit
 import base64
+import os
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -22,9 +24,8 @@ _ENV_SPEC = EnvSpec(
     name="momentag",
     python="3.13",
     install_cmds=[
-        # Export exact locked deps from uv.lock, install into the conda env via pip.
-        # This is equivalent to `uv sync` but targets the active Python rather than .venv.
         ["bash", "-c", "uv export --frozen --no-hashes --no-dev | pip install -r /dev/stdin"],
+        ["pip", "install", "fastapi", "uvicorn", "pydantic", "requests"]
     ],
     cwd=MOMENTAG_BACKEND,
 )
@@ -63,6 +64,56 @@ class MomentagAdapter(BaseAdapter):
     supported_modalities = ["image"]
     env_spec = _ENV_SPEC
 
+    def __init__(self):
+        self._server_process = None
+        self._server_port = None
+        atexit.register(self._cleanup_server)
+
+    def _cleanup_server(self):
+        if self._server_process is not None:
+            import sys
+            print(f"[momentag] Shutting down local API server (port {self._server_port})...", file=sys.stderr, flush=True)
+            self._server_process.terminate()
+            self._server_process.wait()
+            self._server_process = None
+
+    def _start_server(self):
+        if self._server_process is not None and self._server_process.poll() is None:
+            return
+
+        import socket
+        import subprocess
+        import time
+        import requests
+        import sys
+
+        s = socket.socket()
+        s.bind(("", 0))
+        self._server_port = s.getsockname()[1]
+        s.close()
+
+        conda = CondaRunner.find_conda()
+        server_script = Path(__file__).parent.parent / "runners" / "momentag_server.py"
+
+        print(f"[momentag] Starting local API server on port {self._server_port}...", file=sys.stderr, flush=True)
+        self._server_process = subprocess.Popen(
+            [conda, "run", "-n", _ENV_SPEC.name, "python", str(server_script), "--port", str(self._server_port)],
+            stdout=subprocess.DEVNULL,
+            stderr=sys.stderr,
+        )
+
+        start_time = time.time()
+        while time.time() - start_time < 60:  # Allow 60s since momentag loads large models
+            try:
+                resp = requests.get(f"http://127.0.0.1:{self._server_port}/health")
+                if resp.status_code == 200:
+                    print("[momentag] Server is ready.", file=sys.stderr, flush=True)
+                    return
+            except Exception:
+                time.sleep(1)
+        
+        raise RuntimeError("momentag_server failed to start within 60 seconds.")
+
     def check_availability(self) -> Tuple[bool, str]:
         if use_app_servers():
             return CondaRunner.probe(_ENV_SPEC)
@@ -82,21 +133,34 @@ class MomentagAdapter(BaseAdapter):
         return self._run_openrouter_fallback(input_item)
 
     def _run_native(self, input_item: Dict[str, Any]) -> AdapterResult:
-        """Run momentag's CLIP/BLIP pipeline inside the 'momentag' conda env via subprocess."""
+        """Run momentag's CLIP/BLIP pipeline inside the 'momentag' conda env via HTTP server."""
         ok, msg = CondaRunner.ensure(_ENV_SPEC)
         if not ok:
             return AdapterResult(success=False, error=msg)
 
+        import requests
+        import sys
+
+        try:
+            self._start_server()
+        except Exception as e:
+            return AdapterResult(success=False, error=f"Failed to start server: {e}")
+
         image_b64 = input_item.get("image_base64") or _encode_image_b64(
             input_item.get("data") or input_item.get("path", "")
         )
-        ok, result, err = CondaRunner.run(
-            _ENV_SPEC.name, _RUNNER,
-            {"image_base64": image_b64},
-            timeout=180,
-        )
-        if not ok:
-            return AdapterResult(success=False, error=err)
+
+        try:
+            payload = {"image_base64": image_b64}
+            print("[momentag] Sending inference request to local server...", file=sys.stderr, flush=True)
+            resp = requests.post(f"http://127.0.0.1:{self._server_port}/infer", json=payload, timeout=180)
+            resp.raise_for_status()
+            result = resp.json()
+        except Exception as e:
+            return AdapterResult(success=False, error=f"HTTP request to server failed: {e}")
+
+        if not result.get("success"):
+            return AdapterResult(success=False, error=result.get("error"))
 
         captions = result.get("captions", [])
         tags = result.get("tags", [])
@@ -106,12 +170,12 @@ class MomentagAdapter(BaseAdapter):
         if tags:
             output_text += "\nTags: " + ", ".join(tags)
         return AdapterResult(
-            success=result.get("success", False),
+            success=True,
             output_text=output_text,
             raw_output=result,
             structured_output={"captions": captions, "tags": tags},
             externalizations=externalizations,
-            metadata={"method": "native_clip_blip"},
+            metadata={"method": "native_clip_blip_server"},
         )
 
     def _run_openrouter_fallback(self, input_item: Dict[str, Any]) -> AdapterResult:

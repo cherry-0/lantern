@@ -61,6 +61,7 @@ def main():
     print("[momentag] Running get_image_captions ...", file=sys.stderr, flush=True)
     captions_data = get_image_captions(pil_image)
     print("[momentag] Inference complete.", file=sys.stderr, flush=True)
+    _runtime_capture.set_phase("POST")
 
     captions, tags = [], []
     for item in captions_data:

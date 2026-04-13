@@ -108,14 +108,52 @@ def is_debug() -> bool:
     return val.strip().lower() in ("1", "true", "yes")
 
 
+# ── Per-app mode overrides ────────────────────────────────────────────────────
+# Maps app_name → "native" | "serverless".
+# Set by the Streamlit Settings page; overrides USE_APP_SERVERS for that app only.
+_APP_MODE_OVERRIDES: Dict[str, str] = {}
+
+# Name of the adapter currently executing; used by use_app_servers() to look up
+# per-app overrides without needing to change every adapter's call site.
+_current_app_context: str = ""
+
+
+def set_app_mode_override(app_name: str, mode: str) -> None:
+    """
+    Set the execution mode for a specific app.
+    mode: "native" | "serverless" | "auto" (removes override, falls back to .env)
+    """
+    if mode == "auto":
+        _APP_MODE_OVERRIDES.pop(app_name, None)
+    else:
+        _APP_MODE_OVERRIDES[app_name] = mode
+
+
+def get_app_mode_override(app_name: str) -> Optional[str]:
+    """Return the current override for an app, or None if using the global default."""
+    return _APP_MODE_OVERRIDES.get(app_name)
+
+
+def set_current_app_context(app_name: str) -> None:
+    """Tell use_app_servers() which app is currently executing."""
+    global _current_app_context
+    _current_app_context = app_name
+
+
 def use_app_servers() -> bool:
     """
-    Return True when USE_APP_SERVERS is set to a truthy value in .env or environment.
+    Return True when native (app server) mode is in effect for the current app.
 
-    Controls the global adapter execution mode:
+    Resolution order:
+      1. Per-app override set via Streamlit Settings page (_APP_MODE_OVERRIDES)
+      2. Global USE_APP_SERVERS value from .env / environment
+
+    Controls the adapter execution mode:
       True  → HTTP / native pipeline  (requires target app servers to be running)
       False → OpenRouter serverless fallback  (no target app dependency)
     """
+    if _current_app_context and _current_app_context in _APP_MODE_OVERRIDES:
+        return _APP_MODE_OVERRIDES[_current_app_context] == "native"
     val = get_env("USE_APP_SERVERS", "false") or "false"
     return val.strip().lower() in ("1", "true", "yes")
 

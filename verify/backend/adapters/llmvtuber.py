@@ -16,6 +16,7 @@ Fallback: direct OpenRouter chat call (same model, same prompt) if the llm-vtube
 package is not importable.
 """
 
+import atexit
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
@@ -29,7 +30,7 @@ LLMVTUBER_ROOT = TARGET_APPS_DIR / "llm-vtuber"
 _ENV_SPEC = EnvSpec(
     name="llm-vtuber",
     python="3.11",
-    install_cmds=[["pip", "install", "-e", str(LLMVTUBER_ROOT)]],
+    install_cmds=[["pip", "install", "-e", str(LLMVTUBER_ROOT), "fastapi", "uvicorn", "pydantic", "requests"]],
 )
 _RUNNER = Path(__file__).parent.parent / "runners" / "llmvtuber_runner.py"
 
@@ -57,6 +58,56 @@ class LLMVTuberAdapter(BaseAdapter):
     supported_modalities = ["text"]
     env_spec = _ENV_SPEC
 
+    def __init__(self):
+        self._server_process = None
+        self._server_port = None
+        atexit.register(self._cleanup_server)
+
+    def _cleanup_server(self):
+        if self._server_process is not None:
+            import sys
+            print(f"[llm-vtuber] Shutting down local API server (port {self._server_port})...", file=sys.stderr, flush=True)
+            self._server_process.terminate()
+            self._server_process.wait()
+            self._server_process = None
+
+    def _start_server(self):
+        if self._server_process is not None and self._server_process.poll() is None:
+            return
+
+        import socket
+        import subprocess
+        import time
+        import requests
+        import sys
+
+        s = socket.socket()
+        s.bind(("", 0))
+        self._server_port = s.getsockname()[1]
+        s.close()
+
+        conda = CondaRunner.find_conda()
+        server_script = Path(__file__).parent.parent / "runners" / "llmvtuber_server.py"
+
+        print(f"[llm-vtuber] Starting local API server on port {self._server_port}...", file=sys.stderr, flush=True)
+        self._server_process = subprocess.Popen(
+            [conda, "run", "-n", _ENV_SPEC.name, "python", str(server_script), "--port", str(self._server_port)],
+            stdout=subprocess.DEVNULL,
+            stderr=sys.stderr,
+        )
+
+        start_time = time.time()
+        while time.time() - start_time < 30:
+            try:
+                resp = requests.get(f"http://127.0.0.1:{self._server_port}/health")
+                if resp.status_code == 200:
+                    print("[llm-vtuber] Server is ready.", file=sys.stderr, flush=True)
+                    return
+            except Exception:
+                time.sleep(1)
+        
+        raise RuntimeError("llmvtuber_server failed to start within 30 seconds.")
+
     def check_availability(self) -> Tuple[bool, str]:
         if use_app_servers():
             return CondaRunner.probe(_ENV_SPEC)
@@ -80,7 +131,7 @@ class LLMVTuberAdapter(BaseAdapter):
     # ── NATIVE mode ───────────────────────────────────────────────────────────
 
     def _run_native(self, input_item: Dict[str, Any]) -> AdapterResult:
-        """Run llm-vtuber's AsyncLLM inside the 'llm-vtuber' conda env via subprocess."""
+        """Run llm-vtuber's AsyncLLM inside the 'llm-vtuber' conda env via HTTP server."""
         ok, msg = CondaRunner.ensure(_ENV_SPEC)
         if not ok:
             return AdapterResult(success=False, error=msg)
@@ -90,18 +141,29 @@ class LLMVTuberAdapter(BaseAdapter):
         if not user_message:
             return AdapterResult(success=False, error="Empty text input.")
 
-        ok, result, err = CondaRunner.run(
-            _ENV_SPEC.name,
-            _RUNNER,
-            {
+        import requests
+        import sys
+
+        try:
+            self._start_server()
+        except Exception as e:
+            return AdapterResult(success=False, error=f"Failed to start server: {e}")
+
+        try:
+            payload = {
                 "text_content": user_message,
                 "openrouter_api_key": get_openrouter_api_key() or "",
                 "model": OPENROUTER_DEFAULT_MODEL,
-            },
-            timeout=90,
-        )
-        if not ok:
-            return AdapterResult(success=False, error=err)
+            }
+            print("[llm-vtuber] Sending inference request to local server...", file=sys.stderr, flush=True)
+            resp = requests.post(f"http://127.0.0.1:{self._server_port}/infer", json=payload, timeout=90)
+            resp.raise_for_status()
+            result = resp.json()
+        except Exception as e:
+            return AdapterResult(success=False, error=f"HTTP request to server failed: {e}")
+
+        if not result.get("success"):
+            return AdapterResult(success=False, error=result.get("error"))
 
         response = result.get("character_response", "")
         externalizations = result.get("externalizations", {})
@@ -112,12 +174,12 @@ class LLMVTuberAdapter(BaseAdapter):
             "character_name": "Shizuku",
         }
         return AdapterResult(
-            success=result.get("success", False),
+            success=True,
             output_text=response,
             raw_output=result,
             structured_output=structured,
             externalizations=externalizations,
-            metadata={"method": "native_async_llm", "workflow": "vtuber_llm_chat"},
+            metadata={"method": "native_async_llm_server", "workflow": "vtuber_llm_chat"},
         )
 
     # ── OpenRouter fallback ───────────────────────────────────────────────────

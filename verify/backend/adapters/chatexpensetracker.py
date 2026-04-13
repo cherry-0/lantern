@@ -39,6 +39,7 @@ CHAT_EXPENSE_TRACKER_HOST      — FastAPI base URL          (default: http://lo
 
 import json
 import re
+import sys
 from typing import Any, Dict, List, Tuple
 
 from verify.backend.adapters.base import BaseAdapter, AdapterResult
@@ -163,6 +164,12 @@ class ChatExpenseTrackerAdapter(BaseAdapter):
                 error="requests library not installed. Run: pip install requests",
             )
 
+        print(
+            f"[chat-expense-tracker] POST {self._host}/parse_expense  "
+            f"entry={entry[:80]!r}",
+            file=sys.stderr, flush=True,
+        )
+
         try:
             resp = requests.post(
                 f"{self._host}/parse_expense",
@@ -181,6 +188,14 @@ class ChatExpenseTrackerAdapter(BaseAdapter):
             )
 
         parsed: List[Dict[str, Any]] = data.get("parsed", [])
+        print(
+            f"[chat-expense-tracker] Parsed {len(parsed)} item(s): "
+            + ", ".join(
+                f"{i.get('item','?')} ${i.get('amount','?')} ({i.get('category','?')})"
+                for i in parsed
+            ),
+            file=sys.stderr, flush=True,
+        )
         output_text = _format_output(parsed, entry)
 
         # The server externalized to Groq, MongoDB, and Pinecone on every request
@@ -220,6 +235,12 @@ class ChatExpenseTrackerAdapter(BaseAdapter):
         """
         prompt = _PARSE_PROMPT.format(entry=entry)
 
+        print(
+            f"[chat-expense-tracker] Calling OpenRouter (groq/llama3-8b-8192)  "
+            f"entry={entry[:80]!r}",
+            file=sys.stderr, flush=True,
+        )
+
         try:
             raw_response = self._call_openrouter(
                 prompt=prompt,
@@ -228,7 +249,20 @@ class ChatExpenseTrackerAdapter(BaseAdapter):
         except RuntimeError as e:
             return AdapterResult(success=False, error=str(e))
 
+        print(
+            f"[chat-expense-tracker] Raw LLM response: {raw_response[:200]!r}",
+            file=sys.stderr, flush=True,
+        )
+
         parsed = _parse_items_from_llm(raw_response)
+        print(
+            f"[chat-expense-tracker] Parsed {len(parsed)} item(s): "
+            + ", ".join(
+                f"{i.get('item','?')} ${i.get('amount','?')} ({i.get('category','?')})"
+                for i in parsed
+            ),
+            file=sys.stderr, flush=True,
+        )
         output_text = _format_output(parsed, entry)
 
         total_amount = sum(

@@ -81,7 +81,7 @@ def main():
         print("[llm-vtuber] Triggering TTS (edge-tts)...", file=sys.stderr, flush=True)
         tts = EdgeTTS(voice="en-US-AvaMultilingualNeural")
         # Just generate a small chunk to trigger network capture
-        asyncio.run(tts.generate_audio("Hello! " + response[:20]))
+        tts.generate_audio("Hello! " + response[:20])
     except Exception as e:
         print(f"[llm-vtuber] TTS failed (skipping): {e}", file=sys.stderr)
 

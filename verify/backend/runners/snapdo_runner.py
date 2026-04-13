@@ -84,6 +84,7 @@ def main():
     service = VLMService()
     raw = service.verify_evidence(image_b64, constraint, model=model)
     print("[snapdo] Inference complete.", file=sys.stderr, flush=True)
+    _runtime_capture.set_phase("POST")
 
     externalizations = _runtime_capture.finalize()
 

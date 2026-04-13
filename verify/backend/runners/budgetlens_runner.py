@@ -75,6 +75,7 @@ def main():
         print("[budget-lens] Running receipt extraction ...", file=sys.stderr, flush=True)
         category, expense_date, amount, currency = process_receipt(tmp.name)
         print("[budget-lens] Inference complete.", file=sys.stderr, flush=True)
+        _runtime_capture.set_phase("POST")
     finally:
         os.unlink(tmp.name)
 

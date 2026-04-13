@@ -3,13 +3,14 @@ Verify — Initialization page
 
 Lists all registered target-app adapters, shows their conda environment status,
 and lets the user trigger one-time environment setup per app.
+
+Also hosts the per-app execution mode selector (Native / Serverless / Auto).
 """
 
 from __future__ import annotations
 
 import concurrent.futures
 import sys
-import threading
 from pathlib import Path
 from typing import Tuple
 
@@ -25,22 +26,42 @@ st.set_page_config(
     layout="wide",
 )
 
+_MODE_OPTIONS = ["native", "serverless"]
+_MODE_LABELS  = ["Native", "Serverless"]
+
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
+
+def _global_default_mode() -> str:
+    """Return 'native' or 'serverless' based on USE_APP_SERVERS in .env."""
+    from verify.backend.utils.config import get_env
+    val = get_env("USE_APP_SERVERS", "false") or "false"
+    return "native" if val.strip().lower() in ("1", "true", "yes") else "serverless"
+
+
+def _sync_app_modes() -> None:
+    """Push per-app mode choices from session state into the config module."""
+    from verify.backend.utils.config import set_app_mode_override
+    for app_name, mode in st.session_state.get("app_modes", {}).items():
+        set_app_mode_override(app_name, mode)
+
 
 def _get_adapters() -> dict:
     from verify.backend.adapters import ADAPTER_REGISTRY
     return {name: cls() for name, cls in sorted(ADAPTER_REGISTRY.items())}
 
 
-def _env_status(adapter) -> Tuple[str, str]:
+def _env_status(app_name: str, adapter) -> Tuple[str, str]:
     """
     Return (level, message) where level is one of:
       "ready"    — env exists and is fully set up
       "pending"  — env exists but setup incomplete, or not yet created
-      "unavail"  — conda not found / no adapter
-      "noop"     — no conda env needed (serverless adapter)
+      "unavail"  — conda not found / adapter unavailable
+      "noop"     — no conda env needed (serverless-only adapter)
     """
+    from verify.backend.utils.config import set_current_app_context
+    set_current_app_context(app_name)
+
     env_spec = adapter.env_spec
     if env_spec is None:
         ok, msg = adapter.check_availability()
@@ -67,19 +88,71 @@ def _init_session():
         st.session_state._init_results = {}   # app_name -> (ok, msg) | None
     if "_executor" not in st.session_state:
         st.session_state._executor = concurrent.futures.ThreadPoolExecutor(max_workers=3)
+    if "app_modes" not in st.session_state:
+        st.session_state.app_modes = {}        # app_name -> "auto" | "native" | "serverless"
 
 
 # ─── Main UI ─────────────────────────────────────────────────────────────────
 
 def main():
     st.title("⚙️ Initialization")
+
+    _init_session()
+    _sync_app_modes()
+    adapters = _get_adapters()
+
+    # ── Execution Mode section ────────────────────────────────────────────────
+    st.subheader("Execution Mode")
+
+    global_mode = _global_default_mode()
+    st.caption(
+        f"Global default from `.env` (USE_APP_SERVERS): **{global_mode}**. "
+        "Choose Native or Serverless for each app below."
+    )
+
+    from verify.backend.utils.config import set_app_mode_override
+    mode_changed = False
+    for app_name in sorted(adapters):
+        # Default to whatever .env says
+        current_mode = st.session_state.app_modes.get(app_name, global_mode)
+        if current_mode not in _MODE_OPTIONS:
+            current_mode = global_mode
+        current_idx = _MODE_OPTIONS.index(current_mode)
+
+        col_name, col_radio = st.columns([2, 5])
+        with col_name:
+            st.markdown(f"**`{app_name}`**")
+        with col_radio:
+            chosen_label = st.radio(
+                label=f"mode_{app_name}",
+                options=_MODE_LABELS,
+                index=current_idx,
+                horizontal=True,
+                label_visibility="collapsed",
+                key=f"mode_radio_{app_name}",
+            )
+            chosen_mode = _MODE_OPTIONS[_MODE_LABELS.index(chosen_label)]
+
+        if chosen_mode != current_mode:
+            st.session_state.app_modes[app_name] = chosen_mode
+            set_app_mode_override(app_name, chosen_mode)
+            mode_changed = True
+        elif app_name not in st.session_state.app_modes:
+            # Persist the .env default into session state so other pages can sync it
+            st.session_state.app_modes[app_name] = current_mode
+            set_app_mode_override(app_name, current_mode)
+
+    if mode_changed:
+        st.rerun()
+
+    st.divider()
+
+    # ── Environment setup section ─────────────────────────────────────────────
+    st.subheader("Environment Setup")
     st.markdown(
         "Set up isolated conda environments for each target app. "
         "Each environment only needs to be initialized once — subsequent runs reuse it."
     )
-
-    _init_session()
-    adapters = _get_adapters()
 
     # Resolve any completed futures into results
     for app_name, future in list(st.session_state._init_futures.items()):
@@ -97,7 +170,7 @@ def main():
     )
 
     # ── "Initialize All" button ───────────────────────────────────────────────
-    col_hdr, col_all = st.columns([5, 2])
+    _, col_all = st.columns([5, 2])
     with col_all:
         if st.button("Initialize All", width="stretch", disabled=any_running):
             for app_name, adapter in adapters.items():
@@ -123,7 +196,8 @@ def main():
             st.markdown(f"**`{app_name}`**")
             modalities = ", ".join(adapter.supported_modalities) if adapter.supported_modalities else "—"
             python_ver = adapter.env_spec.python if adapter.env_spec else "—"
-            st.caption(f"Python {python_ver} · {modalities}")
+            effective_mode = st.session_state.app_modes.get(app_name, global_mode)
+            st.caption(f"Python {python_ver} · {modalities} · **{effective_mode}**")
 
         with col_status:
             if is_running:
@@ -136,7 +210,7 @@ def main():
                     st.error(msg)
             else:
                 try:
-                    level, msg = _env_status(adapter)
+                    level, msg = _env_status(app_name, adapter)
                 except Exception as e:
                     level, msg = "unavail", str(e)
 
@@ -149,7 +223,7 @@ def main():
 
         with col_action:
             try:
-                level, _ = _env_status(adapter)
+                level, _ = _env_status(app_name, adapter)
             except Exception:
                 level = "unavail"
 

@@ -342,6 +342,8 @@ class Orchestrator:
 
             # --- Step 2: Run pipeline on original input ---
             try:
+                from verify.backend.utils.config import set_current_app_context
+                set_current_app_context(self.app_name)
                 if hasattr(self._adapter, "_reset_openrouter_calls"):
                     self._adapter._reset_openrouter_calls()
                 orig_result = self._adapter.run_pipeline(item)
@@ -411,6 +413,8 @@ class Orchestrator:
 
             # --- Step 4: Run pipeline on perturbed input ---
             try:
+                from verify.backend.utils.config import set_current_app_context
+                set_current_app_context(self.app_name)
                 if hasattr(self._adapter, "_reset_openrouter_calls"):
                     self._adapter._reset_openrouter_calls()
                 pert_pipeline_result = self._adapter.run_pipeline(perturbed_item)

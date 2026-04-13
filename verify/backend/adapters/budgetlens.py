@@ -14,6 +14,8 @@ write a temporary JPEG if only in-memory data is available.
 Upcoming datasets: SROIE2019, receipt private-attribute dataset.
 """
 
+import atexit
+import tempfile
 import io
 import json
 import re
@@ -30,7 +32,10 @@ BUDGETLENS_DJANGO_ROOT = TARGET_APPS_DIR / "budget-lens" / "budgetlens"
 _ENV_SPEC = EnvSpec(
     name="budget-lens",
     python="3.10",
-    install_cmds=[["pip", "install", "-r", str(TARGET_APPS_DIR / "budget-lens" / "requirements.txt")]],
+    install_cmds=[
+        ["pip", "install", "-r", str(TARGET_APPS_DIR / "budget-lens" / "requirements.txt")],
+        ["pip", "install", "fastapi", "uvicorn", "pydantic", "requests"]
+    ],
 )
 _RUNNER = Path(__file__).parent.parent / "runners" / "budgetlens_runner.py"
 
@@ -94,6 +99,56 @@ class BudgetLensAdapter(BaseAdapter):
     supported_modalities = ["image"]
     env_spec = _ENV_SPEC
 
+    def __init__(self):
+        self._server_process = None
+        self._server_port = None
+        atexit.register(self._cleanup_server)
+
+    def _cleanup_server(self):
+        if self._server_process is not None:
+            import sys
+            print(f"[budget-lens] Shutting down local API server (port {self._server_port})...", file=sys.stderr, flush=True)
+            self._server_process.terminate()
+            self._server_process.wait()
+            self._server_process = None
+
+    def _start_server(self):
+        if self._server_process is not None and self._server_process.poll() is None:
+            return
+
+        import socket
+        import subprocess
+        import time
+        import requests
+        import sys
+
+        s = socket.socket()
+        s.bind(("", 0))
+        self._server_port = s.getsockname()[1]
+        s.close()
+
+        conda = CondaRunner.find_conda()
+        server_script = Path(__file__).parent.parent / "runners" / "budgetlens_server.py"
+
+        print(f"[budget-lens] Starting local API server on port {self._server_port}...", file=sys.stderr, flush=True)
+        self._server_process = subprocess.Popen(
+            [conda, "run", "-n", _ENV_SPEC.name, "python", str(server_script), "--port", str(self._server_port)],
+            stdout=subprocess.DEVNULL,
+            stderr=sys.stderr,
+        )
+
+        start_time = time.time()
+        while time.time() - start_time < 30:
+            try:
+                resp = requests.get(f"http://127.0.0.1:{self._server_port}/health")
+                if resp.status_code == 200:
+                    print("[budget-lens] Server is ready.", file=sys.stderr, flush=True)
+                    return
+            except Exception:
+                time.sleep(1)
+        
+        raise RuntimeError("budgetlens_server failed to start within 30 seconds.")
+
     def check_availability(self) -> Tuple[bool, str]:
         if use_app_servers():
             return CondaRunner.probe(_ENV_SPEC)
@@ -117,25 +172,37 @@ class BudgetLensAdapter(BaseAdapter):
     # ── NATIVE mode ───────────────────────────────────────────────────────────
 
     def _run_native(self, input_item: Dict[str, Any]) -> AdapterResult:
-        """Run budget-lens's process_receipt() inside the 'budget-lens' conda env."""
+        """Run budget-lens's process_receipt() inside the 'budget-lens' conda env via HTTP server."""
         ok, msg = CondaRunner.ensure(_ENV_SPEC)
         if not ok:
             return AdapterResult(success=False, error=msg)
 
+        import requests
+        import sys
+
+        try:
+            self._start_server()
+        except Exception as e:
+            return AdapterResult(success=False, error=f"Failed to start server: {e}")
+
         image_b64 = input_item.get("image_base64") or _encode_image_b64(
             input_item.get("data") or input_item.get("path", "")
         )
-        ok, result, err = CondaRunner.run(
-            _ENV_SPEC.name,
-            _RUNNER,
-            {
+
+        try:
+            payload = {
                 "image_base64": image_b64,
                 "openrouter_api_key": get_openrouter_api_key() or "",
-            },
-            timeout=90,
-        )
-        if not ok:
-            return AdapterResult(success=False, error=err)
+            }
+            print("[budget-lens] Sending inference request to local server...", file=sys.stderr, flush=True)
+            resp = requests.post(f"http://127.0.0.1:{self._server_port}/infer", json=payload, timeout=90)
+            resp.raise_for_status()
+            result = resp.json()
+        except Exception as e:
+            return AdapterResult(success=False, error=f"HTTP request to server failed: {e}")
+
+        if not result.get("success"):
+            return AdapterResult(success=False, error=result.get("error"))
 
         structured = {k: result.get(k) for k in ("category", "date", "amount", "currency")}
         externalizations = result.get("externalizations", {})
@@ -146,12 +213,12 @@ class BudgetLensAdapter(BaseAdapter):
             f"Amount: {structured.get('amount', 'Unknown')} {structured.get('currency', '')}"
         )
         return AdapterResult(
-            success=result.get("success", False),
+            success=True,
             output_text=output_text,
             raw_output=result,
             structured_output=structured,
             externalizations=externalizations,
-            metadata={"method": "native_process_receipt"},
+            metadata={"method": "native_process_receipt_server"},
         )
 
     # ── OpenRouter fallback ───────────────────────────────────────────────────

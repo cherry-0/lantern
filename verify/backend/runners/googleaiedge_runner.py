@@ -177,6 +177,7 @@ def main():
         log_input("google-ai-edge", modality, text_content)
         response = _run_text(model_id, text_content, max_tokens)
 
+    _runtime_capture.set_phase("POST")
     externalizations = _runtime_capture.finalize()
     print(json.dumps({
         "success": True,
