@@ -155,34 +155,67 @@ snapdo already uses SQLite with a hardcoded `SECRET_KEY` — no shim needed.
 
 ### 5.1 `_runtime_capture.py` (runner-side, stdlib-only)
 
-`verify/backend/runners/_runtime_capture.py` is a self-contained module (no verify package imports, works in any conda env). It captures actual runtime I/O from the app during execution, organized into two phases: **DURING_INFERENCE** and **POST_INFERENCE**.
+`verify/backend/runners/_runtime_capture.py` is a self-contained module (no verify package imports, works in any conda env). It captures actual runtime I/O from the app during execution, organized into two phases: **DURING** and **POST**.
 
-**`install()`** patches four transport layers:
-- `requests.Session.request` (via `urllib3`) — captures HTTP requests/responses (URL, method, status)
-- `httpx.Client.send` — captures sync httpx calls (used by LangChain, some Django apps)
-- `httpx.AsyncClient.send` — captures async httpx calls
-- `starlette.websockets.WebSocket` — captures `send_text` and `send_json` calls to the frontend
+Five channels are tracked: `NETWORK`, `STORAGE`, `LOGGING`, `UI`, `IPC`.
+
+**`install()`** patches the following layers:
+
+**NETWORK channel:**
+| Patch target | What it captures |
+|---|---|
+| `urllib3.connectionpool.HTTPConnectionPool.urlopen` | All HTTP/S via `requests`, `boto3`, direct urllib3 — reconstructs full URL from pool host/port |
+| `httpx.Client.send` | Sync httpx calls — LangChain, OpenAI SDK ≥1.0, litellm |
+| `httpx.AsyncClient.send` | Async httpx calls — same libraries, async path |
+| `aiohttp.ClientSession._request` | Async aiohttp clients used by some frameworks |
+| `smtplib.SMTP.sendmail` / `send_message` | Direct SMTP email sends (from/to/subject + host) |
+
+**UI channel:**
+| Patch target | What it captures |
+|---|---|
+| `starlette.websockets.WebSocket.send_text` / `send_json` | WebSocket pushes via FastAPI / Starlette |
+| `channels.generic.websocket.AsyncWebsocketConsumer.send` | WebSocket pushes via Django Channels (async consumers) |
+| `channels.generic.websocket.WebsocketConsumer.send` | WebSocket pushes via Django Channels (sync consumers) |
+| `record_ui_event(action, details)` | Manual UI annotation from runners (e.g. `[NOTIFICATION]`, `[ANIMATION]`, `[DISPLAY_TEXT]`) |
+
+**STORAGE channel:**
+| Patch target | What it captures |
+|---|---|
+| Django `post_save` signal (via `connect_django_signals()`) | All Django ORM model saves (CREATE and UPDATE), called after `django.setup()` |
+| `builtins.open` (write/append/create modes) | Direct file writes to interesting extensions (`.json`, `.jpg`, `.png`, `.pdf`, `.csv`, `.pkl`, `.db`, `.sqlite3`, etc.) |
+| `pathlib.Path.write_text` / `write_bytes` | Pathlib-based file writes to same extension set |
+| `shutil.copy` / `copyfile` / `copy2` | File copies — e.g. Django FileSystemStorage saving uploads to `media/` |
+
+Infrastructure paths (`__pycache__`, `site-packages`, `.git`, `/tmp/`, etc.) are excluded from file write capture.
+
+**IPC channel:**
+| Patch target | What it captures |
+|---|---|
+| `subprocess.Popen.__init__` | Child process launches (filtered: Python, build tools, shells are skipped) |
+| `socket.create_connection` | Raw TCP connections to known service ports (Redis 6379, PostgreSQL 5432, MySQL 3306, MongoDB 27017, AMQP 5672, SMTP 25/465/587, Elasticsearch 9200, Kafka 9092, etc.) |
+| `redis.client.Redis.execute_command` | Redis commands: `PUBLISH`, `LPUSH`, `RPUSH`, `XADD`, `SET`, `SETEX`, `MSET` — captures Celery task dispatch |
+
+**LOGGING channel:**
+Installs a `logging.Handler` at the root logger. Keeps all WARNING+ records; keeps DEBUG/INFO only if the record contains inference-relevant keywords (`inference`, `chain`, `llm`, `model`, `verdict`, `tag`, `mail`, etc.). Noisy framework namespaces (`django.db.backends`, `httpcore`, `transformers`, etc.) are suppressed at DEBUG/INFO.
 
 **`set_phase(phase)`** — sets the current phase to `"DURING"` or `"POST"`.
 
-**`record_ui_event(action, details)`** — manually records a UI action (e.g. `[NOTIFICATION]`, `[ANIMATION]`) for headless runners.
-
-**`connect_django_signals()`** — call after `django.setup()` to hook `post_save` signal for model persistence events.
-
-**Log filtering** — installs a `logging.Handler` at DEBUG level. Keeps WARNING+ always; keeps DEBUG/INFO only if the log record name or message contains inference-relevant keywords.
+**`connect_django_signals()`** — call after `django.setup()` to hook `post_save` signal for ORM writes.
 
 **`finalize() → dict`** — returns only **POST-phase** captured channels as a flat dict:
 ```json
 {
   "NETWORK": "...",
   "UI": "...",
-  "STORAGE": "..."
+  "STORAGE": "...",
+  "LOGGING": "...",
+  "IPC": "..."
 }
 ```
 
-DURING-phase events (i.e., the LLM inference API calls themselves) are intentionally excluded — they are expected internals of the app's inference process, not privacy-relevant externalizations. Only POST-phase events reflect what the app does with the data *after* inference: persisting to databases, pushing to frontends, sending emails, etc.
+DURING-phase events (the LLM inference API calls themselves) are intentionally excluded — they are expected internals of the app's inference process, not privacy-relevant externalizations. Only POST-phase events reflect what the app does with the data *after* inference: persisting to databases, pushing to frontends, sending emails, dispatching background tasks, etc.
 
-Empty channels are omitted from the returned dict.
+Empty channels are omitted from the returned dict. Each channel is deduplicated and capped (NETWORK: 15 events, STORAGE/IPC: 10, LOGGING/UI: 8).
 
 ### 5.2 `_openrouter_calls` tracking (adapter-side, serverless only)
 
@@ -219,7 +252,7 @@ Priority order (first match wins):
 
 ### 5.4 What is shown in the UI
 
-Both the live `Perturb Input` page and the `View Results` page show externalizations as a flat list of channels (NETWORK, STORAGE, UI, LOGGING). Only POST-phase events — what the app does *after* inference — are displayed and evaluated. DURING-phase inference API calls are not shown because they are not privacy-relevant externalizations.
+Both the live `Perturb Input` page and the `View Results` page show externalizations as a flat list of channels (NETWORK, STORAGE, UI, LOGGING, IPC). Only POST-phase events — what the app does *after* inference — are displayed and evaluated. DURING-phase inference API calls are not shown because they are not privacy-relevant externalizations.
 
 ---
 
@@ -708,7 +741,7 @@ Dataset item
 - **Improved UI Timeline**: Add a dedicated "Timeline" view to the frontend to visualize the sequence of network/UI events chronologically.
 - **Cross-Phase Data Flow**: Track whether specific private data discovered during inference (e.g. an address) is the same data being externalized in the post-inference phase.
 - **Regression Testing**: Implement automated checks that fail if a runner's captured externalizations do not contain expected "Post-Inference" events (e.g. `xend` must always attempt a Gmail API call).
-- **Transport Layer Support**: Add patches for more communication layers like `gRPC` or `socket.io` if future apps require them.
+- **Transport Layer Support**: Add patches for `gRPC` or `socket.io` if future apps require them (current coverage: urllib3, httpx, aiohttp, smtplib, Starlette WS, Django Channels WS, subprocess, socket, Redis, builtins.open, pathlib, shutil).
 
 ### HTTP API Wrapper vs. Native App Server
 

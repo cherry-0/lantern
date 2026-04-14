@@ -81,6 +81,21 @@ _SKIP_SUBPROCESS_NAMES = {
     "node", "npm", "npx", "sh", "bash", "zsh",
 }
 
+# File extensions worth recording when written to disk
+_INTERESTING_WRITE_EXTENSIONS = {
+    ".json", ".csv", ".txt",
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp",
+    ".pdf", ".pkl", ".npy", ".npz",
+    ".db", ".sqlite3",
+}
+
+# Path fragments that indicate infrastructure / build files — skip these
+_SKIP_WRITE_PATH_FRAGMENTS = {
+    "__pycache__", ".pyc", "site-packages", ".git", "node_modules",
+    "/proc/", "/dev/", "/sys/", "/tmp/", "tmpdir",
+    ".log",
+}
+
 # TCP ports that indicate a non-HTTP external service (IPC / data store)
 _IPC_PORTS = {
     6379,            # Redis
@@ -361,6 +376,135 @@ def install() -> None:
             return _orig_execute_command(self, *args, **kwargs)
 
         _redis.client.Redis.execute_command = _patched_execute_command
+    except (ImportError, AttributeError):
+        pass
+
+    # ── Patch Django Channels WebSocket (UI tracking for server-based runners) ──
+    # Django Channels uses its own WebSocket layer, not Starlette.
+    # Patching the base consumer class captures sends from all consumers.
+    try:
+        from channels.generic.websocket import AsyncWebsocketConsumer as _AsyncWSC
+
+        _orig_channels_async_send = _AsyncWSC.send
+
+        async def _patched_channels_async_send(self, text_data=None, bytes_data=None, close=False):
+            if text_data:
+                record_ui_event("PUSH", str(text_data)[:500])
+            return await _orig_channels_async_send(
+                self, text_data=text_data, bytes_data=bytes_data, close=close
+            )
+
+        _AsyncWSC.send = _patched_channels_async_send
+    except (ImportError, AttributeError):
+        pass
+
+    try:
+        from channels.generic.websocket import WebsocketConsumer as _SyncWSC
+
+        _orig_channels_sync_send = _SyncWSC.send
+
+        def _patched_channels_sync_send(self, text_data=None, bytes_data=None, close=False):
+            if text_data:
+                record_ui_event("PUSH", str(text_data)[:500])
+            return _orig_channels_sync_send(
+                self, text_data=text_data, bytes_data=bytes_data, close=close
+            )
+
+        _SyncWSC.send = _patched_channels_sync_send
+    except (ImportError, AttributeError):
+        pass
+
+    # ── Patch builtins.open (direct file writes) ───────────────────────────────
+    # Captures writes to interesting file types (images, JSON, CSVs, etc.)
+    # that bypass the Django ORM — e.g. FileSystemStorage, temp file exports.
+    try:
+        import builtins as _builtins
+
+        _orig_builtin_open = _builtins.open
+
+        def _patched_builtin_open(file, mode="r", *args, **kwargs):
+            try:
+                mode_str = str(mode)
+                if any(m in mode_str for m in ("w", "a", "x")):
+                    path_str = str(file)
+                    ext = _os.path.splitext(path_str)[1].lower()
+                    if ext in _INTERESTING_WRITE_EXTENSIONS:
+                        if not any(frag in path_str for frag in _SKIP_WRITE_PATH_FRAGMENTS):
+                            _record_event("STORAGE", f"[FILE_WRITE] {path_str}")
+            except Exception:
+                pass
+            return _orig_builtin_open(file, mode, *args, **kwargs)
+
+        _builtins.open = _patched_builtin_open
+    except (ImportError, AttributeError):
+        pass
+
+    # ── Patch pathlib.Path.write_text / write_bytes ────────────────────────────
+    try:
+        from pathlib import Path as _PPath
+
+        _orig_path_write_text = _PPath.write_text
+        _orig_path_write_bytes = _PPath.write_bytes
+
+        def _patched_path_write_text(self, data, *args, **kwargs):
+            try:
+                if self.suffix.lower() in _INTERESTING_WRITE_EXTENSIONS:
+                    path_str = str(self)
+                    if not any(frag in path_str for frag in _SKIP_WRITE_PATH_FRAGMENTS):
+                        _record_event("STORAGE", f"[FILE_WRITE] {path_str}")
+            except Exception:
+                pass
+            return _orig_path_write_text(self, data, *args, **kwargs)
+
+        def _patched_path_write_bytes(self, data, *args, **kwargs):
+            try:
+                if self.suffix.lower() in _INTERESTING_WRITE_EXTENSIONS:
+                    path_str = str(self)
+                    if not any(frag in path_str for frag in _SKIP_WRITE_PATH_FRAGMENTS):
+                        _record_event("STORAGE", f"[FILE_WRITE] {path_str}")
+            except Exception:
+                pass
+            return _orig_path_write_bytes(self, data, *args, **kwargs)
+
+        _PPath.write_text = _patched_path_write_text
+        _PPath.write_bytes = _patched_path_write_bytes
+    except (ImportError, AttributeError):
+        pass
+
+    # ── Patch shutil.copy / copyfile / copy2 ──────────────────────────────────
+    # Captures file copies — e.g. Django FileSystemStorage saving an upload to media/.
+    try:
+        import shutil as _shutil
+
+        _orig_shutil_copy = _shutil.copy
+        _orig_shutil_copyfile = _shutil.copyfile
+        _orig_shutil_copy2 = _shutil.copy2
+
+        def _shutil_capture(src, dst):
+            try:
+                dst_str = str(dst)
+                ext = _os.path.splitext(dst_str)[1].lower()
+                if ext in _INTERESTING_WRITE_EXTENSIONS:
+                    if not any(frag in dst_str for frag in _SKIP_WRITE_PATH_FRAGMENTS):
+                        _record_event("STORAGE", f"[FILE_COPY] {str(src)} → {dst_str}")
+            except Exception:
+                pass
+
+        def _patched_shutil_copy(src, dst, *args, **kwargs):
+            _shutil_capture(src, dst)
+            return _orig_shutil_copy(src, dst, *args, **kwargs)
+
+        def _patched_shutil_copyfile(src, dst, *args, **kwargs):
+            _shutil_capture(src, dst)
+            return _orig_shutil_copyfile(src, dst, *args, **kwargs)
+
+        def _patched_shutil_copy2(src, dst, *args, **kwargs):
+            _shutil_capture(src, dst)
+            return _orig_shutil_copy2(src, dst, *args, **kwargs)
+
+        _shutil.copy = _patched_shutil_copy
+        _shutil.copyfile = _patched_shutil_copyfile
+        _shutil.copy2 = _patched_shutil_copy2
     except (ImportError, AttributeError):
         pass
 
