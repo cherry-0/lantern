@@ -1,6 +1,6 @@
 dataset_name,google_drive_link,description
-SROIE2019,https://drive.google.com/drive/folders/EXAMPLE_FOLDER_ID_1,SROIE 2019 receipt OCR dataset
-SynthPAI,https://drive.google.com/file/d/EXAMPLE_FILE_ID_2/view,Synthetic personal attributes dataset
-VISPR,https://drive.google.com/drive/folders/EXAMPLE_FOLDER_ID_3,Visual privacy recognition dataset
-HR-VISPR,https://drive.google.com/file/d/EXAMPLE_FILE_ID_4/view,High-resolution VISPR dataset
-PrivacyLens,https://drive.google.com/drive/folders/EXAMPLE_FOLDER_ID_5,PrivacyLens evaluation dataset
+SROIE2019,https://drive.google.com/drive/folders/1njiL1akdzJPyab22_do7283zLRLu10aG?usp=sharing,SROIE 2019 receipt OCR dataset
+SynthPAI,https://drive.google.com/drive/folders/1WcSAmtQsGzQ0BJ4cLtEOYg2YqMeKVI-0?usp=sharing,Synthetic personal attributes dataset
+VISPR,https://drive.google.com/drive/folders/1BoO973vZlZforaiq9htgDzL_mDxum2Mz?usp=sharing,Visual privacy recognition dataset
+HR-VISPR,https://drive.google.com/drive/folders/1ewHOpoEJ7DjlqyQ3pJOWfZk_e7juhfKC?usp=sharing,High-resolution VISPR dataset
+PrivacyLens,https://drive.google.com/drive/folders/17DkAnqgakDJyEX7N-qZMPpr9I2tg4xPd?usp=sharing,PrivacyLens evaluation dataset
