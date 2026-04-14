@@ -25,6 +25,7 @@ import atexit
 import base64
 import io
 import json
+import platform
 import re
 from pathlib import Path
 from typing import Any, Dict, Tuple
@@ -39,10 +40,13 @@ _MODEL_CANCER   = _ASSETS / "quantized_pruned_model_cancer.tflite"
 _MODEL_ALLERGY  = _ASSETS / "quantized_pruned_model_allergy.tflite"
 _MODEL_MELANOMA = _ASSETS / "quantized_pruned_model_melanoma.tflite"
 
+# tensorflow-macos is only available on macOS; use standard tensorflow elsewhere
+_TF_PACKAGE = "tensorflow-macos" if platform.system() == "Darwin" else "tensorflow"
+
 _ENV_SPEC = EnvSpec(
     name="skin-disease-detection",
     python="3.10",
-    install_cmds=[["pip", "install", "tensorflow-macos", "pillow", "numpy", "fastapi", "uvicorn", "pydantic", "requests"]],
+    install_cmds=[["pip", "install", _TF_PACKAGE, "pillow", "numpy", "fastapi", "uvicorn", "pydantic", "requests"]],
 )
 _RUNNER = Path(__file__).parent.parent / "runners" / "skindisease_runner.py"
 
