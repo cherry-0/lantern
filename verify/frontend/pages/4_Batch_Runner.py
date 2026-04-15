@@ -131,7 +131,8 @@ def _run_subprocess(cmd: List[str], temp_csv: Path, state: Dict) -> None:
         state["log"].append(f"[RUNNER ERROR] {exc}")
         state["returncode"] = -1
     finally:
-        state["running"] = False
+        state["running"]        = False
+        state["just_finished"]  = True   # triggers one extra rerun to flush final log
         try:
             temp_csv.unlink(missing_ok=True)
         except Exception:
@@ -285,7 +286,7 @@ def main() -> None:
         _write_temp_csv(selected_rows, _TEMP_CONFIG)
 
         cmd: List[str] = [
-            sys.executable, str(_BATCH_SCRIPT),
+            sys.executable, "-u", str(_BATCH_SCRIPT),
             "--config", str(_TEMP_CONFIG),
             "--mode", mode,
             "--workers", str(workers),
@@ -356,7 +357,7 @@ def main() -> None:
             elif status == "running":
                 status_icon = "🔄"
             elif status == "done":
-                status_icon = "✅"
+                status_icon = "❌" if p["failed"] > 0 else "✅"
             else:
                 status_icon = "❓"
 
@@ -414,11 +415,14 @@ def main() -> None:
             height=440,
             disabled=True,
             label_visibility="collapsed",
-            key="batch_log_area",
         )
 
         if running:
             time.sleep(0.8)
+            st.rerun()
+        elif bs.pop("just_finished", False):
+            # One extra rerun after the process exits to flush the final log lines.
+            time.sleep(0.2)
             st.rerun()
 
 
