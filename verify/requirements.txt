@@ -6,6 +6,7 @@ Pillow>=10.0.0
 requests>=2.31.0
 pandas>=2.0.0
 PyYAML>=6.0.0
+datasets>=2.0.0
 
 # Optional: needed for video support
 # opencv-python>=4.8.0

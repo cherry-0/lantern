@@ -1,0 +1,12 @@
+enabled,app_name,modality,dataset_name,perturbation_method,max_items
+true,snapdo,image,HR-VISPR,Imago_Obscura,
+true,momentag,image,HR-VISPR,Imago_Obscura,
+true,clone,image,HR-VISPR,Imago_Obscura,
+true,budget-lens,image,SROIE2019,Imago_Obscura,
+true,skin-disease-detection,image,HR-VISPR,Imago_Obscura,
+true,google-ai-edge-gallery,image,HR-VISPR,Imago_Obscura,
+true,xend,text,PrivacyLens,PrivacyLens-Prompt,
+true,deeptutor,text,PrivacyLens,PrivacyLens-Prompt,
+true,google-ai-edge-gallery,text,SynthPAI,PrivacyLens-Prompt,
+true,xend,text,SynthPAI,PrivacyLens-Prompt,
+true,deeptutor,text,SynthPAI,PrivacyLens-Prompt,

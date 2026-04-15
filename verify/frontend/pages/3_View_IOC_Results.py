@@ -162,7 +162,7 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
                     st.caption("**Prompt sent to model:**")
                     st.text(prompt_text)
             elif modality == "text":
-                st.text_area("", value=input_item.get("text_content", ""),
+                st.text_area("Input text", value=input_item.get("text_content", ""),
                              height=220, disabled=True, label_visibility="collapsed",
                              key=f"vioc_text_{idx}")
             else:
@@ -177,7 +177,7 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
 
             with out_col:
                 st.markdown(f"**{STAGE_OUTPUT}**")
-                st.text_area("", value=result.get("output_text", ""),
+                st.text_area("Raw output text", value=result.get("output_text", ""),
                              height=200, disabled=True, label_visibility="collapsed",
                              key=f"vioc_out_{idx}")
 
@@ -185,7 +185,7 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
                 st.markdown(f"**{STAGE_EXT}**")
                 ext_text = result.get("ext_text", "")
                 st.text_area(
-                    "",
+                    "Externalized text",
                     value=ext_text if ext_text.strip() else "No externalizations captured.",
                     height=200, disabled=True, label_visibility="collapsed",
                     key=f"vioc_ext_{idx}",
