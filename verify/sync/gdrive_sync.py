@@ -20,7 +20,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-OUTPUTS_DIR = Path(__file__).parent / "outputs"
+OUTPUTS_DIR = Path(__file__).parent.parent / "outputs"
 
 DEFAULT_REMOTE = "lantern"
 DEFAULT_REMOTE_PATH = "verify/outputs"

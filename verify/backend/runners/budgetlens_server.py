@@ -33,6 +33,7 @@ if not os.path.exists(db_path):
     call_command("migrate", "--run-syncdb", verbosity=0)
     print("[budget-lens-server] Database ready.", file=sys.stderr, flush=True)
 
+import core.views as _core_views
 from core.views import process_receipt
 
 app = FastAPI()
@@ -58,6 +59,9 @@ def infer(req: InferenceRequest):
     base_url = "https://openrouter.ai/api/v1"
     os.environ["OPENAI_API_KEY"] = req.openrouter_api_key
     os.environ["OPENAI_BASE_URL"] = base_url
+    # core.views creates its OpenAI client at import time, so patch it now
+    import openai as _openai
+    _core_views.client = _openai.OpenAI(api_key=req.openrouter_api_key, base_url=base_url)
 
     tmp = None
     try:

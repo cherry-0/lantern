@@ -10,6 +10,10 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 runners_dir = os.path.dirname(os.path.abspath(__file__))
+momentag_backend = os.path.normpath(os.path.join(
+    runners_dir, "..", "..", "..", "target-apps", "momentag", "backend"
+))
+sys.path.insert(0, momentag_backend)
 sys.path.insert(0, runners_dir)
 import _runtime_capture
 
@@ -53,10 +57,7 @@ def infer(req: InferenceRequest):
 
     try:
         img_bytes = base64.b64decode(req.image_base64)
-        from PIL import Image as PILImage
-        pil_image = PILImage.open(io.BytesIO(img_bytes)).convert("RGB")
-
-        captions_data = get_image_captions(pil_image)
+        captions_data = get_image_captions(io.BytesIO(img_bytes))
 
         captions, tags = [], []
         for item in captions_data:

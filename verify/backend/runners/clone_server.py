@@ -63,21 +63,13 @@ app = FastAPI()
 _FRAME_PROMPT = (
     "You are an AI personal assistant analyzing screen activity recordings "
     "(like the clone app). You receive sampled frames from a video or screenshot. "
-    "Describe:
-"
-    "1. What activity/scene is shown.
-"
-    "2. Any visible text, applications, or identifiable elements.
-"
-    "3. A concise summary suitable for a personal knowledge base.
-
-"
-    "Format:
-"
-    "Activity: <description>
-"
-    "Details: <visible elements>
-"
+    "Describe:\n"
+    "1. What activity/scene is shown.\n"
+    "2. Any visible text, applications, or identifiable elements.\n"
+    "3. A concise summary suitable for a personal knowledge base.\n\n"
+    "Format:\n"
+    "Activity: <description>\n"
+    "Details: <visible elements>\n"
     "Summary: <1-2 sentence summary>"
 )
 

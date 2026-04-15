@@ -97,6 +97,8 @@ Stdout is parsed with `find("{")` (first `{`) and `rfind("}")` (last `}`) to cor
 | llm-vtuber | `llm-vtuber` | 3.11 | `pip install -e .` |
 | skin-disease-detection | `skin-disease-detection` | 3.10 | `pip install tensorflow-macos pillow numpy` |
 | google-ai-edge-gallery | `google-ai-edge-gallery` | 3.10 | `pip install transformers accelerate torch` |
+| chat-driven-expense-tracker | `chat-driven-expense-tracker` | 3.10 | `pip install -r requirements.txt` |
+| tool-neuron | `tool-neuron` | 3.10 | `pip install -r requirements.txt` |
 
 Note: xend uses `poetry install --no-root` because `pyproject.toml` sets `package-mode = false`, which makes `pip install .` fail.  
 Note: skin-disease uses `tensorflow-macos` (not `tflite-runtime`) on Apple Silicon — see TROUBLESHOOTING.md §10.
@@ -729,6 +731,8 @@ Dataset item
 | llm-vtuber | HTTP Wrapper → AsyncLLM | OpenRouter text | text |
 | skin-disease | HTTP Wrapper → 3× TFLite | OpenRouter vision | image |
 | google-ai-edge | HTTP Wrapper → HuggingFace transformers | OpenRouter text+vision | image, text |
+| chat-driven-expense-tracker | HTTP Wrapper → FastAPI + LangChain (Groq) → MongoDB + Pinecone | OpenRouter text | text |
+| tool-neuron | HTTP Wrapper → on-device GGUF (llama.cpp) + RAG + plugins | OpenRouter text+vision | text, image |
 
 ---
 
