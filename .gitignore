@@ -34,7 +34,7 @@ reference/
 # gdrive sync credentials / token
 verify/sync/credentials.json
 verify/sync/token.json
-verify/sync/service_account.json
+verify/service_account.json
 
 # paper build artifacts
 paper/**/build/
