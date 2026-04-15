@@ -318,6 +318,7 @@ def _run_ioc(
     unified_attrs: List[str],
     max_items: Optional[int],
     use_cache: bool,
+    item_workers: int = 1,
 ) -> Dict[str, Any]:
     """
     Headless IOC pipeline matching run_comparison_pipeline() in
@@ -395,24 +396,13 @@ def _run_ioc(
 
     _log(tag, f"Starting IOC ({dataset_name}, {modality})")
 
-    for ok, item, err in iter_dataset(dataset_name, modality, max_items=row_max):
+    def _process_one(ok: bool, item: Dict, err: Optional[str]) -> Dict:
+        """Process a single non-cached dataset item (runs in a worker thread)."""
         filename = item.get("filename", "unknown")
-
-        # ── Cache hit ─────────────────────────────────────────────────────────
-        if cache_dir is not None:
-            cached = cache_module.load_item_cache(cache_dir, filename)
-            if cached is not None:
-                cached.setdefault("input_item", _strip_pil(item))
-                cached["from_cache"] = True
-                n_cached += 1
-                item_results.append(cached)
-                continue
 
         if not ok:
             _log(tag, f"  load error {filename}: {err}", "WARN")
-            item_results.append(_failed_result(filename, err or "Dataset load error", item, {}))
-            n_failed += 1
-            continue
+            return _failed_result(filename, err or "Dataset load error", item, {})
 
         # 1. Input labels
         input_labels = get_input_labels(item, unified_attrs)
@@ -424,19 +414,14 @@ def _run_ioc(
             pipeline_result = adapter.run_pipeline(item)
         except Exception as e:
             _log(tag, f"  pipeline error {filename}: {e}", "ERROR")
-            item_results.append(_failed_result(filename, f"Pipeline error: {e}",
-                                               item, input_labels))
-            n_failed += 1
-            continue
+            return _failed_result(filename, f"Pipeline error: {e}", item, input_labels)
 
         if not pipeline_result.success:
             _log(tag, f"  pipeline failed {filename}: {pipeline_result.error}", "WARN")
-            item_results.append(_failed_result(
+            return _failed_result(
                 filename, pipeline_result.error or "Adapter returned failure.",
                 item, input_labels,
-            ))
-            n_failed += 1
-            continue
+            )
 
         # 3. Evaluate output and externalizations
         output_text    = pipeline_result.output_text or ""
@@ -456,7 +441,7 @@ def _run_ioc(
             "status": "success",
             "error": None,
             "modality": modality,
-            "input_item": item,          # full item in-memory (PIL intact)
+            "input_item": item,
             "input_labels": input_labels,
             "output_text": output_text,
             "externalizations": externalizations,
@@ -476,9 +461,47 @@ def _run_ioc(
             saveable = {**ioc_item, "input_item": _strip_pil(item)}
             cache_module.save_item_cache(cache_dir, filename, saveable)
 
-        item_results.append(ioc_item)
-        n_success += 1
         _log(tag, f"  ✓ {filename}  out_ok={out_ok}  ext_ok={ext_ok}")
+        return ioc_item
+
+    # Collect all dataset items first (avoids tqdm races when parallelising)
+    all_items: List[Tuple[bool, Dict, Optional[str]]] = list(
+        iter_dataset(dataset_name, modality, max_items=row_max)
+    )
+
+    # Separate cached from non-cached in the main thread
+    pending: List[Tuple[bool, Dict, Optional[str]]] = []
+    for ok, item, err in all_items:
+        filename = item.get("filename", "unknown")
+        if cache_dir is not None:
+            cached = cache_module.load_item_cache(cache_dir, filename)
+            if cached is not None:
+                cached.setdefault("input_item", _strip_pil(item))
+                cached["from_cache"] = True
+                n_cached += 1
+                item_results.append(cached)
+                continue
+        pending.append((ok, item, err))
+
+    # Process non-cached items — parallel when item_workers > 1
+    if item_workers > 1 and pending:
+        with ThreadPoolExecutor(max_workers=item_workers) as ipool:
+            futs = [ipool.submit(_process_one, ok, item, err) for ok, item, err in pending]
+            for fut in as_completed(futs):
+                res = fut.result()
+                item_results.append(res)
+                if res.get("status") == "success":
+                    n_success += 1
+                else:
+                    n_failed += 1
+    else:
+        for ok, item, err in pending:
+            res = _process_one(ok, item, err)
+            item_results.append(res)
+            if res.get("status") == "success":
+                n_success += 1
+            else:
+                n_failed += 1
 
     _log(tag, f"Done — success={n_success} cached={n_cached} failed={n_failed}")
 
@@ -505,6 +528,7 @@ def _run_perturb(
     unified_attrs: List[str],  # unused here; attrs come from _load_attrs_for_modality
     max_items: Optional[int],
     use_cache: bool,
+    item_workers: int = 1,
 ) -> Dict[str, Any]:
     """
     Perturbation analysis: original pipeline → perturb → perturbed pipeline → evaluate.
@@ -535,6 +559,7 @@ def _run_perturb(
         use_cache=use_cache,
         max_items=row_max,
         perturbation_method=perturbation_method,
+        item_workers=item_workers,
     )
 
     summary: Optional[Dict] = None
@@ -684,6 +709,13 @@ def main() -> None:
         help="Max parallel workers across configs (default: 4)",
     )
     parser.add_argument(
+        "--item-workers",
+        type=int,
+        default=4,
+        metavar="N",
+        help="Parallel workers per config for item-level processing (default: 4)",
+    )
+    parser.add_argument(
         "--max-items",
         type=int,
         default=None,
@@ -757,7 +789,8 @@ def main() -> None:
             pass
 
     print(f"\nRunning {len(tasks)} tasks across {len(rows)} config rows  "
-          f"(workers={args.workers}, cache={'on' if use_cache else 'off'}, "
+          f"(workers={args.workers}, item_workers={args.item_workers}, "
+          f"cache={'on' if use_cache else 'off'}, "
           f"max_items={args.max_items or 'all'})\n")
 
     results: List[Dict[str, Any]] = []
@@ -765,7 +798,8 @@ def main() -> None:
 
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         for fn, row in tasks:
-            fut = pool.submit(fn, row, unified_attrs, args.max_items, use_cache)
+            fut = pool.submit(fn, row, unified_attrs, args.max_items, use_cache,
+                              args.item_workers)
             futures_map[fut] = (fn, row)
 
         for fut in as_completed(futures_map):
