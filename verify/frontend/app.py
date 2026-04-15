@@ -32,5 +32,6 @@ pg = st.navigation([
     st.Page(str(_PAGES_DIR / "2_Input_Output_Comparison.py"), title="Input / Output Comparison",           icon="🔄"),
     st.Page(str(_PAGES_DIR / "3_View_IOC_Results.py"),        title="View Input-Output Comparison Results", icon="🔬"),
     st.Page(str(_PAGES_DIR / "4_Batch_Runner.py"),            title="Batch Runner",                        icon="⚡"),
+    st.Page(str(_PAGES_DIR / "5_Experiment_Progress.py"),    title="Experiment Progress",                  icon="📋"),
 ])
 pg.run()

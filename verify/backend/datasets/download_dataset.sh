@@ -21,22 +21,25 @@ TARGET_NAME="${1:-}"  # optional: only download this dataset
 # Remote name can be overridden by environment variable
 RCLONE_REMOTE="${RCLONE_REMOTE:-gdrive}"
 
+# Detect active conda environment
+CONDA_ENV="${CONDA_DEFAULT_ENV:-none}"
+
 # ---------------------------------------------------------------------------
 # Dependency check
 # ---------------------------------------------------------------------------
 if ! command -v rclone &>/dev/null; then
-    echo "[ERROR] 'rclone' is not installed. Run: curl https://rclone.org/install.sh | sudo bash"
+    echo "[ERROR] (running in $CONDA_ENV) 'rclone' is not installed. Run: curl https://rclone.org/install.sh | sudo bash"
     exit 1
 fi
 
 if [[ ! -f "$CSV_FILE" ]]; then
-    echo "[ERROR] CSV file not found: $CSV_FILE"
+    echo "[ERROR] (running in $CONDA_ENV) CSV file not found: $CSV_FILE"
     exit 1
 fi
 
 # Check if rclone remote exists
 if ! rclone listremotes | grep -q "^${RCLONE_REMOTE}:" ; then
-    echo "[ERROR] rclone remote '${RCLONE_REMOTE}' not found."
+    echo "[ERROR] (running in $CONDA_ENV) rclone remote '${RCLONE_REMOTE}' not found."
     echo "        Configure it with 'rclone config' or set RCLONE_REMOTE environment variable."
     exit 1
 fi
@@ -98,7 +101,7 @@ tail -n +2 "$CSV_FILE" | while IFS=',' read -r name link description; do
     id="${parsed#*:}"
 
     if [[ -z "$id" || "$kind" == "unknown" ]]; then
-        echo "[SKIP] $name — could not parse Google Drive link: $link"
+        echo "[SKIP] (running in $CONDA_ENV) $name — could not parse Google Drive link: $link"
         continue
     fi
 
