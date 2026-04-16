@@ -60,6 +60,11 @@ _NOISY_LOGGERS = {
     "transformers",
     "huggingface_hub",
     "sentence_transformers",
+    # OpenAI / LiteLLM SDK internals — these fire during DURING-phase inference
+    # but can be delayed by async scheduling and incorrectly land in POST phase.
+    "openai",
+    "openai._base_client",
+    "litellm",
 }
 
 # Keywords that make a log record worth keeping regardless of logger name
@@ -131,10 +136,18 @@ def record_ui_event(action: str, details: str = "") -> None:
     _record_event("UI", msg)
 
 
-def _record_network(method: str, url: str, status: int) -> None:
-    """Append a network event if the URL is not filtered."""
+def _record_network(method: str, url: str, status: int, phase: str | None = None) -> None:
+    """Append a network event if the URL is not filtered.
+
+    Pass ``phase`` explicitly for async callers that snapshot _current_phase
+    before an ``await`` to avoid phase drift (the phase may change while the
+    coroutine is suspended waiting for the network response).
+    """
     if not any(frag in url for frag in _SKIP_URL_FRAGMENTS):
-        _record_event("NETWORK", f"[{method.upper()}] {url[:120]} → {status}")
+        _events["NETWORK"].append({
+            "phase": phase if phase is not None else _current_phase,
+            "content": f"[{method.upper()}] {url[:120]} → {status}",
+        })
 
 
 class _CaptureHandler(logging.Handler):
@@ -216,8 +229,12 @@ def install() -> None:
         _orig_async_send = _httpx.AsyncClient.send
 
         async def _patched_async_send(self, request, **kwargs):
+            # Snapshot phase NOW — _current_phase can change while the coroutine
+            # is suspended waiting for the network, causing inference-phase events
+            # (e.g. the OpenRouter LLM call) to be misclassified as POST phase.
+            _phase_snap = _current_phase
             resp = await _orig_async_send(self, request, **kwargs)
-            _record_network(f"ASYNC {request.method}", str(request.url), resp.status_code)
+            _record_network(f"ASYNC {request.method}", str(request.url), resp.status_code, phase=_phase_snap)
             return resp
 
         _httpx.AsyncClient.send = _patched_async_send
@@ -231,8 +248,9 @@ def install() -> None:
         _orig_aiohttp_request = _aiohttp.ClientSession._request
 
         async def _patched_aiohttp_request(self, method: str, str_or_url, **kwargs):
+            _phase_snap = _current_phase  # snapshot before await to avoid phase drift
             resp = await _orig_aiohttp_request(self, method, str_or_url, **kwargs)
-            _record_network(f"ASYNC {method}", str(str_or_url), resp.status)
+            _record_network(f"ASYNC {method}", str(str_or_url), resp.status, phase=_phase_snap)
             return resp
 
         _aiohttp.ClientSession._request = _patched_aiohttp_request

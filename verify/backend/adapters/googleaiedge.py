@@ -38,6 +38,7 @@ import base64
 import io
 import json
 import re
+import threading
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
@@ -109,6 +110,10 @@ class GoogleAIEdgeAdapter(BaseAdapter):
         self._malicious_task_cache: Dict[str, str] = {}
         self._server_process = None
         self._server_port = None
+        # Serialize all requests to the local model server.
+        # Local HuggingFace inference is CPU/GPU-bound; concurrent requests cause
+        # resource contention and queue buildup that exceeds the HTTP timeout.
+        self._inference_lock = threading.Lock()
         atexit.register(self._cleanup_server)
 
     def _cleanup_server(self):
@@ -298,21 +303,25 @@ class GoogleAIEdgeAdapter(BaseAdapter):
         except Exception as e:
             return AdapterResult(success=False, error=f"Failed to start server: {e}")
 
-        try:
-            payload = {
-                "modality": modality,
-                "text_content": text_content,
-                "image_base64": image_b64,
-                "model_id": self._model_id,
-                "max_tokens": self._max_tokens,
-            }
-            print("[google-ai-edge] Sending inference request to local server...", file=sys.stderr, flush=True)
-            # Timeout is high because the first request triggers the actual model load
-            resp = requests.post(f"http://127.0.0.1:{self._server_port}/infer", json=payload, timeout=300)
-            resp.raise_for_status()
-            result = resp.json()
-        except Exception as e:
-            return AdapterResult(success=False, error=f"HTTP request to server failed: {e}")
+        # Hold the lock for the duration of the HTTP call so parallel batch
+        # workers queue up here rather than at the server, preventing timeouts.
+        with self._inference_lock:
+            try:
+                payload = {
+                    "modality": modality,
+                    "text_content": text_content,
+                    "image_base64": image_b64,
+                    "model_id": self._model_id,
+                    "max_tokens": self._max_tokens,
+                }
+                print("[google-ai-edge] Sending inference request to local server...", file=sys.stderr, flush=True)
+                # 600 s covers the first request (model load ~2 min + inference ~2 min).
+                # Subsequent requests skip model loading, so they finish much faster.
+                resp = requests.post(f"http://127.0.0.1:{self._server_port}/infer", json=payload, timeout=600)
+                resp.raise_for_status()
+                result = resp.json()
+            except Exception as e:
+                return AdapterResult(success=False, error=f"HTTP request to server failed: {e}")
 
         if not result.get("success"):
             return AdapterResult(success=False, error=result.get("error"))
