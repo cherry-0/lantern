@@ -11,6 +11,7 @@ Evaluation is separate from the target app inference step:
 
 import json
 import yaml
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -294,8 +295,11 @@ def evaluate_both(
             "perturbed_error": str | None,
         }
     """
-    orig_ok, orig_results, orig_err = evaluate_inferability(original_output, attributes)
-    pert_ok, pert_results, pert_err = evaluate_inferability(perturbed_output, attributes)
+    with ThreadPoolExecutor(max_workers=2) as _pool:
+        _orig_fut = _pool.submit(evaluate_inferability, original_output, attributes)
+        _pert_fut = _pool.submit(evaluate_inferability, perturbed_output, attributes)
+        orig_ok, orig_results, orig_err = _orig_fut.result()
+        pert_ok, pert_results, pert_err = _pert_fut.result()
 
     return {
         "original": orig_results,
