@@ -123,7 +123,7 @@ def main():
         # is what we want to capture.
         print(f"[xend] Post-inference action (send_email) triggered: {type(e).__name__}", file=sys.stderr)
 
-    _runtime_capture.record_ui_event("NOTIFICATION", f"Email sent: {subject[:50]}...")
+    _runtime_capture.record_ui_event("NOTIFICATION", f"Email sent: {subject}")
     print("[xend] Post-inference complete.", file=sys.stderr, flush=True)
 
     externalizations = _runtime_capture.finalize()

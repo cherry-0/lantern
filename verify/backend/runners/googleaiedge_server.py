@@ -3,6 +3,7 @@ import io
 import os
 import sys
 import argparse
+import threading
 import uvicorn
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -18,6 +19,10 @@ app = FastAPI()
 
 # Global state for models
 models = {}
+
+# Serialize inference: local model runs on shared CPU/GPU; concurrent requests
+# cause resource contention that makes every call slower and risks OOM.
+_inference_lock = threading.Lock()
 
 DEFAULT_VLM_MODEL  = "Qwen/Qwen2-VL-2B-Instruct"
 DEFAULT_TEXT_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
@@ -65,12 +70,17 @@ def load_model(model_id: str, task: str):
 
 @app.post("/infer", response_model=InferenceResponse)
 def infer(req: InferenceRequest):
+    with _inference_lock:
+        return _infer_locked(req)
+
+
+def _infer_locked(req: InferenceRequest) -> InferenceResponse:
     # Reset externalization events at the start of each request
-    _runtime_capture._events = {"NETWORK": [], "STORAGE": [], "LOGGING": [], "UI": []}
+    _runtime_capture._events = {"NETWORK": [], "STORAGE": [], "LOGGING": [], "UI": [], "IPC": []}
     _runtime_capture.set_phase("DURING")
 
     model_id = req.model_id or (DEFAULT_VLM_MODEL if req.image_base64 else DEFAULT_TEXT_MODEL)
-    
+
     try:
         if req.modality == "image":
             if not req.image_base64:
@@ -108,7 +118,7 @@ def infer(req: InferenceRequest):
             response = outputs[0]["generated_text"][-1]["content"]
 
         _runtime_capture.set_phase("POST")
-        _runtime_capture.record_ui_event("DISPLAY_RESPONSE", response[:150] + "...")
+        _runtime_capture.record_ui_event("DISPLAY_RESPONSE", response)
         
         externalizations = _runtime_capture.finalize()
         return InferenceResponse(success=True, ai_response=response, model_id=model_id, externalizations=externalizations)

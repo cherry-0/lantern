@@ -83,7 +83,7 @@ async def infer(req: InferenceRequest):
         response = "".join(parts)
 
         _runtime_capture.set_phase("POST")
-        _runtime_capture.record_ui_event("DISPLAY_RESPONSE", response[:150] + "...")
+        _runtime_capture.record_ui_event("DISPLAY_RESPONSE", response)
         
         externalizations = _runtime_capture.finalize()
         return InferenceResponse(

@@ -37,7 +37,7 @@ class InferenceResponse(BaseModel):
 
 @app.post("/infer", response_model=InferenceResponse)
 async def infer(req: InferenceRequest):
-    _runtime_capture._events = {"NETWORK": [], "STORAGE": [], "LOGGING": [], "UI": []}
+    _runtime_capture._events = {"NETWORK": [], "STORAGE": [], "LOGGING": [], "UI": [], "IPC": []}
     _runtime_capture.set_phase("DURING")
 
     try:
@@ -70,15 +70,18 @@ async def infer(req: InferenceRequest):
 
         # Post-Inference Externalization
         _runtime_capture.set_phase("POST")
-        
+
+        # generate_audio is synchronous (calls asyncio.run internally), so run it
+        # in a thread to avoid "event loop already running" inside the async handler.
         try:
             from open_llm_vtuber.tts.edge_tts import TTSEngine as EdgeTTS
+            import asyncio as _asyncio
             tts = EdgeTTS(voice="en-US-AvaMultilingualNeural")
-            await tts.generate_audio("Hello! " + response[:20])
+            await _asyncio.to_thread(tts.generate_audio, response)
         except Exception:
             pass
 
-        _runtime_capture.record_ui_event("DISPLAY_TEXT", response[:200])
+        _runtime_capture.record_ui_event("DISPLAY_TEXT", response)
         _runtime_capture.record_ui_event("ANIMATION", "Cheerful")
 
         externalizations = _runtime_capture.finalize()
