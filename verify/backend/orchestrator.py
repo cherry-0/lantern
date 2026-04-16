@@ -14,6 +14,7 @@ can display them item-by-item without waiting for the whole dataset.
 """
 
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional
@@ -74,6 +75,7 @@ class Orchestrator:
         max_items: Optional[int] = None,
         perturbation_method: Optional[str] = None,
         perturbation_kwargs: Optional[Dict[str, Any]] = None,
+        item_workers: int = 1,
     ):
         self.app_name = app_name
         self.dataset_name = dataset_name
@@ -82,6 +84,7 @@ class Orchestrator:
         self.use_cache = use_cache
         self.max_items = max_items
         self.perturbation_kwargs = perturbation_kwargs or {}
+        self.item_workers = item_workers
 
         # Resolve perturbation method: use explicit override or fall back to config
         if perturbation_method:
@@ -248,6 +251,189 @@ class Orchestrator:
         except Exception:
             pass
 
+    def _run_single_item(
+        self,
+        load_ok: bool,
+        item: Dict[str, Any],
+        load_err: Optional[str],
+        pert_ok: bool,
+        pert_msg: str,
+    ) -> Dict[str, Any]:
+        """
+        Execute the full pipeline for one dataset item (steps 2-5).
+        Safe to call from a worker thread.
+        """
+        filename = item.get("filename", "unknown")
+
+        if not load_ok:
+            result = _make_item_result(
+                filename=filename,
+                status=STATUS_FAILED,
+                error=f"Failed to load item: {load_err}",
+                type="item_result",
+            )
+            self._save_item_result(filename, result)
+            return result
+
+        # --- Step 2: Run pipeline on original input ---
+        try:
+            from verify.backend.utils.config import set_current_app_context
+            set_current_app_context(self.app_name)
+            if hasattr(self._adapter, "_reset_openrouter_calls"):
+                self._adapter._reset_openrouter_calls()
+            orig_result = self._adapter.run_pipeline(item)
+        except Exception as e:
+            orig_result = None
+            orig_error = str(e)
+        else:
+            orig_error = orig_result.error if not orig_result.success else None
+
+        log_inference(
+            stage="original",
+            app_name=self.app_name,
+            filename=filename,
+            modality=self.modality,
+            input_item=item,
+            result=orig_result,
+        )
+
+        if not orig_result or not orig_result.success:
+            result = _make_item_result(
+                filename=filename,
+                status=STATUS_FAILED,
+                error=f"Original pipeline failed: {orig_error}",
+                type="item_result",
+            )
+            self._save_item_result(filename, result)
+            return result
+
+        # --- Step 3: Perturb the input ---
+        if not pert_ok:
+            result = _make_item_result(
+                filename=filename,
+                status=STATUS_SKIPPED,
+                original_output=orig_result.to_dict(),
+                perturbed_output=None,
+                evaluation=None,
+                perturbation_warning=f"Perturbation skipped: {pert_msg}",
+                type="item_result",
+            )
+            self._save_item_result(filename, result)
+            return result
+
+        pert_ok_item, perturbed_item, pert_err = run_perturbation(
+            item, self.modality, self.attributes, self.perturbation_method or None,
+            **self.perturbation_kwargs,
+        )
+
+        if not pert_ok_item:
+            result = _make_item_result(
+                filename=filename,
+                status=STATUS_SKIPPED,
+                original_output=orig_result.to_dict(),
+                perturbed_output=None,
+                evaluation=None,
+                perturbation_warning=f"Perturbation failed: {pert_err}",
+                type="item_result",
+            )
+            self._save_item_result(filename, result)
+            return result
+
+        # --- Step 4: Run pipeline on perturbed input ---
+        try:
+            from verify.backend.utils.config import set_current_app_context
+            set_current_app_context(self.app_name)
+            if hasattr(self._adapter, "_reset_openrouter_calls"):
+                self._adapter._reset_openrouter_calls()
+            pert_pipeline_result = self._adapter.run_pipeline(perturbed_item)
+        except Exception as e:
+            pert_pipeline_result = None
+            pert_pipeline_error = str(e)
+        else:
+            pert_pipeline_error = (
+                pert_pipeline_result.error
+                if not pert_pipeline_result.success
+                else None
+            )
+
+        log_inference(
+            stage="perturbed",
+            app_name=self.app_name,
+            filename=filename,
+            modality=self.modality,
+            input_item=perturbed_item,
+            result=pert_pipeline_result,
+        )
+
+        if not pert_pipeline_result or not pert_pipeline_result.success:
+            result = _make_item_result(
+                filename=filename,
+                status=STATUS_FAILED,
+                original_output=orig_result.to_dict(),
+                perturbed_item_info={
+                    "perturbation_applied": perturbed_item.get("perturbation_applied", {})
+                },
+                perturbed_output=None,
+                evaluation=None,
+                error=f"Perturbed pipeline failed: {pert_pipeline_error}",
+                type="item_result",
+            )
+            self._save_item_result(filename, result)
+            return result
+
+        # --- Step 5: Evaluate inferability ---
+        eval_results = evaluate_both(
+            original_output=orig_result.combined_output,
+            perturbed_output=pert_pipeline_result.combined_output,
+            attributes=self.attributes,
+        )
+
+        # --- Build complete item result ---
+        result = _make_item_result(
+            filename=filename,
+            status=STATUS_SUCCESS,
+            original_input={
+                "modality": self.modality,
+                "text_content": item.get("text_content", ""),
+                "has_image": "image_base64" in item,
+                "has_frames": "frames" in item,
+                "frame_count": len(item.get("frames", [])),
+                "privacy_labels": item.get("privacy_labels", []),
+                "data_type": item.get("data_type", ""),
+                "data_type_attributes": item.get("data_type_attributes", []),
+            },
+            original_output=orig_result.to_dict(),
+            perturbed_input={
+                "modality": self.modality,
+                "text_content": perturbed_item.get("text_content", ""),
+                "has_image": "image_base64" in perturbed_item,
+                "has_frames": "frames" in perturbed_item,
+                "perturbation_applied": perturbed_item.get("perturbation_applied", {}),
+            },
+            perturbed_output=pert_pipeline_result.to_dict(),
+            evaluation=eval_results,
+            type="item_result",
+        )
+
+        # Attach PIL objects for UI (not serialized to disk)
+        result["_original_data"] = item.get("data")
+        result["_original_image_b64"] = item.get("image_base64")
+        result["_original_frames"] = item.get("frames", [])
+        result["_perturbed_data"] = perturbed_item.get("data")
+        result["_perturbed_image_b64"] = perturbed_item.get("image_base64")
+        result["_perturbed_frames"] = perturbed_item.get("frames", [])
+
+        # Save perturbed image
+        perturbed_b64 = result.get("_perturbed_image_b64")
+        if perturbed_b64:
+            img_rel_path = self._save_perturbed_image(filename, perturbed_b64)
+            if img_rel_path:
+                result["perturbed_image_file"] = img_rel_path
+
+        saveable = {k: v for k, v in result.items() if not k.startswith("_")}
+        self._save_item_result(filename, saveable)
+        return result
+
     def run(self) -> Generator[Dict[str, Any], None, None]:
         """
         Execute the pipeline and yield per-item result dicts progressively.
@@ -303,19 +489,16 @@ class Orchestrator:
 
         all_results: List[Dict[str, Any]] = []
 
+        # Collect and filter all dataset items upfront (avoids tqdm races)
+        pending_items: List[tuple] = []
         for load_ok, item, load_err in iter_dataset(self.dataset_name, self.modality, max_items=self.max_items):
             filename = item.get("filename", "unknown")
 
             # ── Attribute-based filtering ──────────────────────────────────
-            # Keep only items whose label set overlaps with the selected attributes.
-            # Items with no labels are always included.
-            # The UI already presents modality-appropriate attributes (HR-VISPR labels
-            # for image, text attributes for text), so the comparison is always
-            # within the same vocabulary — a direct set intersection suffices.
             item_labels: List[str] = (
-                item.get("privacy_labels", [])           # HR-VISPR / image datasets
-                + item.get("sroie_entity_attrs", [])     # SROIE mapped attributes
-                + item.get("data_type_attributes", [])  # PrivacyLens text dataset
+                item.get("privacy_labels", [])
+                + item.get("sroie_entity_attrs", [])
+                + item.get("data_type_attributes", [])
             )
             if item_labels and not (set(item_labels) & set(self.attributes)):
                 continue  # no overlap — skip
@@ -328,190 +511,26 @@ class Orchestrator:
                 yield {**cached, "type": "item_result"}
                 continue
 
-            if not load_ok:
-                result = _make_item_result(
-                    filename=filename,
-                    status=STATUS_FAILED,
-                    error=f"Failed to load item: {load_err}",
-                    type="item_result",
-                )
-                all_results.append(result)
-                self._save_item_result(filename, result)
+            pending_items.append((load_ok, item, load_err))
+
+        # Process pending items — parallel when item_workers > 1
+        if self.item_workers > 1 and pending_items:
+            with ThreadPoolExecutor(max_workers=self.item_workers) as pool:
+                futs = {
+                    pool.submit(self._run_single_item, ok, item, err, pert_ok, pert_msg): item
+                    for ok, item, err in pending_items
+                }
+                for fut in as_completed(futs):
+                    result = fut.result()
+                    saveable = {k: v for k, v in result.items() if not k.startswith("_")}
+                    all_results.append(saveable)
+                    yield result
+        else:
+            for load_ok, item, load_err in pending_items:
+                result = self._run_single_item(load_ok, item, load_err, pert_ok, pert_msg)
+                saveable = {k: v for k, v in result.items() if not k.startswith("_")}
+                all_results.append(saveable)
                 yield result
-                continue
-
-            # --- Step 2: Run pipeline on original input ---
-            try:
-                from verify.backend.utils.config import set_current_app_context
-                set_current_app_context(self.app_name)
-                if hasattr(self._adapter, "_reset_openrouter_calls"):
-                    self._adapter._reset_openrouter_calls()
-                orig_result = self._adapter.run_pipeline(item)
-            except Exception as e:
-                orig_result = None
-                orig_error = str(e)
-            else:
-                orig_error = orig_result.error if not orig_result.success else None
-
-            log_inference(
-                stage="original",
-                app_name=self.app_name,
-                filename=filename,
-                modality=self.modality,
-                input_item=item,
-                result=orig_result,
-            )
-
-            if not orig_result or not orig_result.success:
-                result = _make_item_result(
-                    filename=filename,
-                    status=STATUS_FAILED,
-                    error=f"Original pipeline failed: {orig_error}",
-                    type="item_result",
-                )
-                all_results.append(result)
-                self._save_item_result(filename, result)
-                yield result
-                continue
-
-            # --- Step 3: Perturb the input ---
-            if not pert_ok:
-                # Skip perturbation, still record original result
-                result = _make_item_result(
-                    filename=filename,
-                    status=STATUS_SKIPPED,
-                    original_output=orig_result.to_dict(),
-                    perturbed_output=None,
-                    evaluation=None,
-                    perturbation_warning=f"Perturbation skipped: {pert_msg}",
-                    type="item_result",
-                )
-                all_results.append(result)
-                self._save_item_result(filename, result)
-                yield result
-                continue
-
-            pert_ok_item, perturbed_item, pert_err = run_perturbation(
-                item, self.modality, self.attributes, self.perturbation_method or None,
-                **self.perturbation_kwargs,
-            )
-
-            if not pert_ok_item:
-                result = _make_item_result(
-                    filename=filename,
-                    status=STATUS_SKIPPED,
-                    original_output=orig_result.to_dict(),
-                    perturbed_output=None,
-                    evaluation=None,
-                    perturbation_warning=f"Perturbation failed: {pert_err}",
-                    type="item_result",
-                )
-                all_results.append(result)
-                self._save_item_result(filename, result)
-                yield result
-                continue
-
-            # --- Step 4: Run pipeline on perturbed input ---
-            try:
-                from verify.backend.utils.config import set_current_app_context
-                set_current_app_context(self.app_name)
-                if hasattr(self._adapter, "_reset_openrouter_calls"):
-                    self._adapter._reset_openrouter_calls()
-                pert_pipeline_result = self._adapter.run_pipeline(perturbed_item)
-            except Exception as e:
-                pert_pipeline_result = None
-                pert_pipeline_error = str(e)
-            else:
-                pert_pipeline_error = (
-                    pert_pipeline_result.error
-                    if not pert_pipeline_result.success
-                    else None
-                )
-
-            log_inference(
-                stage="perturbed",
-                app_name=self.app_name,
-                filename=filename,
-                modality=self.modality,
-                input_item=perturbed_item,
-                result=pert_pipeline_result,
-            )
-
-            if not pert_pipeline_result or not pert_pipeline_result.success:
-                result = _make_item_result(
-                    filename=filename,
-                    status=STATUS_FAILED,
-                    original_output=orig_result.to_dict(),
-                    perturbed_item_info={
-                        "perturbation_applied": perturbed_item.get("perturbation_applied", {})
-                    },
-                    perturbed_output=None,
-                    evaluation=None,
-                    error=f"Perturbed pipeline failed: {pert_pipeline_error}",
-                    type="item_result",
-                )
-                all_results.append(result)
-                self._save_item_result(filename, result)
-                yield result
-                continue
-
-            # --- Step 5: Evaluate inferability ---
-            eval_results = evaluate_both(
-                original_output=orig_result.combined_output,
-                perturbed_output=pert_pipeline_result.combined_output,
-                attributes=self.attributes,
-            )
-
-            # --- Build complete item result ---
-            result = _make_item_result(
-                filename=filename,
-                status=STATUS_SUCCESS,
-                original_input={
-                    "modality": self.modality,
-                    "text_content": item.get("text_content", ""),
-                    # Images are not serialized to JSON; use filename reference
-                    "has_image": "image_base64" in item,
-                    "has_frames": "frames" in item,
-                    "frame_count": len(item.get("frames", [])),
-                    # Label metadata (for display)
-                    "privacy_labels": item.get("privacy_labels", []),
-                    "data_type": item.get("data_type", ""),
-                    "data_type_attributes": item.get("data_type_attributes", []),
-                },
-                original_output=orig_result.to_dict(),
-                perturbed_input={
-                    "modality": self.modality,
-                    "text_content": perturbed_item.get("text_content", ""),
-                    "has_image": "image_base64" in perturbed_item,
-                    "has_frames": "frames" in perturbed_item,
-                    "perturbation_applied": perturbed_item.get("perturbation_applied", {}),
-                },
-                perturbed_output=pert_pipeline_result.to_dict(),
-                evaluation=eval_results,
-                type="item_result",
-            )
-
-            # Attach PIL objects for UI (not serialized to disk)
-            result["_original_data"] = item.get("data")
-            result["_original_image_b64"] = item.get("image_base64")
-            result["_original_frames"] = item.get("frames", [])
-            result["_perturbed_data"] = perturbed_item.get("data")
-            result["_perturbed_image_b64"] = perturbed_item.get("image_base64")
-            result["_perturbed_frames"] = perturbed_item.get("frames", [])
-
-            # Save perturbed image to perturbed_images/ subdirectory
-            perturbed_b64 = result.get("_perturbed_image_b64")
-            if perturbed_b64:
-                img_rel_path = self._save_perturbed_image(filename, perturbed_b64)
-                if img_rel_path:
-                    result["perturbed_image_file"] = img_rel_path
-
-            # Save to disk (without the _ prefixed PIL fields)
-            saveable = {k: v for k, v in result.items() if not k.startswith("_")}
-            all_results.append(saveable)
-            self._save_item_result(filename, saveable)
-
-            yield result
 
         # --- Generate final report ---
         self._generate_report(all_results)
