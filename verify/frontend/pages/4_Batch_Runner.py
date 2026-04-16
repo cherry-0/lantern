@@ -8,6 +8,7 @@ live log output from run_batch.py while it runs.
 from __future__ import annotations
 
 import csv
+import html as _html
 import re
 import signal
 import subprocess
@@ -300,6 +301,8 @@ def main() -> None:
 
         # Pre-populate per-task progress (pending) so the UI can render
         # progress bars immediately, before the subprocess emits any logs.
+        from verify.backend.datasets.loader import count_dataset_items, detect_modality as _detect_modality
+
         global_max = int(max_items_val) if max_items_val > 0 else None
         task_progress: Dict[str, Dict] = {}
         modes_to_run = (["ioc", "perturb"] if mode == "both"
@@ -312,6 +315,16 @@ def main() -> None:
                     int(row_max_str) if row_max_str
                     else global_max
                 )
+                # If total is still unknown, count the dataset directly.
+                # count_dataset_items is fast (reads metadata files, doesn't load data).
+                if total is None:
+                    try:
+                        modality = row.get("modality") or _detect_modality(row["dataset_name"]) or "text"
+                        n = count_dataset_items(row["dataset_name"], modality)
+                        if n > 0:
+                            total = n
+                    except Exception:
+                        pass
                 task_progress[tag] = {
                     "status":   "pending",
                     "done":     0,
@@ -376,8 +389,8 @@ def main() -> None:
                 f_cnt = p["failed"]
                 if status == "done":
                     bar_text = (
-                        f"{done} / {total} &nbsp;·&nbsp; "
-                        f"{s} new &nbsp; {c} cached &nbsp; {f_cnt} failed"
+                        f"{done} / {total}  ·  "
+                        f"{s} new  {c} cached  {f_cnt} failed"
                     )
                 else:
                     bar_text = f"{done} / {total}"
@@ -388,8 +401,8 @@ def main() -> None:
                 f_cnt = p["failed"]
                 if status == "done":
                     bar_text = (
-                        f"{done} processed &nbsp;·&nbsp; "
-                        f"{s} new &nbsp; {c} cached &nbsp; {f_cnt} failed"
+                        f"{done} processed  ·  "
+                        f"{s} new  {c} cached  {f_cnt} failed"
                     )
                 else:
                     bar_text = f"{done} processed" if done > 0 else "Starting…"
@@ -409,12 +422,40 @@ def main() -> None:
     log_lines: List[str] = bs["log"]
     if log_lines or running:
         st.subheader("Log Output")
-        st.text_area(
-            "Batch run log",
-            value="\n".join(log_lines),
-            height=440,
-            disabled=True,
-            label_visibility="collapsed",
+        log_content = _html.escape("\n".join(log_lines))
+        st.components.v1.html(
+            f"""<!DOCTYPE html>
+<html>
+<head>
+<style>
+* {{ box-sizing: border-box; margin: 0; padding: 0; }}
+body {{ background: transparent; overflow: hidden; }}
+#log {{
+    height: 440px;
+    overflow-y: scroll;
+    background: #0e1117;
+    color: #e6eaf0;
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 0.82em;
+    line-height: 1.55;
+    padding: 12px 14px;
+    border-radius: 6px;
+    border: 1px solid #2e3440;
+    white-space: pre-wrap;
+    word-break: break-all;
+}}
+</style>
+</head>
+<body>
+<div id="log">{log_content}</div>
+<script>
+    const el = document.getElementById('log');
+    el.scrollTop = el.scrollHeight;
+</script>
+</body>
+</html>""",
+            height=460,
+            scrolling=False,
         )
 
         if running:
