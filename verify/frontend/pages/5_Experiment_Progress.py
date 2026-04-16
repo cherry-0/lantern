@@ -12,6 +12,7 @@ import csv
 import json
 import sys
 import time
+from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -53,36 +54,54 @@ def _load_csv_rows(path: Path) -> List[Dict[str, str]]:
 
 
 @st.cache_data(ttl=15)
-def _scan_caches() -> List[Dict]:
+def _scan_outputs() -> List[Dict]:
     """
-    Scan verify/outputs/cache_* dirs.
+    Scan ALL verify/outputs/ directories (both cache_* and timestamped run dirs).
+    Deduplicates item filenames across multiple runs for the same
+    (app_name, dataset_name, method) so counts are not inflated.
+
     Returns list of {app_name, dataset_name, modality, method, cached_count}.
     """
-    results = []
     if not _OUTPUTS_DIR.exists():
-        return results
+        return []
+
+    # (app, dataset, method) → set of item filenames (deduplicated across runs)
+    item_sets: Dict[tuple, set] = defaultdict(set)
+    # (app, dataset, method) → modality (last seen wins; should be consistent)
+    key_modality: Dict[tuple, str] = {}
+
     for d in _OUTPUTS_DIR.iterdir():
-        if not d.is_dir() or not d.name.startswith("cache_"):
+        if not d.is_dir():
             continue
         config_path = d / "run_config.json"
         if not config_path.exists():
             continue
         try:
             cfg = json.loads(config_path.read_text())
-            cached_count = sum(
-                1 for f in d.iterdir()
-                if f.suffix == ".json" and f.name != "run_config.json"
-            )
-            results.append({
-                "app_name":    cfg.get("app_name", ""),
-                "dataset_name": cfg.get("dataset_name", ""),
-                "modality":    cfg.get("modality", ""),
-                "method":      cfg.get("perturbation_method", ""),
-                "cached_count": cached_count,
-            })
+            app     = cfg.get("app_name", "").strip()
+            dataset = cfg.get("dataset_name", "").strip()
+            modality = cfg.get("modality", "").strip()
+            method  = cfg.get("perturbation_method", "").strip()
+            if not app or not dataset:
+                continue
+            key = (app, dataset, method)
+            key_modality[key] = modality
+            for f in d.iterdir():
+                if f.suffix == ".json" and f.name != "run_config.json":
+                    item_sets[key].add(f.name)
         except Exception:
             pass
-    return results
+
+    return [
+        {
+            "app_name":     app,
+            "dataset_name": dataset,
+            "modality":     key_modality.get((app, dataset, method), ""),
+            "method":       method,
+            "cached_count": len(items),
+        }
+        for (app, dataset, method), items in item_sets.items()
+    ]
 
 
 @st.cache_data(ttl=60)
@@ -202,7 +221,7 @@ def main() -> None:
             "░ — not in batch config"
         )
 
-    caches = _scan_caches()
+    caches = _scan_outputs()
 
     # ── Stats row ─────────────────────────────────────────────────────────────
     enabled_rows = [
@@ -217,7 +236,7 @@ def main() -> None:
     c1.metric("Apps",     n_apps)
     c2.metric("Datasets", n_datasets)
     c3.metric("Combos",   n_combos)
-    c4.metric("Cache dirs", len(caches))
+    c4.metric("Run groups", len(caches))
 
     st.divider()
 
