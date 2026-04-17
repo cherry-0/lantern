@@ -37,5 +37,6 @@ verify/sync/token.json
 verify/service_account.json
 
 # paper build artifacts
+paper/
 paper/**/build/
 paper/**/*.pdf
