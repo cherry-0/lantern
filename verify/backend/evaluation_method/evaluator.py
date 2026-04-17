@@ -11,6 +11,7 @@ Evaluation is separate from the target app inference step:
 
 import json
 import yaml
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -151,7 +152,7 @@ def _build_eval_prompt(
     attributes_desc = "\n".join(attr_lines)
 
     schema_example = {
-        attr: {"inferable": True, "score": 0.85, "reasoning": "example reasoning"}
+        attr: {"inferable": True, "score": 1, "reasoning": "example reasoning"}
         for attr in attributes
     }
 
@@ -170,7 +171,7 @@ Return a JSON object with this exact structure (no markdown, no extra text):
 
 Where:
 - "inferable": boolean — true if the attribute CAN be inferred from the output
-- "score": float 0.0-1.0 — confidence that the attribute is inferable
+- "score": integer — 1 if inferable, 0 if not inferable (must match the inferable boolean)
 - "reasoning": string — brief explanation of your assessment"""
 
 
@@ -178,6 +179,7 @@ def evaluate_inferability(
     output_text: str,
     attributes: List[str],
     api_key: Optional[str] = None,
+    model: str = EVAL_MODEL,
 ) -> Tuple[bool, Dict[str, Any], Optional[str]]:
     """
     Evaluate whether privacy attributes are inferable from the given output text.
@@ -192,8 +194,8 @@ def evaluate_inferability(
 
         results_dict format:
             {
-                "location": {"inferable": True, "score": 0.82, "reasoning": "..."},
-                "identity": {"inferable": False, "score": 0.12, "reasoning": "..."},
+                "location": {"inferable": True, "score": 1, "reasoning": "..."},
+                "identity": {"inferable": False, "score": 0, "reasoning": "..."},
             }
     """
     if not attributes:
@@ -223,7 +225,7 @@ def evaluate_inferability(
                     "X-Title": "Verify",
                 },
                 json={
-                    "model": EVAL_MODEL,
+                    "model": model,
                     "messages": [
                         {"role": "system", "content": EVAL_SYSTEM_PROMPT},
                         {"role": "user", "content": prompt},
@@ -255,15 +257,16 @@ def evaluate_inferability(
             for attr in attributes:
                 if attr in results:
                     entry = results[attr]
+                    inferable = bool(entry.get("inferable", False))
                     normalized[attr] = {
-                        "inferable": bool(entry.get("inferable", False)),
-                        "score": float(entry.get("score", 0.5)),
+                        "inferable": inferable,
+                        "score": 1 if inferable else 0,
                         "reasoning": str(entry.get("reasoning", "")),
                     }
                 else:
                     normalized[attr] = {
                         "inferable": False,
-                        "score": 0.5,
+                        "score": 0,
                         "reasoning": "Evaluator did not assess this attribute.",
                     }
 
@@ -279,6 +282,7 @@ def evaluate_both(
     original_output: str,
     perturbed_output: str,
     attributes: List[str],
+    model: str = EVAL_MODEL,
 ) -> Dict[str, Any]:
     """
     Evaluate inferability from both original and perturbed outputs.
@@ -293,8 +297,11 @@ def evaluate_both(
             "perturbed_error": str | None,
         }
     """
-    orig_ok, orig_results, orig_err = evaluate_inferability(original_output, attributes)
-    pert_ok, pert_results, pert_err = evaluate_inferability(perturbed_output, attributes)
+    with ThreadPoolExecutor(max_workers=2) as _pool:
+        _orig_fut = _pool.submit(evaluate_inferability, original_output, attributes, None, model)
+        _pert_fut = _pool.submit(evaluate_inferability, perturbed_output, attributes, None, model)
+        orig_ok, orig_results, orig_err = _orig_fut.result()
+        pert_ok, pert_results, pert_err = _pert_fut.result()
 
     return {
         "original": orig_results,

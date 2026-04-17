@@ -68,3 +68,36 @@ def log_input(app: str, modality: str, content: str) -> None:
     _row("TYPE", [modality])
     _row(label, content_lines)
     print(_BAR, file=sys.stderr, flush=True)
+
+
+def log_output(app: str, task: str, content: str, extra: dict | None = None) -> None:
+    """
+    Print a bordered output block to stderr.
+
+    app:     adapter name (e.g. "tool-neuron")
+    task:    pipeline stage (e.g. "text_generation", "expense_parsing")
+    content: main result text — truncated and wrapped to fit the block
+    extra:   optional {label: value} pairs appended as extra rows
+
+    Example:
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    ◀ OUTPUT  tool-neuron
+    ──────────────────────────────────────────────────────────────────────
+      TASK      text_generation
+      RESULT    Sure! The capital of France is Paris, which has been the
+                country's capital since the 10th century...
+      TOKENS    87
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    """
+    preview = content.replace("\n", " ").strip()[:300]
+    content_lines = textwrap.wrap(preview, width=_W - _TAG_W - 2) or ["<empty>"]
+
+    print(_BAR, file=sys.stderr)
+    print(f"◀ OUTPUT  {app}", file=sys.stderr)
+    print(_SEP, file=sys.stderr)
+    _row("TASK", [task])
+    _row("RESULT", content_lines)
+    if extra:
+        for k, v in extra.items():
+            _row(k.upper()[:_TAG_W], [str(v)])
+    print(_BAR, file=sys.stderr, flush=True)

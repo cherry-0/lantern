@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from verify.backend.utils.config import load_perturbation_method_map, BACKEND_DIR
+from verify.backend.utils.verbose_log import log_perturbation
 
 # Path to perturbation_method modules
 PERTURBATION_DIR = BACKEND_DIR / "perturbation_method"
@@ -150,8 +151,23 @@ def run_perturbation(
         return False, input_item, f"Perturbation module '{name}' does not define a `perturb()` function."
 
     try:
-        return module.perturb(input_item, attributes, **kwargs)
+        ok, perturbed_item, error = module.perturb(input_item, attributes, **kwargs)
+        log_perturbation(
+            method_name=name,
+            filename=input_item.get("filename", "unknown"),
+            attributes=attributes,
+            ok=ok,
+            error=error,
+        )
+        return ok, perturbed_item, error
     except Exception as e:
+        log_perturbation(
+            method_name=name,
+            filename=input_item.get("filename", "unknown"),
+            attributes=attributes,
+            ok=False,
+            error=str(e),
+        )
         return False, input_item, f"Perturbation failed ({name}): {e}"
 
 

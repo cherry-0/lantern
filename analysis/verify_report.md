@@ -97,6 +97,8 @@ Stdout is parsed with `find("{")` (first `{`) and `rfind("}")` (last `}`) to cor
 | llm-vtuber | `llm-vtuber` | 3.11 | `pip install -e .` |
 | skin-disease-detection | `skin-disease-detection` | 3.10 | `pip install tensorflow-macos pillow numpy` |
 | google-ai-edge-gallery | `google-ai-edge-gallery` | 3.10 | `pip install transformers accelerate torch` |
+| chat-driven-expense-tracker | `chat-driven-expense-tracker` | 3.10 | `pip install -r requirements.txt` |
+| tool-neuron | `tool-neuron` | 3.10 | `pip install -r requirements.txt` |
 
 Note: xend uses `poetry install --no-root` because `pyproject.toml` sets `package-mode = false`, which makes `pip install .` fail.  
 Note: skin-disease uses `tensorflow-macos` (not `tflite-runtime`) on Apple Silicon — see TROUBLESHOOTING.md §10.
@@ -115,6 +117,8 @@ Each app has a standalone runner in `verify/backend/runners/`. Runners follow a 
 All runners call `log_input()` from `_runner_log.py` at startup to display the input item in the terminal.
 
 All runners import `_runtime_capture` at the top (after sys.path setup) and call `_runtime_capture.install()` before any app code runs. Django-based runners additionally call `_runtime_capture.connect_django_signals()` after `django.setup()`.
+
+After inference completes, every runner calls `_runtime_capture.set_phase("POST")` before any post-inference actions (storage, network calls, UI pushes). This ensures that only post-inference externalizations are captured and returned by `finalize()`.
 
 ### Runner input/output contract
 
@@ -153,31 +157,67 @@ snapdo already uses SQLite with a hardcoded `SECRET_KEY` — no shim needed.
 
 ### 5.1 `_runtime_capture.py` (runner-side, stdlib-only)
 
-`verify/backend/runners/_runtime_capture.py` is a self-contained module (no verify package imports, works in any conda env). It captures actual runtime I/O from the app during execution, organized into two phases: **DURING_INFERENCE** and **POST_INFERENCE**.
+`verify/backend/runners/_runtime_capture.py` is a self-contained module (no verify package imports, works in any conda env). It captures actual runtime I/O from the app during execution, organized into two phases: **DURING** and **POST**.
 
-**`install()`** patches four transport layers:
-- `requests.Session.request` (via `urllib3`) — captures HTTP requests/responses (URL, method, status)
-- `httpx.Client.send` — captures sync httpx calls (used by LangChain, some Django apps)
-- `httpx.AsyncClient.send` — captures async httpx calls
-- `starlette.websockets.WebSocket` — captures `send_text` and `send_json` calls to the frontend
+Five channels are tracked: `NETWORK`, `STORAGE`, `LOGGING`, `UI`, `IPC`.
+
+**`install()`** patches the following layers:
+
+**NETWORK channel:**
+| Patch target | What it captures |
+|---|---|
+| `urllib3.connectionpool.HTTPConnectionPool.urlopen` | All HTTP/S via `requests`, `boto3`, direct urllib3 — reconstructs full URL from pool host/port |
+| `httpx.Client.send` | Sync httpx calls — LangChain, OpenAI SDK ≥1.0, litellm |
+| `httpx.AsyncClient.send` | Async httpx calls — same libraries, async path |
+| `aiohttp.ClientSession._request` | Async aiohttp clients used by some frameworks |
+| `smtplib.SMTP.sendmail` / `send_message` | Direct SMTP email sends (from/to/subject + host) |
+
+**UI channel:**
+| Patch target | What it captures |
+|---|---|
+| `starlette.websockets.WebSocket.send_text` / `send_json` | WebSocket pushes via FastAPI / Starlette |
+| `channels.generic.websocket.AsyncWebsocketConsumer.send` | WebSocket pushes via Django Channels (async consumers) |
+| `channels.generic.websocket.WebsocketConsumer.send` | WebSocket pushes via Django Channels (sync consumers) |
+| `record_ui_event(action, details)` | Manual UI annotation from runners (e.g. `[NOTIFICATION]`, `[ANIMATION]`, `[DISPLAY_TEXT]`) |
+
+**STORAGE channel:**
+| Patch target | What it captures |
+|---|---|
+| Django `post_save` signal (via `connect_django_signals()`) | All Django ORM model saves (CREATE and UPDATE), called after `django.setup()` |
+| `builtins.open` (write/append/create modes) | Direct file writes to interesting extensions (`.json`, `.jpg`, `.png`, `.pdf`, `.csv`, `.pkl`, `.db`, `.sqlite3`, etc.) |
+| `pathlib.Path.write_text` / `write_bytes` | Pathlib-based file writes to same extension set |
+| `shutil.copy` / `copyfile` / `copy2` | File copies — e.g. Django FileSystemStorage saving uploads to `media/` |
+
+Infrastructure paths (`__pycache__`, `site-packages`, `.git`, `/tmp/`, etc.) are excluded from file write capture.
+
+**IPC channel:**
+| Patch target | What it captures |
+|---|---|
+| `subprocess.Popen.__init__` | Child process launches (filtered: Python, build tools, shells are skipped) |
+| `socket.create_connection` | Raw TCP connections to known service ports (Redis 6379, PostgreSQL 5432, MySQL 3306, MongoDB 27017, AMQP 5672, SMTP 25/465/587, Elasticsearch 9200, Kafka 9092, etc.) |
+| `redis.client.Redis.execute_command` | Redis commands: `PUBLISH`, `LPUSH`, `RPUSH`, `XADD`, `SET`, `SETEX`, `MSET` — captures Celery task dispatch |
+
+**LOGGING channel:**
+Installs a `logging.Handler` at the root logger. Keeps all WARNING+ records; keeps DEBUG/INFO only if the record contains inference-relevant keywords (`inference`, `chain`, `llm`, `model`, `verdict`, `tag`, `mail`, etc.). Noisy framework namespaces (`django.db.backends`, `httpcore`, `transformers`, etc.) are suppressed at DEBUG/INFO.
 
 **`set_phase(phase)`** — sets the current phase to `"DURING"` or `"POST"`.
 
-**`record_ui_event(action, details)`** — manually records a UI action (e.g. `[NOTIFICATION]`, `[ANIMATION]`) for headless runners.
+**`connect_django_signals()`** — call after `django.setup()` to hook `post_save` signal for ORM writes.
 
-**`connect_django_signals()`** — call after `django.setup()` to hook `post_save` signal for model persistence events.
-
-**Log filtering** — installs a `logging.Handler` at DEBUG level. Keeps WARNING+ always; keeps DEBUG/INFO only if the log record name or message contains inference-relevant keywords.
-
-**`finalize() → dict`** — returns captured channels nested by phase:
+**`finalize() → dict`** — returns only **POST-phase** captured channels as a flat dict:
 ```json
 {
-  "DURING": {"NETWORK": "...", "LOGGING": "..."},
-  "POST": {"NETWORK": "...", "UI": "...", "STORAGE": "..." }
+  "NETWORK": "...",
+  "UI": "...",
+  "STORAGE": "...",
+  "LOGGING": "...",
+  "IPC": "..."
 }
 ```
 
-Empty channels or phases are omitted from the returned dict.
+DURING-phase events (the LLM inference API calls themselves) are intentionally excluded — they are expected internals of the app's inference process, not privacy-relevant externalizations. Only POST-phase events reflect what the app does with the data *after* inference: persisting to databases, pushing to frontends, sending emails, dispatching background tasks, etc.
+
+Empty channels are omitted from the returned dict. Each channel is deduplicated and capped (NETWORK: 15 events, STORAGE/IPC: 10, LOGGING/UI: 8).
 
 ### 5.2 `_openrouter_calls` tracking (adapter-side, serverless only)
 
@@ -214,18 +254,14 @@ Priority order (first match wins):
 
 ### 5.4 What is shown in the UI
 
-Both the live `Perturb Input` page and the `View Results` page show externalizations grouped into two distinct steps:
-1. **Step 1: Inference Process** (captured during the `DURING` phase)
-2. **Step 2: Externalization / UI** (captured during the `POST` phase)
-
-Each step uses bold headers and italicized channel names (e.g. *NETWORK*, *UI*) to clearly distinguish between the app's "thought process" and its "actions."
+Both the live `Perturb Input` page and the `View Results` page show externalizations as a flat list of channels (NETWORK, STORAGE, UI, LOGGING, IPC). Only POST-phase events — what the app does *after* inference — are displayed and evaluated. DURING-phase inference API calls are not shown because they are not privacy-relevant externalizations.
 
 ---
 
 ## 6. Per-Adapter Design
 
 ### clone
-**Native (`USE_APP_SERVERS=true`):** `CondaRunner.run(clone_runner.py)` — bootstraps Django with `_clone_verify_settings`, auto-migrates SQLite, creates/gets `verify@lantern.local` user via ORM, creates a ChatSession, describes frames via OpenRouter vision, persists ChatMessage. Captures externalizations via `_runtime_capture`.
+**Native (`USE_APP_SERVERS=true`):** `CondaRunner.run(clone_runner.py)` — bootstraps Django with `_clone_verify_settings`, auto-migrates SQLite, creates/gets `verify@lantern.local` user via ORM, creates a ChatSession, describes frames via OpenRouter vision. After inference, `set_phase("POST")` is called before Django ORM writes (`ChatMessage.objects.create`, `session.save`), capturing them as **STORAGE** externalizations.
 
 **Serverless:** Direct OpenRouter vision with `_FRAME_PROMPT`. Externalizations via `_build_serverless_externalizations()`.
 
@@ -234,7 +270,7 @@ Each step uses bold headers and italicized channel names (e.g. *NETWORK*, *UI*) 
 ---
 
 ### snapdo
-**Native:** `CondaRunner.run(snapdo_runner.py)` — bootstraps Django from `target-apps/snapdo/server`, calls `VLMService().verify_evidence(image_b64, constraint, model=model)` routed to OpenRouter via env-var injection.
+**Native:** `CondaRunner.run(snapdo_runner.py)` — bootstraps Django from `target-apps/snapdo/server`, calls `VLMService().verify_evidence(image_b64, constraint, model=model)` routed to OpenRouter via env-var injection. `set_phase("POST")` is set immediately after inference; snapdo has no post-inference storage actions, so externalizations are typically empty in native mode.
 
 **Serverless:** OpenRouter vision; pre-generates a realistic Todo task for the dataset item (cached per full file **path**, not filename, to avoid basename collisions) so the model has meaningful context for verification.
 
@@ -245,7 +281,7 @@ Each step uses bold headers and italicized channel names (e.g. *NETWORK*, *UI*) 
 ---
 
 ### momentag
-**Native:** `CondaRunner.run(momentag_runner.py)` — bootstraps Django, calls `gallery.gpu_tasks.get_image_captions(pil_image)` which runs CLIP (`clip-ViT-B-32`) for embeddings and BLIP (`blip-image-captioning-base`) for captions/keywords locally. Timeout: 180s.
+**Native:** `CondaRunner.run(momentag_runner.py)` — bootstraps Django, calls `gallery.gpu_tasks.get_image_captions(pil_image)` which runs CLIP (`clip-ViT-B-32`) for embeddings and BLIP (`blip-image-captioning-base`) for captions/keywords locally. `set_phase("POST")` is set after inference; momentag has no post-inference storage actions in the runner, so externalizations are typically empty in native mode. Timeout: 180s.
 
 **Serverless:** OpenRouter vision generates captions and tags in the same structure.
 
@@ -258,7 +294,7 @@ Each step uses bold headers and italicized channel names (e.g. *NETWORK*, *UI*) 
 ### xend
 **Native:** `CondaRunner.run(xend_runner.py)` — bootstraps Django with `_xend_verify_settings`, imports `subject_chain` and `body_chain` from `apps.ai.services.chains`, and invokes both. 
 
-**Post-Inference Action:** Calls the actual `apps.mail.services.send_email_logic` with the generated result. This triggers a real network request to `googleapis.com`, captured as a 401 (Unauthorized) due to the dummy token, verifying that the app successfully attempted to externalize the email.
+**Post-Inference Action:** After `set_phase("POST")`, calls `apps.mail.services.send_email_logic` with the generated result. This triggers a real network request to `googleapis.com`, captured as a 401 (Unauthorized) due to the dummy token — appearing as a **NETWORK** POST-phase externalization. This confirms the app attempted to send the email containing the private data.
 
 **Serverless:** OpenRouter with xend's email-drafting persona; produces `subject` + `body`.
 
@@ -269,7 +305,7 @@ Each step uses bold headers and italicized channel names (e.g. *NETWORK*, *UI*) 
 ---
 
 ### budget-lens
-**Native:** `CondaRunner.run(budgetlens_runner.py)` — bootstraps Django with `_budgetlens_verify_settings`, writes image to a temp JPEG, calls `process_receipt(path)` from `core.views`. Captures externalizations: OpenAI request, exchange rate API call, Expense model save.
+**Native:** `CondaRunner.run(budgetlens_runner.py)` — bootstraps Django with `_budgetlens_verify_settings`, writes image to a temp JPEG, calls `process_receipt(path)` from `core.views`. `set_phase("POST")` is called immediately after `process_receipt()` returns. Post-inference externalizations captured: exchange rate API network call (**NETWORK**) and `Expense` model Django ORM save (**STORAGE**).
 
 **Serverless:** OpenRouter vision extracts category, date, amount, currency plus `merchant_name` and `merchant_address` (relevant for SROIE ground-truth evaluation).
 
@@ -280,7 +316,7 @@ Each step uses bold headers and italicized channel names (e.g. *NETWORK*, *UI*) 
 ---
 
 ### deeptutor
-**Native:** `CondaRunner.run(deeptutor_runner.py)` — injects LLM env vars (`LLM_BINDING`, `LLM_HOST`, `LLM_API_KEY`, `LLM_MODEL`), imports `ChatOrchestrator` + `UnifiedContext` + `StreamEventType`, drives `orchestrator.handle(context)` async via `asyncio.run()`, collects `CONTENT` events. Captures externalizations: RAG embedding, LLM request, RAG retrieval, event bus, debug logging.
+**Native:** `CondaRunner.run(deeptutor_runner.py)` — injects LLM env vars (`LLM_BINDING`, `LLM_HOST`, `LLM_API_KEY`, `LLM_MODEL`), imports `ChatOrchestrator` + `UnifiedContext` + `StreamEventType`, drives `orchestrator.handle(context)` async via `asyncio.run()`, collects `CONTENT` events. `set_phase("POST")` is set after inference; deeptutor has no storage side-effects in the runner, so externalizations are typically empty in native mode.
 
 **Serverless:** OpenRouter with structured tutoring prompt (summary → key concepts → examples → caveats).
 
@@ -293,9 +329,9 @@ Each step uses bold headers and italicized channel names (e.g. *NETWORK*, *UI*) 
 ### llm-vtuber
 **Native:** `CondaRunner.run(llmvtuber_runner.py)` — imports `AsyncLLM` from `open_llm_vtuber.agent.stateless_llm.openai_compatible_llm`, calls `llm.chat_completion(messages, system=_VTUBER_SYSTEM)` async. 
 
-**Post-Inference Actions:** 
-1. **Real TTS**: Triggers the app's actual `EdgeTTS` engine with the response text, resulting in a captured network request to `speech.platform.bing.com`.
-2. **UI Push**: Simulates pushing the response and animations to the frontend via the patched WebSocket system, appearing as `[PUSH]` and `[DISPLAY_TEXT]` UI events.
+**Post-Inference Actions:** After `set_phase("POST")`:
+1. **Real TTS**: Triggers the app's actual `EdgeTTS` engine with the response text, resulting in a captured **NETWORK** request to `speech.platform.bing.com` — the character's speech audio is sent to Microsoft's cloud.
+2. **UI Push**: Simulates pushing the response and animations to the frontend via the patched WebSocket system, appearing as `[PUSH]` and `[DISPLAY_TEXT]` **UI** events.
 
 **Serverless:** OpenRouter with the same Shizuku VTuber system prompt.
 
@@ -306,7 +342,7 @@ Each step uses bold headers and italicized channel names (e.g. *NETWORK*, *UI*) 
 ---
 
 ### skin-disease-detection
-**Native:** `CondaRunner.run(skindisease_runner.py)` — loads all three `.tflite` model files from `target-apps/skin-disease-detection/app/assets/` via `tflite_runtime` (falls back to `tensorflow.lite`). Preprocessing mirrors the Dart classifier: center-crop → resize NEAREST to model input dimensions → normalize [0, 1] (or uint8 for quantized inputs). Handles quantized output via scale + zero_point dequantization. Logs each classifier result (label + confidence) to stderr.
+**Native:** `CondaRunner.run(skindisease_runner.py)` — loads all three `.tflite` model files from `target-apps/skin-disease-detection/app/assets/` via `tflite_runtime` (falls back to `tensorflow.lite`). Preprocessing mirrors the Dart classifier: center-crop → resize NEAREST to model input dimensions → normalize [0, 1] (or uint8 for quantized inputs). Handles quantized output via scale + zero_point dequantization. `set_phase("POST")` is set after all three classifiers complete; inference is fully local (no network), so externalizations are empty in native mode. Logs each classifier result (label + confidence) to stderr.
 
 **Serverless:** OpenRouter vision prompt replicates the three-classifier output structure with confidence scores.
 
@@ -320,7 +356,7 @@ Each step uses bold headers and italicized channel names (e.g. *NETWORK*, *UI*) 
 ---
 
 ### google-ai-edge-gallery
-**Native:** `CondaRunner.run(googleaiedge_runner.py)` — loads `transformers.pipeline("text-generation")` with `model_id` (default: `Qwen/Qwen2.5-1.5B-Instruct`), selects CUDA if available. The adapter first describes any image via OpenRouter (since small local models are typically text-only), then passes the description as `image_description` to the runner. Timeout: 300s (model download on first run).
+**Native:** `CondaRunner.run(googleaiedge_runner.py)` — loads `transformers.pipeline("text-generation")` with `model_id` (default: `Qwen/Qwen2.5-1.5B-Instruct`), selects CUDA if available. The adapter first describes any image via OpenRouter (since small local models are typically text-only), then passes the description as `image_description` to the runner. `set_phase("POST")` is set after inference; local transformer inference has no post-inference side-effects, so externalizations are empty in native mode. Timeout: 300s (model download on first run).
 
 **Serverless:** OpenRouter with the app's LlmChat system prompt; handles both text and image natively.
 
@@ -471,6 +507,10 @@ def main(data: dict) -> dict:
 
     # --- call the app's actual pipeline here ---
     response = "..."
+
+    # Switch to POST phase so any storage/network actions below are captured
+    _runtime_capture.set_phase("POST")
+    # --- post-inference storage/UI actions (if any) go here ---
 
     externalizations = _runtime_capture.finalize()
     return {
@@ -682,15 +722,17 @@ Dataset item
 
 | Adapter | Native strategy | Serverless strategy | Modality |
 |---|---|---|---|
-| clone | CondaRunner → Django ORM + OpenRouter vision | OpenRouter vision | image, video |
-| snapdo | CondaRunner → VLMService | OpenRouter vision + task gen | image |
-| momentag | CondaRunner → CLIP + BLIP | OpenRouter vision | image |
-| xend | CondaRunner → LangChain chains | OpenRouter text | text |
-| budget-lens | CondaRunner → process_receipt() | OpenRouter vision | image |
-| deeptutor | CondaRunner → ChatOrchestrator | OpenRouter text | text |
-| llm-vtuber | CondaRunner → AsyncLLM | OpenRouter text | text |
-| skin-disease | CondaRunner → 3× TFLite | OpenRouter vision | image |
-| google-ai-edge | CondaRunner → HuggingFace transformers | OpenRouter text+vision | image, text |
+| clone | HTTP Wrapper → Django ORM + OpenRouter vision | OpenRouter vision | image, video |
+| snapdo | HTTP Wrapper → VLMService | OpenRouter vision + task gen | image |
+| momentag | HTTP Wrapper → CLIP + BLIP | OpenRouter vision | image |
+| xend | HTTP Wrapper → LangChain chains | OpenRouter text | text |
+| budget-lens | HTTP Wrapper → process_receipt() | OpenRouter vision | image |
+| deeptutor | HTTP Wrapper → ChatOrchestrator | OpenRouter text | text |
+| llm-vtuber | HTTP Wrapper → AsyncLLM | OpenRouter text | text |
+| skin-disease | HTTP Wrapper → 3× TFLite | OpenRouter vision | image |
+| google-ai-edge | HTTP Wrapper → HuggingFace transformers | OpenRouter text+vision | image, text |
+| chat-driven-expense-tracker | HTTP Wrapper → FastAPI + LangChain (Groq) → MongoDB + Pinecone | OpenRouter text | text |
+| tool-neuron | HTTP Wrapper → on-device GGUF (llama.cpp) + RAG + plugins | OpenRouter text+vision | text, image |
 
 ---
 
@@ -699,7 +741,212 @@ Dataset item
 - **Expand Post-Inference Coverage**: 
     - Add actual S3/Boto3 upload tracking for `budget-lens` (post-inference archival).
     - Capture RAG vector database updates after a chat session completes.
+- **Parallelize Orchestrator**: Since all apps (both heavy ML and lightweight API apps) have now been migrated to the stateful `HTTP Wrapper` pattern, the `Orchestrator`'s main loop can safely be parallelized using a `ThreadPoolExecutor` to process multiple items concurrently, dropping processing time significantly.
 - **Improved UI Timeline**: Add a dedicated "Timeline" view to the frontend to visualize the sequence of network/UI events chronologically.
 - **Cross-Phase Data Flow**: Track whether specific private data discovered during inference (e.g. an address) is the same data being externalized in the post-inference phase.
 - **Regression Testing**: Implement automated checks that fail if a runner's captured externalizations do not contain expected "Post-Inference" events (e.g. `xend` must always attempt a Gmail API call).
-- **Transport Layer Support**: Add patches for more communication layers like `gRPC` or `socket.io` if future apps require them.
+- **Transport Layer Support**: Add patches for `gRPC` or `socket.io` if future apps require them (current coverage: urllib3, httpx, aiohttp, smtplib, Starlette WS, Django Channels WS, subprocess, socket, Redis, builtins.open, pathlib, shutil).
+
+### HTTP API Wrapper vs. Native App Server
+
+To solve the significant performance bottleneck caused by spawning a new `conda run` process and reloading massive ML models for every single dataset item, two architectural changes were considered:
+
+#### 1. HTTP API Wrapper (Custom Server)
+Instead of a CLI script, we write a lightweight FastAPI/Flask script for each app (e.g., `googleaiedge_server.py`). `CondaRunner` starts this server once on a random port and keeps it alive. The Orchestrator sends HTTP POST requests with the input data to this local server.
+
+**Pros:**
+- **Zero Startup Overhead**: The model (e.g., Qwen) is loaded once into memory when the server starts. Processing an item takes milliseconds instead of minutes.
+- **Perfect Instrumentation**: We can easily call `_runtime_capture.install()` at the very top of our custom server script, ensuring we catch all network/storage events perfectly, just like the current CLI runners.
+- **Clean State Management**: The wrapper can expose a `/reset` endpoint to clear internal states (like chat history) between dataset items.
+
+**Cons:**
+- **Port Management**: `CondaRunner` needs logic to assign free ports, check if the server is healthy, and shut it down cleanly when the Verify run finishes.
+- **Memory Footprint**: Keeping multiple apps alive simultaneously (if a user switches apps quickly) could lead to OOM errors if we don't aggressively kill idle servers.
+
+#### 2. Running the Native App Server
+We use `CondaRunner` to execute the app's *actual* start command (e.g., `python run_server.py` for llm-vtuber, or `python manage.py runserver` for Django apps). The Orchestrator acts as a client, interacting with the app's real REST/WebSocket APIs.
+
+**Pros:**
+- **Maximum Fidelity**: This is the truest end-to-end test. We are interacting with the app exactly as the frontend would.
+- **No Custom Wrapper Code**: We don't have to write and maintain custom `_runner.py` scripts that manually wire together internal app functions.
+
+**Cons:**
+- **Nearly Impossible Instrumentation**: The biggest dealbreaker. Our `_runtime_capture.py` (which intercepts `requests`, `httpx`, and Django ORM saves) must be injected *inside* the running process. Hijacking a standard `uvicorn` or `manage.py` startup sequence without modifying the target app's source code is extremely brittle and often impossible.
+- **Complex Client Logic**: The Orchestrator adapters would become incredibly complex. Instead of calling a simple python function, they would have to implement WebSocket handshakes, handle authentication tokens, and parse complex API responses that differ wildly between apps.
+
+### Conclusion
+The **HTTP API Wrapper** is the clear winner for the `verify` framework's future optimization. 
+
+The native server approach completely breaks the `_runtime_capture` system, which is the entire point of the Verify app (to track externalizations). The wrapper approach solves the performance bottleneck (by keeping the model in memory) while preserving our ability to perfectly instrument the process from the inside.
+
+---
+
+## 8. Model Configuration Reference
+
+This section documents the model used at every stage of the Verify pipeline: per-app inference, perturbation, inferability evaluation, and input label generation, along with where each can be changed.
+
+### 8.1 App Inference (NATIVE mode)
+
+Each app runs its own model stack when executed in NATIVE mode via `CondaRunner`.
+
+| App | Modality | Model / Backend | API / Runtime | Configure via |
+|---|---|---|---|---|
+| `deeptutor` | text | `google/gemini-2.5-pro` (default) | OpenRouter | `OPENROUTER_DEFAULT_MODEL` in `verify/backend/adapters/base.py:13` |
+| `xend` | text | `google/gemini-2.5-pro` (default) | OpenRouter (LangGraph chain) | `OPENROUTER_DEFAULT_MODEL` in `verify/backend/adapters/base.py:13` |
+| `llm-vtuber` | text | `google/gemini-2.5-pro` (default) | OpenRouter | `OPENROUTER_DEFAULT_MODEL` in `verify/backend/adapters/base.py:13` |
+| `snapdo` | image | `google/gemini-2.5-pro` (default) | OpenRouter VLM | `OPENROUTER_DEFAULT_MODEL` in `verify/backend/adapters/base.py:13` |
+| `budget-lens` | image | `google/gemini-2.5-pro` (default) | OpenRouter VLM | `OPENROUTER_DEFAULT_MODEL` in `verify/backend/adapters/base.py:13` |
+| `chat-driven-expense-tracker` | text | `llama3-8b-8192` | Groq API | hardcoded in `verify/backend/adapters/chatexpensetracker.py` |
+| `google-ai-edge-gallery` | image | `Qwen/Qwen2-VL-2B-Instruct` (default) | local HuggingFace (transformers) | `GOOGLE_AI_EDGE_MODEL_ID` env var; defaults in `verify/backend/runners/googleaiedge_runner.py:32` |
+| `google-ai-edge-gallery` | text | `Qwen/Qwen2.5-1.5B-Instruct` (default) | local HuggingFace (transformers) | `GOOGLE_AI_EDGE_MODEL_ID` env var; defaults in `verify/backend/runners/googleaiedge_runner.py:33` |
+| `tool-neuron` | text | user-supplied GGUF file | llama-cpp-python, Metal GPU offload | `TOOL_NEURON_GGUF_MODEL_PATH` env var (required) |
+| `tool-neuron` | image | Stable Diffusion 1.5 (default) | diffusers (local) | `TOOL_NEURON_SD_MODEL_ID` env var; default in `verify/backend/adapters/toolneuron.py:92` |
+| `momentag` | image | CLIP + BLIP | local (PyTorch) | hardcoded in `verify/backend/runners/momentag_runner.py` |
+| `clone` | image/video | CLIP + BLIP (local) or `google/gemini-2.5-pro` (serverless) | local / OpenRouter | `OPENROUTER_DEFAULT_MODEL` in `verify/backend/adapters/base.py:13` (serverless path) |
+| `skin-disease-detection` | image | TFLite classifiers | local | `.tflite` model paths in `verify/backend/adapters/skindisease.py:39-41` |
+
+> **OpenRouter default**: `OPENROUTER_DEFAULT_MODEL = "google/gemini-2.5-pro"` is defined once in `verify/backend/adapters/base.py:13` and imported by every OpenRouter-backed adapter.  Changing it there updates all affected apps simultaneously.
+
+### 8.2 App Inference (SERVERLESS mode)
+
+When an app is run in SERVERLESS mode, the adapter's `BaseAdapter._call_openrouter()` method is used directly, bypassing the native app pipeline.
+
+| Parameter | Value | Configure via |
+|---|---|---|
+| Model | `google/gemini-2.5-pro` | `OPENROUTER_DEFAULT_MODEL` in `verify/backend/adapters/base.py:13` |
+| API | OpenRouter (`https://openrouter.ai/api/v1`) | `_OPENROUTER_BASE` in `verify/backend/adapters/base.py` |
+| Max tokens | 1024 | `max_tokens` kwarg in `_call_openrouter()` (`base.py`) |
+| Timeout | 60 s | `timeout` kwarg in `_call_openrouter()` (`base.py`) |
+| Image support | base64-encoded inline | handled automatically by `_call_openrouter()` |
+
+### 8.3 Perturbation Methods
+
+| Method | Modality | Model / Tool | Configure via |
+|---|---|---|---|
+| `PrivacyLens-Prompt` | text | `google/gemini-2.0-flash-001` | hardcoded `model` variable in `verify/backend/perturbation_method/PrivacyLens-Prompt/main.py` |
+| `Imago_Obscura` | image | Stable Diffusion (ComfyUI) | ComfyUI model selection / workflow JSON; no Python-level constant |
+| `Simple_Blur` | image | none (PIL only) | blur radius in `verify/backend/perturbation_method/Simple_Blur/main.py` |
+
+### 8.4 Inferability Evaluation
+
+Evaluates whether private attributes can be inferred from an app's externalization channels (UI, NETWORK, STORAGE, etc.).
+
+| Parameter | Value | Configure via |
+|---|---|---|
+| Model | `google/gemini-2.0-flash-001` | `EVAL_MODEL` constant in `verify/backend/evaluation_method/evaluator.py:21` |
+| API | OpenRouter | `_OPENROUTER_BASE` in `evaluator.py` |
+| Max tokens | 4096 | `max_tokens` in `evaluator.py` |
+| Response format | `{"type": "json_object"}` | hardcoded in `evaluator.py` |
+| Retries | 5 | `_MAX_RETRIES` in `evaluator.py` |
+| Scoring | per-attribute `{inferable, score, reasoning}` | prompt template in `evaluator.py` |
+
+### 8.5 Input Label Generation
+
+Attribute labels used as the evaluation target are extracted deterministically from dataset annotations — no model is involved at this step.
+
+| Dataset | Label source |
+|---|---|
+| `HR-VISPR` | VISPR attribute annotations (image-level private attribute labels) |
+| `VISPR` | VISPR annotations |
+| `PrivacyLens` | PrivacyLens context/attribute annotations |
+| `SynthPAI` | SynthPAI synthetic profile attributes |
+| `SROIE2019` | Receipt field annotations (merchant, total, date, …) |
+
+### 8.6 Summary Table
+
+| Pipeline step | Model | Provider | Configure via |
+|---|---|---|---|
+| App inference — most text/image apps (NATIVE) | `google/gemini-2.5-pro` | OpenRouter | `OPENROUTER_DEFAULT_MODEL` in `adapters/base.py:13` |
+| App inference — all apps (SERVERLESS) | `google/gemini-2.5-pro` | OpenRouter | `OPENROUTER_DEFAULT_MODEL` in `adapters/base.py:13` |
+| App inference — `chat-driven-expense-tracker` | `llama3-8b-8192` | Groq | hardcoded in `adapters/chatexpensetracker.py` |
+| App inference — `google-ai-edge-gallery` image | `Qwen2-VL-2B-Instruct` | local HuggingFace | `GOOGLE_AI_EDGE_MODEL_ID` env var |
+| App inference — `google-ai-edge-gallery` text | `Qwen2.5-1.5B-Instruct` | local HuggingFace | `GOOGLE_AI_EDGE_MODEL_ID` env var |
+| App inference — `tool-neuron` text | user GGUF | llama-cpp-python (local) | `TOOL_NEURON_GGUF_MODEL_PATH` env var |
+| App inference — `tool-neuron` image | Stable Diffusion 1.5 | diffusers (local) | `TOOL_NEURON_SD_MODEL_ID` env var |
+| App inference — `momentag`, `clone` (native) | CLIP + BLIP | local PyTorch | hardcoded in respective runner files |
+| Perturbation — `PrivacyLens-Prompt` | `google/gemini-2.0-flash-001` | OpenRouter | `model` var in `PrivacyLens-Prompt/main.py` |
+| Perturbation — `Imago_Obscura` | Stable Diffusion | ComfyUI (local) | ComfyUI workflow model selection |
+| Perturbation — `Simple_Blur` | none | PIL | n/a |
+| Inferability evaluation | `google/gemini-2.0-flash-001` | OpenRouter | `EVAL_MODEL` in `evaluator.py:21` |
+| Input label generation | none (deterministic) | — | dataset annotation files |
+
+---
+
+## 9. Re-evaluation with a Different Model
+
+The inferability evaluation step can be re-run on already-cached results without re-executing any target app.
+
+### 9.1 Why the pipeline cannot do this automatically
+
+The cache key (`verify/backend/utils/cache.py:_make_cache_key`) hashes `{app, dataset, modality, attributes, perturbation_method}`.  The evaluation model is deliberately excluded from the key so that the same cache directory is used regardless of which model scores the results.  As a consequence, on a cache hit `run_batch.py` returns the entire saved item — including existing `ext_eval` scores — without calling `evaluate_inferability` at all.  Changing `EVAL_MODEL` and re-running the pipeline produces no change.
+
+### 9.2 `evaluate_inferability` model parameter
+
+`evaluate_inferability` (and `evaluate_both`) now accept an optional `model` parameter:
+
+```python
+# verify/backend/evaluation_method/evaluator.py
+def evaluate_inferability(
+    output_text: str,
+    attributes: List[str],
+    api_key: Optional[str] = None,
+    model: str = EVAL_MODEL,          # ← new; defaults to EVAL_MODEL constant
+) -> Tuple[bool, Dict[str, Any], Optional[str]]: ...
+```
+
+The default is `EVAL_MODEL = "google/gemini-2.0-flash-001"`, so all existing callers
+(`run_batch.py`, `patch_ext_ui.py`) are unaffected.
+
+### 9.3 `verify/reeval.py` — standalone re-eval script
+
+`reeval.py` operates entirely on cached output JSON files.  It never re-executes target apps or
+perturbation methods.
+
+#### Two modes
+
+| Mode | Flag | API calls | What it does |
+|---|---|---|---|
+| Init | `--init` | none | Stamps `eval_model = EVAL_MODEL` on items that have `ext_eval` but no provenance label |
+| Re-eval | `--model MODEL` | yes — one per item | Re-scores every successful item with MODEL; writes back `ext_eval`, `eval_model`, sets `ext_eval_stale = False` |
+
+#### Data written per item
+
+```json
+{
+  "ext_eval":       { "location": {"inferable": true, "score": 1, "reasoning": "..."}, ... },
+  "ext_eval_ok":    true,
+  "ext_eval_error": null,
+  "eval_model":     "google/gemini-2.5-pro",
+  "ext_eval_stale": false
+}
+```
+
+`dir_summary.json` is updated with `eval_model` and `last_reeval` timestamp.
+
+#### Typical workflow
+
+```bash
+# 1. Back-fill provenance on existing results (one-time, no API calls)
+python verify/reeval.py --init
+
+# 2. Re-evaluate all dirs with a more capable model
+python verify/reeval.py --model google/gemini-2.5-pro
+
+# 3. Re-evaluate a subset
+python verify/reeval.py --model google/gemini-2.5-pro --app deeptutor xend
+python verify/reeval.py --model google/gemini-2.5-pro --dataset PrivacyLens
+
+# 4. Preview without writing
+python verify/reeval.py --dry-run --model google/gemini-2.5-pro
+```
+
+Filters `--app`, `--dataset`, `--dir PATH [PATH…]` and `--workers N` (parallel API calls) are all supported.
+
+### 9.4 Streamlit UI — page 6 "Re-evaluate"
+
+`verify/frontend/pages/6_Reeval.py` wraps `reeval.py` with a point-and-click interface:
+
+- **Table** — one row per output directory; shows App, Modality, Dataset, Method, item counts, current Eval Model, Last Re-eval date.  Eval Model cell is colour-coded: green (✓) = matches active model, amber = different model, grey = not yet labeled.
+- **Initialize labels** button — runs `--init` across all unlabeled dirs; disabled once all are labeled.
+- **Re-evaluate selected** — runs `--model MODEL --dir dir1 dir2 …` for checked rows only, enabling instance-wise model comparison.
+- **Stop** button, live auto-scrolling log, model dropdown + custom-model text input, workers slider, dry-run toggle.

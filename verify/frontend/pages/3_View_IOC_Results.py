@@ -45,10 +45,8 @@ STAGE_COLORS = {
 def _display_image(b64_str: str | None, caption: str = ""):
     try:
         if b64_str:
-            import base64, io
-            from PIL import Image as PILImage
-            img = PILImage.open(io.BytesIO(base64.b64decode(b64_str)))
-            st.image(img, caption=caption, width="stretch")
+            import base64
+            st.image(base64.b64decode(b64_str), caption=caption, width="stretch")
         else:
             st.info("Image not available in cache.")
     except Exception as e:
@@ -162,20 +160,22 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
                     st.caption("**Prompt sent to model:**")
                     st.text(prompt_text)
             elif modality == "text":
-                st.text_area("", value=input_item.get("text_content", ""),
+                st.text_area("Input text", value=input_item.get("text_content", ""),
                              height=220, disabled=True, label_visibility="collapsed",
                              key=f"vioc_text_{idx}")
             else:
                 st.info("Media not stored in cache.")
 
-            st.caption("**Annotated attributes:**")
+            if positives:
+                st.caption("**Annotated attributes:**")
+                st.markdown("  ".join(f"`{a}`" for a in positives))
 
         with col_out:
             out_col, ext_col = st.columns(2)
 
             with out_col:
                 st.markdown(f"**{STAGE_OUTPUT}**")
-                st.text_area("", value=result.get("output_text", ""),
+                st.text_area("Raw output text", value=result.get("output_text", ""),
                              height=200, disabled=True, label_visibility="collapsed",
                              key=f"vioc_out_{idx}")
 
@@ -183,7 +183,7 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
                 st.markdown(f"**{STAGE_EXT}**")
                 ext_text = result.get("ext_text", "")
                 st.text_area(
-                    "",
+                    "Externalized text",
                     value=ext_text if ext_text.strip() else "No externalizations captured.",
                     height=200, disabled=True, label_visibility="collapsed",
                     key=f"vioc_ext_{idx}",

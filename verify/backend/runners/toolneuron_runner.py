@@ -116,6 +116,10 @@ def _run_text(data: dict) -> dict:
     tokens_predicted: int = output.get("usage", {}).get("completion_tokens", 0)
 
     print("[tool-neuron] Text generation complete.", file=sys.stderr, flush=True)
+
+    from _runner_log import log_output
+    log_output("tool-neuron", "text_generation", response, {"TOKENS": tokens_predicted})
+
     return {
         "success": True,
         "response": response,
@@ -198,6 +202,15 @@ def _run_image(data: dict) -> dict:
     image_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
 
     print("[tool-neuron] Image generation complete.", file=sys.stderr, flush=True)
+
+    from _runner_log import log_output
+    log_output("tool-neuron", "image_generation", image_prompt, {
+        "SIZE": f"{width}x{height}",
+        "STEPS": steps,
+        "SEED": seed,
+        "MODEL": sd_model_id,
+    })
+
     return {
         "success": True,
         "image_base64": image_b64,
@@ -233,6 +246,7 @@ def main():
         log_input("tool-neuron", "text_generation", text_content)
         result = _run_text(data)
 
+    _runtime_capture.set_phase("POST")
     externalizations = _runtime_capture.finalize()
     result["externalizations"] = externalizations
     print(json.dumps(result))

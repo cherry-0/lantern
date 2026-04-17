@@ -5,6 +5,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 > **Adding a new app to the `verify/` privacy evaluation framework?**
 > See [`analysis/verify_report.md`](/Users/sieun/Research/Lantern/lantern/analysis/verify_report.md) — Section 7 ("How to Add a New App") has the step-by-step guide with code templates for the adapter, runner, Django settings shim, and adapter registration.
 
+> **Encountering an error in the `verify/` framework?**
+> See [`TROUBLESHOOTING.md`](/Users/sieun/Research/Lantern/lantern/TROUBLESHOOTING.md) — covers known runner failures, phase-drift bugs, Django config issues, conda env problems, and frontend quirks with fixes.
+
 ## Overview
 
 This repository contains four independent applications, each in its own subdirectory:

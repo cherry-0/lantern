@@ -12,6 +12,7 @@ from verify.backend.adapters.llmvtuber import LLMVTuberAdapter
 from verify.backend.adapters.skindisease import SkinDiseaseAdapter
 from verify.backend.adapters.googleaiedge import GoogleAIEdgeAdapter
 from verify.backend.adapters.toolneuron import ToolNeuronAdapter
+from verify.backend.adapters.chatexpensetracker import ChatExpenseTrackerAdapter
 
 # Registry: name → adapter class
 ADAPTER_REGISTRY: Dict[str, Type[BaseAdapter]] = {
@@ -25,6 +26,7 @@ ADAPTER_REGISTRY: Dict[str, Type[BaseAdapter]] = {
     "skin-disease-detection": SkinDiseaseAdapter,
     "google-ai-edge-gallery": GoogleAIEdgeAdapter,
     "tool-neuron": ToolNeuronAdapter,
+    "chat-driven-expense-tracker": ChatExpenseTrackerAdapter,
 }
 
 

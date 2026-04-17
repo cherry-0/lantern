@@ -280,3 +280,236 @@ to:
 ```bash
 find ~/miniconda3/envs/skin-disease-detection -name ".verify_ready" -delete
 ```
+
+---
+
+## 11. Async phase drift in `_runtime_capture.py`
+
+**Symptom**: Inference-phase network calls (e.g. the OpenRouter LLM request) appear in `externalizations`
+as POST-phase events, inflating privacy leak scores.
+
+**Root cause**: `_patched_async_send` recorded `_current_phase` **after** `await`. If `set_phase("POST")`
+fires while the coroutine is suspended, the inference call is misclassified as a post-inference leak.
+
+**Fix** (`_runtime_capture.py`):
+```python
+async def _patched_async_send(self, request, **kwargs):
+    _phase_snap = _current_phase        # snapshot BEFORE await
+    resp = await _orig_async_send(self, request, **kwargs)
+    _record_network(..., phase=_phase_snap)
+    return resp
+```
+Same fix applied to `_patched_aiohttp_request`. Added optional `phase` param to `_record_network()`.
+
+---
+
+## 12. `await` on synchronous TTS method (llmvtuber)
+
+**Symptom**: `asyncio.run() cannot be called when another event loop is running` inside FastAPI handler.
+
+**Root cause**: `EdgeTTS.generate_audio` is synchronous and internally calls `asyncio.run()`. Awaiting
+it directly from an `async def` FastAPI handler re-enters the already-running event loop.
+
+**Fix** (`llmvtuber_server.py`):
+```python
+await asyncio.to_thread(tts.generate_audio, response)
+```
+
+---
+
+## 13. Missing `"IPC"` key in `_events` reset
+
+**Symptom**: `KeyError: 'IPC'` in the server handler after `_runtime_capture` was updated to track IPC events.
+
+**Root cause**: Server handlers that manually reset `_events` at the start of each request were written
+before the `"IPC"` channel was added to `_runtime_capture.py`.
+
+**Fix**: All server handlers must reset ALL channels:
+```python
+_runtime_capture._events = {"NETWORK": [], "STORAGE": [], "LOGGING": [], "UI": [], "IPC": []}
+```
+Check `llmvtuber_server.py`, `googleaiedge_server.py`, `clone_server.py`, `momentag_server.py` any time
+a new channel is added to `_runtime_capture._events`.
+
+---
+
+## 14. HTTP timeout from concurrent local model inference (google-ai-edge)
+
+**Symptom**: Workers time out after 300 s when running google-ai-edge with `--workers > 1`.
+
+**Root cause**: `googleaiedge_server.py` had no serialization — all parallel workers sent requests to
+the same FastAPI server simultaneously. Each request queued behind the slow HuggingFace model load/run,
+causing compounding latency and timeout.
+
+**Fix**:
+- `googleaiedge_server.py`: `_inference_lock = threading.Lock()` wrapping the handler body.
+- `googleaiedge.py` adapter: `self._inference_lock`, timeout raised 300 → 600 s.
+- Use `max_items` or `--workers 1` for local-model apps in `batch_config.csv`.
+
+---
+
+## 15. Experiment Progress table not scanning timestamped output dirs
+
+**Symptom**: Progress table shows ~0 items even though `verify/outputs/` has hundreds of results.
+
+**Root cause**: `_scan_caches()` only matched `cache_*` dirs. Perturbation outputs land in timestamped
+dirs named `{app}_{modality}_{attrs}_{timestamp}/` and were completely ignored.
+
+**Fix** (`5_Experiment_Progress.py`): Replaced with `_scan_outputs()` which iterates **all**
+subdirectories of `verify/outputs/` that contain `run_config.json`.
+
+**Also fixed**: Items that appeared in multiple runs for the same (app, dataset, method) were
+double-counted. Fixed with `defaultdict(set)` to deduplicate item filenames across runs.
+
+---
+
+## 16. Batch Runner log box not auto-scrolling to bottom
+
+**Symptom**: Log output always shows the top after each Streamlit rerun.
+
+**Root cause 1**: `st.components.v1.html(..., height=0)` — zero-height iframes may be suppressed
+before JavaScript executes.
+
+**Root cause 2**: Cross-frame JS (`window.parent.document.querySelectorAll('textarea')`) is
+timing-fragile and targeted `<textarea>` elements that no longer exist.
+
+**Fix**: Replaced with a self-contained HTML component (height=460) where log content and the
+`el.scrollTop = el.scrollHeight` script are in the same frame.
+
+---
+
+## 17. Progress bars not showing M/N ratio
+
+**Symptom**: Per-task progress bars show "Starting…" instead of `done / total`.
+
+**Root cause**: When `max_items` is unset in both the CSV row AND the global flag, `total` stayed
+`None` and `elif total and total > 0` never fired.
+
+**Fix** (`4_Batch_Runner.py`): At batch launch, call `count_dataset_items(dataset, modality)` to
+populate `total` from dataset metadata when no cap is configured.
+
+**Also fixed**: `&nbsp;` literal in `st.progress(text=...)` — Streamlit progress text uses Markdown,
+not HTML. Replaced with plain spaces.
+
+---
+
+## 18. Runner response truncation in externalizations
+
+**Symptom**: `[UI]` externalization events show `response[:150] + "..."`, hiding full model output.
+
+**Root cause**: Several runners hard-coded truncation in `record_ui_event` calls as a defensive measure.
+
+**Fix**: Removed truncation from all `record_ui_event` calls in:
+- `llmvtuber_server.py` + `llmvtuber_runner.py`
+- `deeptutor_server.py`
+- `googleaiedge_server.py`
+- `xend_runner.py`
+
+**Pending**: `xend_server.py:110` still has `f"Email sent: {subject[:50]}..."`. The `*_runner.py`
+and `*_server.py` variants must always be kept in sync.
+
+---
+
+## 19. Clone returns "screen descriptions", not email drafts — not a bug
+
+**Observation**: Clone's output looks like an image-captioning result ("Activity: …, Details: …, Summary: …").
+
+**Explanation**: Intentional. The verify framework tests clone's **ingestion pipeline**:
+screen recording → OpenRouter vision LLM description via `_FRAME_PROMPT` → stored as `ChatMessage` in Django DB.
+
+The chat-retrieval step is not privacy-sensitive in isolation and is not tested. Clone's output fields are
+`description / activity / details / summary` — there is no `captions` field. The `structured_output` only
+contains `{activity, details, summary, num_frames}`.
+
+---
+
+## 20. Server vs runner inconsistency (general pattern)
+
+When fixing a runner bug, always check the corresponding server variant:
+
+| App | Runner | Server |
+|-----|--------|--------|
+| xend | `xend_runner.py` | `xend_server.py` |
+| llm-vtuber | `llmvtuber_runner.py` | `llmvtuber_server.py` |
+| momentag | `momentag_runner.py` | `momentag_server.py` |
+| clone | — | `clone_server.py` |
+| google-ai-edge | — | `googleaiedge_server.py` |
+| deeptutor | — | `deeptutor_server.py` |
+
+`*_runner.py` is used for CondaRunner subprocess mode (`USE_APP_SERVERS=false`-style scripted runs).
+`*_server.py` is used when `USE_APP_SERVERS=true` (long-lived FastAPI server started per adapter).
+Both must behave identically.
+
+---
+
+## 21. Changing `EVAL_MODEL` does not re-evaluate cached results
+
+**Symptom**: Edited `EVAL_MODEL` in `evaluator.py`, re-ran `run_batch.py`, but all `ext_eval` scores are
+unchanged and match the old model's output.
+
+**Root cause**: The cache key is a SHA-256 hash of `{app, dataset, modality, attributes, perturbation_method}`.
+The evaluation model is **not** part of the key (`evaluation_method` parameter in `_make_cache_key` defaults to
+`"openrouter"` and is never varied).  On a cache hit, the full saved item — including the old `ext_eval` dict —
+is loaded and returned verbatim; `evaluate_inferability` is never called.
+
+Relevant code: `verify/backend/utils/cache.py:15–33`, `verify/run_batch.py:477–483`.
+
+**Fix**: Use the standalone re-eval script instead of re-running the full pipeline:
+
+```bash
+# Label existing results with the default model name (no API calls — run once)
+python verify/reeval.py --init
+
+# Re-evaluate all cached results with a different model
+python verify/reeval.py --model google/gemini-2.5-pro
+
+# Re-evaluate specific app/dataset only
+python verify/reeval.py --model google/gemini-2.5-pro --app deeptutor --dataset PrivacyLens
+
+# Re-evaluate specific output directories (e.g. from the Streamlit UI)
+python verify/reeval.py --model google/gemini-2.5-pro --dir verify/outputs/cache_abc123
+```
+
+The script reads `ext_text` and `output_eval` keys from each cached item, calls `evaluate_inferability`
+with the new model, and writes back `ext_eval / eval_model / ext_eval_stale=False`.  A Streamlit UI
+for instance-wise re-evaluation is available at **page 6 (Re-evaluate)**.
+
+---
+
+## 22. Cached items have no record of which model produced `ext_eval`
+
+**Symptom**: Items have `ext_eval` scores but no `eval_model` field — impossible to tell which model
+generated them or whether results are comparable across runs.
+
+**Root cause**: The original pipeline did not stamp provenance on evaluation results.
+
+**Fix**: Run `--init` once to back-fill provenance labels on all existing items (no API calls):
+
+```bash
+python verify/reeval.py --init          # stamps eval_model = EVAL_MODEL on all qualifying items
+python verify/reeval.py --init --dry-run  # preview how many would be labeled
+```
+
+`eval_model` is also written to each directory's `dir_summary.json` and shown in the
+**Re-evaluate** Streamlit page (`6_Reeval.py`) so you can see at a glance which model each
+output directory was evaluated with.
+
+Items that already have `eval_model` set are skipped by `--init` (idempotent).
+
+---
+
+## 23. `evaluate_inferability` used `EVAL_MODEL` globally — no per-call model override
+
+**Symptom**: All evaluation calls use the same model regardless of what you pass; no way to evaluate
+a single item with a different model without changing the module-level constant.
+
+**Root cause**: The original `evaluate_inferability(output_text, attributes)` signature had no `model`
+parameter; it hardcoded `"model": EVAL_MODEL` in the API request body.
+
+**Fix**: `model: str = EVAL_MODEL` parameter added to both `evaluate_inferability` and `evaluate_both`
+in `verify/backend/evaluation_method/evaluator.py`.  The default is unchanged, so all existing callers
+(`run_batch.py`, `patch_ext_ui.py`) are unaffected.  New callers can pass any OpenRouter model ID:
+
+```python
+ok, result, err = evaluate_inferability(ext_text, attrs, model="google/gemini-2.5-pro")
+```

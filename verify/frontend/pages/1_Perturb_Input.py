@@ -79,6 +79,7 @@ KNOWN_APPS = [
     "momentag", "clone", "snapdo", "xend", "budget-lens",
     "deeptutor", "llm-vtuber", "skin-disease-detection", "google-ai-edge-gallery",
     "tool-neuron",
+    "chat-driven-expense-tracker",
 ]
 MODALITIES = ["image", "text", "video"]
 
@@ -289,25 +290,9 @@ def _render_item_result(result: dict):
                 exts = orig_out.get("externalizations", {})
                 if exts:
                     with st.expander("🌐 Captured Externalizations", expanded=True):
-                        # Handle phase-aware structure: {"DURING": {...}, "POST": {...}}
-                        if "DURING" in exts or "POST" in exts:
-                            for phase in ["DURING", "POST"]:
-                                phase_data = exts.get(phase, {})
-                                if not phase_data:
-                                    continue
-                                
-                                label = "Step 1: Inference Process" if phase == "DURING" else "Step 2: Externalization / UI"
-                                st.markdown(f"**{label}**")
-                                for channel, content in phase_data.items():
-                                    st.markdown(f"*{channel}*")
-                                    st.caption(content)
-                                if phase == "DURING" and "POST" in exts:
-                                    st.divider()
-                        else:
-                            # Fallback for old flat dictionary structure
-                            for channel, content in exts.items():
-                                st.markdown(f"**[{channel}]**")
-                                st.caption(content)
+                        for channel, content in exts.items():
+                            st.markdown(f"**{channel}**")
+                            st.caption(content)
 
                 structured = orig_out.get("structured_output", {})
                 if structured:
@@ -444,12 +429,21 @@ def _render_aggregated_chart(all_results: list, attributes: list):
 
 # ─── Main UI ─────────────────────────────────────────────────────────────────
 
+def _sync_app_modes() -> None:
+    """Push per-app mode choices from session state into the config module."""
+    from verify.backend.utils.config import set_app_mode_override
+    for app_name, mode in st.session_state.get("app_modes", {}).items():
+        set_app_mode_override(app_name, mode)
+
+
 def main():
     st.title("🔍 Perturb Input")
     st.markdown(
         "Evaluate whether privacy attributes survive through target app AI pipelines. "
         "Compare original and perturbed inputs/outputs side-by-side."
     )
+
+    _sync_app_modes()
 
     config = _load_config()
     datasets = config["datasets"]
@@ -478,6 +472,8 @@ def main():
         if selected_app in KNOWN_APPS:
             with st.spinner(f"Checking {selected_app} availability..."):
                 try:
+                    from verify.backend.utils.config import set_current_app_context
+                    set_current_app_context(selected_app)
                     app_available, app_msg = get_adapter_status(selected_app)
                     if app_available:
                         st.success(f"Available: {app_msg}")
@@ -552,15 +548,15 @@ def main():
 
         # Max items
         st.subheader("Item Limit")
-        limit_enabled = st.checkbox("Limit number of items", value=False)
+        limit_enabled = st.checkbox("Limit number of items", value=True)
         max_items = None
         if limit_enabled:
-            max_items = int(st.number_input("Max items to process", min_value=1, value=5, step=1))
+            max_items = int(st.number_input("Max items to process", min_value=1, value=1, step=1))
 
         st.divider()
 
         # Cache option
-        use_cache = st.checkbox("Use cache (skip already-processed items)", value=True)
+        use_cache = st.checkbox("Use cache (skip already-processed items)", value=False)
 
         # Verify button
         verify_clicked = st.button(
@@ -586,6 +582,8 @@ def main():
         st.session_state.summary = None
     if "run_config" not in st.session_state:
         st.session_state.run_config = {}
+    if "last_run_config" not in st.session_state:
+        st.session_state.last_run_config = {}   # config that produced stored results
     if "status_messages" not in st.session_state:
         st.session_state.status_messages = []
     if "items_processed" not in st.session_state:
@@ -603,12 +601,21 @@ def main():
         st.session_state.processing = True
         st.session_state.items_processed = 0
         st.session_state.current_item = ""
+        run_cfg = {
+            "app": selected_app,
+            "dataset": selected_dataset,
+            "modality": selected_modality,
+            "attributes": selected_attributes,
+            "pert_method": selected_pert_method,
+            "max_items": max_items,
+        }
         st.session_state.run_config = {
             "app": selected_app,
             "dataset": selected_dataset,
             "modality": selected_modality,
             "attributes": selected_attributes,
         }
+        st.session_state.last_run_config = run_cfg   # mark as authoritative
         # Pre-count dataset size for the progress bar (capped by max_items if set)
         from verify.frontend.utils import count_dataset_items
         total = count_dataset_items(selected_dataset, selected_modality)
@@ -632,21 +639,11 @@ def main():
     # Rendered BEFORE the processing block so it is visible on every rerun
     # (st.rerun() stops execution, so anything after it is skipped).
 
-    # Status messages
-    for msg in st.session_state.status_messages:
-        if msg.startswith("❌"):
-            st.error(msg)
-        elif msg.startswith("⚠️"):
-            st.warning(msg)
-        else:
-            st.info(msg)
-
-    # Progress indicator
     if st.session_state.processing:
+        # ── Active run: show ONLY the progress bar, nothing else ──────────
         rc = st.session_state.run_config
         processed = st.session_state.items_processed
         total = st.session_state.items_total
-        current = st.session_state.current_item
 
         st.markdown(
             f"**{rc.get('app')}** &nbsp;·&nbsp; {rc.get('dataset')} &nbsp;·&nbsp; "
@@ -664,27 +661,52 @@ def main():
         if total == 0 or next_num <= total:
             st.caption(f"⏳ Processing item {next_num}" + (f" of {total}" if total > 0 else "") + "…")
 
-    # Results
-    if st.session_state.results:
-        n = len(st.session_state.results)
-        rc = st.session_state.run_config
-        st.subheader(
-            f"Results — {rc.get('app', '')} / {rc.get('dataset', '')} "
-            f"/ {rc.get('modality', '')} ({n} item{'s' if n != 1 else ''})"
-        )
+    else:
+        # ── Idle: status messages, then results or instructions ───────────
+        for msg in st.session_state.status_messages:
+            if msg.startswith("❌"):
+                st.error(msg)
+            elif msg.startswith("⚠️"):
+                st.warning(msg)
+            else:
+                st.info(msg)
 
-        for result in st.session_state.results:
-            _render_item_result(result)
+        if st.session_state.results:
+            last_cfg = st.session_state.last_run_config
+            stale = bool(last_cfg) and (
+                selected_app != last_cfg.get("app")
+                or selected_dataset != last_cfg.get("dataset")
+                or selected_modality != last_cfg.get("modality")
+                or sorted(selected_attributes) != sorted(last_cfg.get("attributes") or [])
+                or selected_pert_method != last_cfg.get("pert_method")
+                or max_items != last_cfg.get("max_items")
+            )
 
-        # Aggregated visualization
-        if not st.session_state.processing:
-            st.divider()
-            st.subheader("Aggregated Privacy Analysis")
-            attrs = st.session_state.run_config.get("attributes", [])
-            _render_aggregated_chart(st.session_state.results, attrs)
+            if stale:
+                st.info(
+                    f"Results below are from a previous run "
+                    f"(**{last_cfg.get('app', '?')}** / {last_cfg.get('dataset', '?')} "
+                    f"/ {last_cfg.get('modality', '?')}). "
+                    "Click **▶ Verify** to run with the current configuration."
+                )
+            else:
+                n = len(st.session_state.results)
+                rc = st.session_state.run_config
+                st.subheader(
+                    f"Results — {rc.get('app', '')} / {rc.get('dataset', '')} "
+                    f"/ {rc.get('modality', '')} ({n} item{'s' if n != 1 else ''})"
+                )
+
+                for result in st.session_state.results:
+                    _render_item_result(result)
+
+                st.divider()
+                st.subheader("Aggregated Privacy Analysis")
+                attrs = st.session_state.run_config.get("attributes", [])
+                _render_aggregated_chart(st.session_state.results, attrs)
 
     # Summary
-    if st.session_state.summary:
+    if st.session_state.summary and not st.session_state.processing:
         summary = st.session_state.summary
         st.divider()
         st.subheader("Run Summary")
@@ -753,7 +775,7 @@ def main():
             else:
                 st.info("CSV report not available.")
 
-    elif not st.session_state.processing and not st.session_state.results:
+    if not st.session_state.processing and not st.session_state.results and not st.session_state.summary:
         st.markdown(
             """
             ### How to use Verify

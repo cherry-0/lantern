@@ -4,7 +4,7 @@ EVAL_SYSTEM_PROMPT: |
 
   For each attribute, assess:
   1. Whether the attribute is inferable (yes/no)
-  2. A confidence score (0.0 = definitely not inferable, 1.0 = definitely inferable)
+  2. A binary score: 0 if not inferable, 1 if inferable (must match the inferable boolean exactly)
   3. Brief reasoning (1-2 sentences)
 
   Be thorough and conservative — even indirect or partial cues count as inferable.

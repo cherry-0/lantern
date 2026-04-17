@@ -81,22 +81,13 @@ def main():
         print("[llm-vtuber] Triggering TTS (edge-tts)...", file=sys.stderr, flush=True)
         tts = EdgeTTS(voice="en-US-AvaMultilingualNeural")
         # Just generate a small chunk to trigger network capture
-        asyncio.run(tts.generate_audio("Hello! " + response[:20]))
+        tts.generate_audio(response)
     except Exception as e:
         print(f"[llm-vtuber] TTS failed (skipping): {e}", file=sys.stderr)
 
-    # 2. Simulate WebSocket Push to UI
-    # We use a mock WebSocket to trigger the patched send_json in _runtime_capture
-    try:
-        from starlette.websockets import WebSocket
-        from unittest.mock import MagicMock
-        
-        mock_ws = MagicMock(spec=WebSocket)
-        # Manually trigger what the real app would do
-        _runtime_capture.record_ui_event("DISPLAY_TEXT", response[:200])
-        _runtime_capture.record_ui_event("ANIMATION", "Cheerful")
-    except Exception:
-        pass
+    # 2. Record UI externalization events
+    _runtime_capture.record_ui_event("DISPLAY_TEXT", response)
+    _runtime_capture.record_ui_event("ANIMATION", "Cheerful")
 
     print("[llm-vtuber] Post-inference complete.", file=sys.stderr, flush=True)
 

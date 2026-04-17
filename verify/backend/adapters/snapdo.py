@@ -10,6 +10,7 @@ as evidence for.  The generated task is cached per filename so the same task is
 reused for both the original and perturbed pipeline runs.
 """
 
+import atexit
 import json
 import re
 import base64
@@ -25,7 +26,10 @@ SNAPDO_SERVER = TARGET_APPS_DIR / "snapdo" / "server"
 _ENV_SPEC = EnvSpec(
     name="snapdo",
     python="3.10",
-    install_cmds=[["pip", "install", "-r", str(TARGET_APPS_DIR / "snapdo" / "requirements.txt")]],
+    install_cmds=[
+        ["pip", "install", "-r", str(TARGET_APPS_DIR / "snapdo" / "requirements.txt")],
+        ["pip", "install", "fastapi", "uvicorn", "pydantic", "requests"]
+    ],
 )
 _RUNNER = Path(__file__).parent.parent / "runners" / "snapdo_runner.py"
 
@@ -70,6 +74,54 @@ class SnapdoAdapter(BaseAdapter):
         # runs for the same image share the same task context.
         self._task_cache: Dict[str, Dict[str, str]] = {}
         self._malicious_task_cache: Dict[str, Dict[str, str]] = {}
+        self._server_process = None
+        self._server_port = None
+        atexit.register(self._cleanup_server)
+
+    def _cleanup_server(self):
+        if self._server_process is not None:
+            import sys
+            print(f"[snapdo] Shutting down local API server (port {self._server_port})...", file=sys.stderr, flush=True)
+            self._server_process.terminate()
+            self._server_process.wait()
+            self._server_process = None
+
+    def _start_server(self):
+        if self._server_process is not None and self._server_process.poll() is None:
+            return
+
+        import socket
+        import subprocess
+        import time
+        import requests
+        import sys
+
+        s = socket.socket()
+        s.bind(("", 0))
+        self._server_port = s.getsockname()[1]
+        s.close()
+
+        conda = CondaRunner.find_conda()
+        server_script = Path(__file__).parent.parent / "runners" / "snapdo_server.py"
+
+        print(f"[snapdo] Starting local API server on port {self._server_port}...", file=sys.stderr, flush=True)
+        self._server_process = subprocess.Popen(
+            [conda, "run", "-n", _ENV_SPEC.name, "python", str(server_script), "--port", str(self._server_port)],
+            stdout=subprocess.DEVNULL,
+            stderr=sys.stderr,
+        )
+
+        start_time = time.time()
+        while time.time() - start_time < 30:
+            try:
+                resp = requests.get(f"http://127.0.0.1:{self._server_port}/health")
+                if resp.status_code == 200:
+                    print("[snapdo] Server is ready.", file=sys.stderr, flush=True)
+                    return
+            except Exception:
+                time.sleep(1)
+        
+        raise RuntimeError("snapdo_server failed to start within 30 seconds.")
 
     # ── Django / native availability ─────────────────────────────────────────
 
@@ -294,25 +346,36 @@ class SnapdoAdapter(BaseAdapter):
         image_b64: str,
         generated_task: Dict[str, str],
     ) -> AdapterResult:
-        """Run snapdo's VLMService inside the 'snapdo' conda env via subprocess."""
+        """Run snapdo's VLMService inside the 'snapdo' conda env via HTTP server."""
         ok, msg = CondaRunner.ensure(_ENV_SPEC)
         if not ok:
             return AdapterResult(success=False, error=msg)
 
-        ok, result, err = CondaRunner.run(
-            _ENV_SPEC.name,
-            _RUNNER,
-            {
+        import requests
+        import sys
+
+        try:
+            self._start_server()
+        except Exception as e:
+            return AdapterResult(success=False, error=f"Failed to start server: {e}")
+
+        try:
+            payload = {
                 "image_base64": image_b64,
                 "task_title": generated_task.get("title", ""),
                 "task_description": generated_task.get("description", ""),
                 "openrouter_api_key": get_openrouter_api_key() or "",
                 "model": OPENROUTER_DEFAULT_MODEL,
-            },
-            timeout=90,
-        )
-        if not ok:
-            return AdapterResult(success=False, error=err)
+            }
+            print("[snapdo] Sending inference request to local server...", file=sys.stderr, flush=True)
+            resp = requests.post(f"http://127.0.0.1:{self._server_port}/infer", json=payload, timeout=90)
+            resp.raise_for_status()
+            result = resp.json()
+        except Exception as e:
+            return AdapterResult(success=False, error=f"HTTP request to server failed: {e}")
+
+        if not result.get("success"):
+            return AdapterResult(success=False, error=result.get("error"))
 
         output_text = (
             f"Task: {generated_task['title']}\n"
@@ -323,12 +386,12 @@ class SnapdoAdapter(BaseAdapter):
         externalizations = result.get("externalizations", {})
 
         return AdapterResult(
-            success=result.get("success", False),
+            success=True,
             output_text=output_text,
             raw_output=result,
             structured_output=result,
             externalizations=externalizations,
-            metadata={"method": "native_vlmservice", "generated_task": generated_task},
+            metadata={"method": "native_vlmservice_server", "generated_task": generated_task},
         )
 
     def _run_openrouter_fallback(

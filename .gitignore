@@ -15,27 +15,29 @@ verify/backend/datasets/SynthPAI/
 
 # perturbation method sources
 verify/backend/perturbation_method/Imago_Obscura/src/
-
-
-#.DS_Store
+ 
+# all DS_Store files
 **/.DS_Store
+.DS_Store
+.DS_Store*
+.env
 
+# result files
+cache/
 
-#.env
-**/.env
-
-#sqlite3
+# databases
 **/*.sqlite3
 
-#cache
-**/cache/*
-
-#service account
-**/service_account.json
-
-#paper
-paper/
-
-#reference
+# reference
 reference/
+
+# gdrive sync credentials / token
+verify/sync/credentials.json
+verify/sync/token.json
+verify/service_account.json
+
+# paper build artifacts
+paper/
+paper/**/build/
+paper/**/*.pdf
 

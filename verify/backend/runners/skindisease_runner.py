@@ -109,6 +109,7 @@ def main():
         except Exception as e:
             errors.append(f"{name}: {e}")
 
+    _runtime_capture.set_phase("POST")
     externalizations = _runtime_capture.finalize()
 
     print(json.dumps({

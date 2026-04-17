@@ -155,6 +155,7 @@ def main():
     resp.raise_for_status()
     description = resp.json()["choices"][0]["message"]["content"]
     print("[clone] Inference complete.", file=sys.stderr, flush=True)
+    _runtime_capture.set_phase("POST")
 
     # ── Persist message ────────────────────────────────────────────────────────
     ts = int(time.time() * 1000)

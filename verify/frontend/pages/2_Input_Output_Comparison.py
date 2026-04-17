@@ -35,6 +35,7 @@ KNOWN_APPS = [
     "momentag", "clone", "snapdo", "xend", "budget-lens",
     "deeptutor", "llm-vtuber", "skin-disease-detection", "google-ai-edge-gallery",
     "tool-neuron",
+    "chat-driven-expense-tracker",
 ]
 
 STAGE_INPUT = "Input"
@@ -197,6 +198,8 @@ def run_comparison_pipeline(
 
         # 2. Run app pipeline (original only, no perturbation)
         try:
+            from verify.backend.utils.config import set_current_app_context
+            set_current_app_context(app_name)
             adapter._reset_openrouter_calls()
             pipeline_result = adapter.run_pipeline(item)
         except Exception as e:
@@ -292,10 +295,8 @@ def run_comparison_pipeline(
 def _display_image(b64_str: str | None, data=None):
     try:
         if b64_str:
-            import base64, io
-            from PIL import Image as PILImage
-            img = PILImage.open(io.BytesIO(base64.b64decode(b64_str)))
-            st.image(img, width="stretch")
+            import base64
+            st.image(base64.b64decode(b64_str), width="stretch")
         elif data is not None:
             st.image(data, width="stretch")
         else:
@@ -459,8 +460,11 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
                 else:
                     st.info("No media available.")
 
-            st.caption("**Annotated attributes:**")
-            # _input_label_badges(result.get("input_labels", {}), unified_attrs)
+            input_labels = result.get("input_labels", {})
+            positives = [a for a in unified_attrs if input_labels.get(a, 0) == 1]
+            if positives:
+                st.caption("**Annotated attributes:**")
+                st.markdown("  ".join(f"`{a}`" for a in positives))
 
         with col_out:
             out_col, ext_col = st.columns(2)
@@ -592,6 +596,13 @@ def _render_aggregated(all_results: List[Dict[str, Any]], unified_attrs: List[st
 
 # ─── Main UI ──────────────────────────────────────────────────────────────────
 
+def _sync_app_modes() -> None:
+    """Push per-app mode choices from session state into the config module."""
+    from verify.backend.utils.config import set_app_mode_override
+    for app_name, mode in st.session_state.get("app_modes", {}).items():
+        set_app_mode_override(app_name, mode)
+
+
 def main():
     st.title("🔬 Input-Output Comparison")
     st.markdown(
@@ -599,6 +610,8 @@ def main():
         "**Input** (dataset labels) → **Raw Output** (app inference) → "
         "**Externalized** (network/storage/logging channels)."
     )
+
+    _sync_app_modes()
 
     config = _load_config()
     unified_attrs = _load_unified_attrs()
@@ -625,8 +638,10 @@ def main():
         if selected_app in KNOWN_APPS:
             try:
                 from verify.backend.adapters import get_adapter
+                from verify.backend.utils.config import set_current_app_context
                 adapter = get_adapter(selected_app)
                 if adapter:
+                    set_current_app_context(selected_app)
                     avail, msg = adapter.check_availability()
                     if avail:
                         st.success(f"Available: {msg}")
@@ -678,14 +693,14 @@ def main():
         max_items = None
         if limit_enabled:
             max_items = int(
-                st.number_input("Max items", min_value=1, value=5, step=1, key="ioc_max")
+                st.number_input("Max items", min_value=1, value=1, step=1, key="ioc_max")
             )
 
         st.divider()
 
         # Cache option
         use_cache = st.checkbox(
-            "Use cache (skip already-processed items)", value=True, key="ioc_use_cache"
+            "Use cache (skip already-processed items)", value=False, key="ioc_use_cache"
         )
 
         run_clicked = st.button(
@@ -706,6 +721,7 @@ def main():
         ("ioc_items_processed", 0),
         ("ioc_items_total", 0),
         ("ioc_run_config", {}),
+        ("ioc_last_run_config", {}),   # config that produced the stored results
         ("ioc_current_item", ""),
         ("ioc_error", None),
     ]:
@@ -719,12 +735,14 @@ def main():
         st.session_state.ioc_items_processed = 0
         st.session_state.ioc_current_item = ""
         st.session_state.ioc_error = None
-        st.session_state.ioc_run_config = {
+        run_cfg = {
             "app": selected_app,
             "dataset": selected_dataset,
             "modality": selected_modality,
             "max_items": max_items,
         }
+        st.session_state.ioc_run_config = run_cfg
+        st.session_state.ioc_last_run_config = run_cfg   # mark as authoritative
 
         from verify.frontend.utils import count_dataset_items
         total = count_dataset_items(selected_dataset, selected_modality)
@@ -749,28 +767,8 @@ def main():
     if st.session_state.ioc_error:
         st.error(st.session_state.ioc_error)
 
-    results = st.session_state.ioc_results
-
-    if not results and not st.session_state.ioc_processing and not st.session_state.ioc_error:
-        st.markdown(
-            """
-            ### How to use this page
-
-            1. Select a **target app** and **dataset** in the sidebar.
-            2. Choose the **modality** that matches the dataset.
-            3. Optionally limit the number of items processed.
-            4. Click **▶ Run Comparison**.
-
-            For each item the page will show:
-            - **Input** image or text with its annotated privacy labels
-            - **Raw app output** and **externalized channel results**
-            - A **heatmap** comparing attribute presence across all three stages
-            - An **aggregated chart** across all items (positive rate per attribute)
-            """
-        )
-
-    # Progress (shown while processing)
     if st.session_state.ioc_processing:
+        # ── Active run: show ONLY the progress bar, nothing else ──────────────
         rc = st.session_state.ioc_run_config
         processed = st.session_state.ioc_items_processed
         total = st.session_state.ioc_items_total
@@ -790,23 +788,57 @@ def main():
         if total == 0 or next_num <= total:
             st.caption(f"⏳ Processing item {next_num}" + (f" of {total}" if total > 0 else "") + "…")
 
-    # Results (accumulate as items complete)
-    if results:
-        rc = st.session_state.ioc_run_config
-        n = len(results)
-        st.subheader(
-            f"Results — {rc.get('app', '')} / {rc.get('dataset', '')} "
-            f"/ {rc.get('modality', '')} ({n} item{'s' if n != 1 else ''})"
-        )
+    else:
+        # ── Idle: show results or instructions ────────────────────────────────
+        results = st.session_state.ioc_results
 
-        if not st.session_state.ioc_processing:
-            st.divider()
-            st.subheader("Aggregated Attribute-wise Positive Rate")
-            _render_aggregated(results, unified_attrs)
+        if results:
+            last_cfg = st.session_state.ioc_last_run_config
+            stale = bool(last_cfg) and (
+                selected_app != last_cfg.get("app")
+                or selected_dataset != last_cfg.get("dataset")
+                or selected_modality != last_cfg.get("modality")
+                or max_items != last_cfg.get("max_items")
+            )
 
-        st.divider()
-        for idx, result in enumerate(results):
-            _render_item(result, unified_attrs, idx)
+            if stale:
+                st.info(
+                    f"Results below are from a previous run "
+                    f"(**{last_cfg.get('app', '?')}** / {last_cfg.get('dataset', '?')} "
+                    f"/ {last_cfg.get('modality', '?')}). "
+                    "Click **▶ Run Comparison** to run with the current configuration."
+                )
+            else:
+                rc = st.session_state.ioc_run_config
+                n = len(results)
+                st.subheader(
+                    f"Results — {rc.get('app', '')} / {rc.get('dataset', '')} "
+                    f"/ {rc.get('modality', '')} ({n} item{'s' if n != 1 else ''})"
+                )
+                st.divider()
+                st.subheader("Aggregated Attribute-wise Positive Rate")
+                _render_aggregated(results, unified_attrs)
+                st.divider()
+                for idx, result in enumerate(results):
+                    _render_item(result, unified_attrs, idx)
+
+        elif not st.session_state.ioc_error:
+            st.markdown(
+                """
+                ### How to use this page
+
+                1. Select a **target app** and **dataset** in the sidebar.
+                2. Choose the **modality** that matches the dataset.
+                3. Optionally limit the number of items processed.
+                4. Click **▶ Run Comparison**.
+
+                For each item the page will show:
+                - **Input** image or text with its annotated privacy labels
+                - **Raw app output** and **externalized channel results**
+                - A **heatmap** comparing attribute presence across all three stages
+                - An **aggregated chart** across all items (positive rate per attribute)
+                """
+            )
 
     # ── Process one item per rerun ────────────────────────────────────────────
     # Kept AFTER the display block so progress/results are visible before this

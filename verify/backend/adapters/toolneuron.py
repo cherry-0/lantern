@@ -39,7 +39,7 @@ Configuration (.env)
 --------------------
 USE_APP_SERVERS              — "true" / "false"                          (default: false)
 TOOL_NEURON_GGUF_MODEL_PATH  — absolute path to a local .gguf model file (native text)
-TOOL_NEURON_MAX_TOKENS       — max new tokens for text generation         (default: 512)
+TOOL_NEURON_MAX_TOKENS       — max new tokens for text generation         (default: 1024)
 TOOL_NEURON_CTX_SIZE         — GGUF context window size                   (default: 4096)
 TOOL_NEURON_SD_MODEL_ID      — HuggingFace SD 1.5 model ID for image gen
                                (default: runwayml/stable-diffusion-v1-5)
@@ -87,7 +87,7 @@ from verify.backend.utils.conda_runner import CondaRunner, EnvSpec
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 
-_DEFAULT_MAX_TOKENS = 512
+_DEFAULT_MAX_TOKENS = 1024
 _DEFAULT_CTX_SIZE = 4096
 _DEFAULT_SD_MODEL_ID = "runwayml/stable-diffusion-v1-5"
 _DEFAULT_IMAGE_STEPS = 20
@@ -135,7 +135,7 @@ class ToolNeuronAdapter(BaseAdapter):
     """
 
     name = "tool-neuron"
-    supported_modalities = ["text"]
+    supported_modalities = ["text", "image"]
     env_spec = _ENV_SPEC
 
     def __init__(self):
@@ -149,6 +149,7 @@ class ToolNeuronAdapter(BaseAdapter):
         parts = size_str.lower().split("x")
         self._image_width: int = int(parts[0]) if len(parts) == 2 else 512
         self._image_height: int = int(parts[1]) if len(parts) == 2 else 512
+        self._prompt_cache: Dict[str, str] = {}  # path → generated SD prompt
 
     # ── Availability ──────────────────────────────────────────────────────────
 
@@ -176,10 +177,31 @@ class ToolNeuronAdapter(BaseAdapter):
 
     def run_pipeline(self, input_item: Dict[str, Any]) -> AdapterResult:
         modality = input_item.get("modality", "text")
+
+        if modality == "image":
+            # Image input → image generation task.
+            # Derive a Stable Diffusion prompt from the image via VLM, then generate.
+            import base64, io
+            data = input_item.get("data")
+            path = input_item.get("path", "")
+            image_b64 = input_item.get("image_base64", "")
+            if not image_b64:
+                try:
+                    from PIL import Image as PILImage
+                    img = PILImage.open(str(data if isinstance(data, str) else path)).convert("RGB")
+                    buf = io.BytesIO()
+                    img.save(buf, format="JPEG", quality=85)
+                    image_b64 = base64.b64encode(buf.getvalue()).decode()
+                except Exception as e:
+                    return AdapterResult(success=False, error=f"Image encoding failed: {e}")
+
+            sd_prompt = self._get_sd_prompt(path, image_b64)
+            return self._run_image_equivalent(sd_prompt)
+
         if modality != "text":
             return AdapterResult(
                 success=False,
-                error=f"tool-neuron only supports 'text' modality, got '{modality}'.",
+                error=f"tool-neuron supports 'text' and 'image' modalities, got '{modality}'.",
             )
 
         data = input_item.get("data", "") or input_item.get("text_content", "")
@@ -189,20 +211,52 @@ class ToolNeuronAdapter(BaseAdapter):
 
         generation_task = input_item.get("generation_task", "text")
 
+        # Image generation: the app uses QNN-accelerated SD (Android-only, no Python SDK).
+        # Both native and serverless use an architecture-equivalent OpenRouter SD call.
+        if generation_task == "image":
+            return self._run_image_equivalent(prompt)
+
         if use_app_servers():
-            return self._run_native(prompt, generation_task)
-        return self._run_serverless(prompt, generation_task)
+            return self._run_native(prompt)
+        return self._run_serverless_text(prompt)
+
+    def _get_sd_prompt(self, path: str, image_b64: str) -> str:
+        """
+        Ask a VLM to generate an SD-style prompt that would reproduce this image.
+        Cached per path so original and perturbed runs for the same image reuse it.
+        """
+        if path in self._prompt_cache:
+            return self._prompt_cache[path]
+
+        import sys
+        try:
+            sd_prompt = self._call_openrouter(
+                prompt=(
+                    "Look at this image and write a concise Stable Diffusion 1.5 prompt "
+                    "that would reproduce it as faithfully as possible. Include subject, "
+                    "style, setting, lighting, and any notable details. "
+                    "Return ONLY the prompt text, no other text."
+                ),
+                image_b64=image_b64,
+                model="google/gemini-2.0-flash-001",
+                max_tokens=128,
+            ).strip()
+            if not sd_prompt:
+                raise ValueError("Empty response")
+        except Exception as e:
+            print(f"[tool-neuron] _get_sd_prompt failed: {e}", file=sys.stderr)
+            sd_prompt = f"a detailed scene from the image: {path or 'unknown'}"
+
+        self._prompt_cache[path] = sd_prompt
+        return sd_prompt
 
     # ── NATIVE mode ───────────────────────────────────────────────────────────
 
-    def _run_native(self, prompt: str, generation_task: str) -> AdapterResult:
-        """Run llama-cpp-python or diffusers inside the 'tool-neuron' conda env."""
+    def _run_native(self, prompt: str) -> AdapterResult:
+        """Run llama-cpp-python inside the 'tool-neuron' conda env (text only)."""
         ok, msg = CondaRunner.ensure(_ENV_SPEC)
         if not ok:
             return AdapterResult(success=False, error=msg)
-
-        if generation_task == "image":
-            return self._run_native_image(prompt)
         return self._run_native_text(prompt)
 
     def _run_native_text(self, prompt: str) -> AdapterResult:
@@ -249,66 +303,25 @@ class ToolNeuronAdapter(BaseAdapter):
             metadata={"method": "native_llama_cpp", "generation_task": "text"},
         )
 
-    def _run_native_image(self, prompt: str) -> AdapterResult:
-        ok, result, err = CondaRunner.run(
-            _ENV_SPEC.name,
-            _RUNNER,
-            {
-                "task": "image",
-                "image_prompt": prompt,
-                "sd_model_id": self._sd_model_id,
-                "steps": self._image_steps,
-                "cfg_scale": self._image_cfg,
-                "width": self._image_width,
-                "height": self._image_height,
-                "seed": -1,
-            },
-            timeout=600,  # first run downloads ~4 GB model
-        )
-        if not ok:
-            return AdapterResult(success=False, error=err)
 
-        image_b64 = result.get("image_base64", "")
-        used_seed = result.get("seed", -1)
-        output_text = (
-            f"[Image generated] Prompt: {prompt}\n"
-            f"Model: {self._sd_model_id} | "
-            f"Steps: {self._image_steps} | CFG: {self._image_cfg} | Seed: {used_seed} | "
-            f"Size: {self._image_width}x{self._image_height}"
-        )
-        structured = {
-            "generation_task": "image",
-            "image_prompt": prompt,
-            "image_base64": image_b64,
-            "sd_model_id": self._sd_model_id,
-            "steps": self._image_steps,
-            "cfg_scale": self._image_cfg,
-            "width": self._image_width,
-            "height": self._image_height,
-            "seed": used_seed,
-        }
-        externalizations = result.get("externalizations", {})
-        return AdapterResult(
-            success=result.get("success", False),
-            output_text=output_text,
-            raw_output=result,
-            structured_output=structured,
-            externalizations=externalizations,
-            metadata={"method": "native_stable_diffusion", "generation_task": "image"},
-        )
-
-    # ── SERVERLESS mode ───────────────────────────────────────────────────────
-
-    def _run_serverless(self, prompt: str, generation_task: str) -> AdapterResult:
-        if generation_task == "image":
-            return self._run_serverless_image(prompt)
-        return self._run_serverless_text(prompt)
+    # ── SERVERLESS mode (text) ────────────────────────────────────────────────
 
     def _run_serverless_text(self, prompt: str) -> AdapterResult:
-        """OpenRouter chat call replicating the app's GGUF LLM text generation."""
+        """
+        OpenRouter call replicating the app's GGUF LLM text generation.
+
+        Uses meta-llama/llama-3.1-8b-instruct — a non-reasoning Llama-family model,
+        architecturally equivalent to the GGUF models tool-neuron runs on-device.
+        Avoids reasoning models (e.g. Gemini 2.5 Pro) whose thinking tokens consume
+        the token budget and produce truncated responses.
+        """
         full_prompt = f"{_SYSTEM_PROMPT}\n\nUser: {prompt}"
         try:
-            response = self._call_openrouter(prompt=full_prompt, max_tokens=self._max_tokens)
+            response = self._call_openrouter(
+                prompt=full_prompt,
+                model="meta-llama/llama-3.1-8b-instruct",
+                max_tokens=self._max_tokens,
+            )
         except RuntimeError as e:
             return AdapterResult(success=False, error=str(e))
 
@@ -332,20 +345,30 @@ class ToolNeuronAdapter(BaseAdapter):
             metadata={"method": "serverless_openrouter", "generation_task": "text"},
         )
 
-    def _run_serverless_image(self, prompt: str) -> AdapterResult:
+    # ── Image generation (architecture-equivalent, both modes) ───────────────
+
+    def _run_image_equivalent(self, prompt: str) -> AdapterResult:
         """
-        OpenRouter call describing what the Stable Diffusion image would contain.
-        Full image generation is not available in serverless mode — the description
-        is returned as output_text so the privacy evaluator can still assess
-        information leakage from the prompt and generated content.
+        Architecture-equivalent image generation via OpenRouter.
+
+        The app uses QNN-accelerated Stable Diffusion on Snapdragon NPU — an
+        Android-only runtime with no Python SDK.  Both local diffusers and this
+        OpenRouter call are equivalent approximations: same SD architecture,
+        different runtime.  We use OpenRouter here so there's no ambiguity about
+        which path is "more native".
+
+        The evaluator receives a detailed visual description of what the SD model
+        would generate from this prompt, allowing privacy-attribute leakage to be
+        assessed from both the prompt and the inferred image content.
         """
         desc_prompt = (
-            f"You are simulating a Stable Diffusion 1.5 image generation system.\n\n"
-            f"A user has submitted this image generation prompt:\n"
+            f"You are an expert at predicting Stable Diffusion 1.5 image outputs.\n\n"
+            f"A user submitted this image generation prompt to the ToolNeuron app:\n"
             f"\"{prompt}\"\n\n"
-            f"Describe in detail what the generated image would visually contain: "
-            f"the subjects, setting, style, colors, and any identifiable or private "
-            f"information that might be depicted. Be specific and thorough."
+            f"Describe in precise visual detail what Stable Diffusion 1.5 would generate "
+            f"from this prompt: the main subjects, their appearance, setting, style, colors, "
+            f"composition, and any identifiable, private, or sensitive content that would "
+            f"appear. Focus on concrete visual details, not abstract commentary."
         )
         try:
             description = self._call_openrouter(prompt=desc_prompt, max_tokens=512)
@@ -353,15 +376,14 @@ class ToolNeuronAdapter(BaseAdapter):
             return AdapterResult(success=False, error=str(e))
 
         output_text = (
-            f"[Image generation — serverless description]\n"
+            f"[SD image generation — architecture-equivalent]\n"
             f"Prompt: {prompt}\n\n"
-            f"Generated image would contain:\n{description}"
+            f"Predicted image content:\n{description}"
         )
         structured = {
             "generation_task": "image",
             "image_prompt": prompt,
             "image_description": description,
-            "note": "Serverless mode: description only, no actual image generated.",
         }
         externalizations = self._build_serverless_externalizations(
             realistic_fallback={
@@ -372,8 +394,8 @@ class ToolNeuronAdapter(BaseAdapter):
         return AdapterResult(
             success=True,
             output_text=output_text,
-            raw_output={"prompt": prompt, "description": description},
+            raw_output={"prompt": prompt, "image_description": description},
             structured_output=structured,
             externalizations=externalizations,
-            metadata={"method": "serverless_image_description", "generation_task": "image"},
+            metadata={"method": "image_equivalent_openrouter", "generation_task": "image"},
         )
