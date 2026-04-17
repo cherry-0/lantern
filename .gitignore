@@ -41,3 +41,6 @@ paper/
 paper/**/build/
 paper/**/*.pdf
 
+
+# pycache
+**/__pycache__
