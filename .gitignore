@@ -10,6 +10,32 @@ verify/outputs/*
 # datasets
 verify/backend/datasets/HR-VISPR/
 verify/backend/datasets/VISPR/
+verify/backend/datasets/SROIE2019/
+verify/backend/datasets/SynthPAI/
 
 # perturbation method sources
 verify/backend/perturbation_method/Imago_Obscura/src/
+
+
+#.DS_Store
+**/.DS_Store
+
+
+#.env
+**/.env
+
+#sqlite3
+**/*.sqlite3
+
+#cache
+**/cache/*
+
+#service account
+**/service_account.json
+
+#paper
+paper/
+
+#reference
+reference/
+
