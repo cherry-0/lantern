@@ -34,11 +34,8 @@ def _display_image(b64_str: str | None, data=None, caption: str = ""):
     try:
         if b64_str:
             import base64
-            from PIL import Image as PILImage
-            import io
             img_data = base64.b64decode(b64_str)
-            img = PILImage.open(io.BytesIO(img_data))
-            st.image(img, caption=caption, width="stretch")
+            st.image(img_data, caption=caption, width="stretch")
         elif data is not None:
             st.image(data, caption=caption, width="stretch")
         else:

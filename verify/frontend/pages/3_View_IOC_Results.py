@@ -45,10 +45,8 @@ STAGE_COLORS = {
 def _display_image(b64_str: str | None, caption: str = ""):
     try:
         if b64_str:
-            import base64, io
-            from PIL import Image as PILImage
-            img = PILImage.open(io.BytesIO(base64.b64decode(b64_str)))
-            st.image(img, caption=caption, width="stretch")
+            import base64
+            st.image(base64.b64decode(b64_str), caption=caption, width="stretch")
         else:
             st.info("Image not available in cache.")
     except Exception as e:

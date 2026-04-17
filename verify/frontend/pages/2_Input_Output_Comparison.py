@@ -295,10 +295,8 @@ def run_comparison_pipeline(
 def _display_image(b64_str: str | None, data=None):
     try:
         if b64_str:
-            import base64, io
-            from PIL import Image as PILImage
-            img = PILImage.open(io.BytesIO(base64.b64decode(b64_str)))
-            st.image(img, width="stretch")
+            import base64
+            st.image(base64.b64decode(b64_str), width="stretch")
         elif data is not None:
             st.image(data, width="stretch")
         else:
