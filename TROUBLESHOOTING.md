@@ -439,3 +439,77 @@ When fixing a runner bug, always check the corresponding server variant:
 `*_runner.py` is used for CondaRunner subprocess mode (`USE_APP_SERVERS=false`-style scripted runs).
 `*_server.py` is used when `USE_APP_SERVERS=true` (long-lived FastAPI server started per adapter).
 Both must behave identically.
+
+---
+
+## 21. Changing `EVAL_MODEL` does not re-evaluate cached results
+
+**Symptom**: Edited `EVAL_MODEL` in `evaluator.py`, re-ran `run_batch.py`, but all `ext_eval` scores are
+unchanged and match the old model's output.
+
+**Root cause**: The cache key is a SHA-256 hash of `{app, dataset, modality, attributes, perturbation_method}`.
+The evaluation model is **not** part of the key (`evaluation_method` parameter in `_make_cache_key` defaults to
+`"openrouter"` and is never varied).  On a cache hit, the full saved item — including the old `ext_eval` dict —
+is loaded and returned verbatim; `evaluate_inferability` is never called.
+
+Relevant code: `verify/backend/utils/cache.py:15–33`, `verify/run_batch.py:477–483`.
+
+**Fix**: Use the standalone re-eval script instead of re-running the full pipeline:
+
+```bash
+# Label existing results with the default model name (no API calls — run once)
+python verify/reeval.py --init
+
+# Re-evaluate all cached results with a different model
+python verify/reeval.py --model google/gemini-2.5-pro
+
+# Re-evaluate specific app/dataset only
+python verify/reeval.py --model google/gemini-2.5-pro --app deeptutor --dataset PrivacyLens
+
+# Re-evaluate specific output directories (e.g. from the Streamlit UI)
+python verify/reeval.py --model google/gemini-2.5-pro --dir verify/outputs/cache_abc123
+```
+
+The script reads `ext_text` and `output_eval` keys from each cached item, calls `evaluate_inferability`
+with the new model, and writes back `ext_eval / eval_model / ext_eval_stale=False`.  A Streamlit UI
+for instance-wise re-evaluation is available at **page 6 (Re-evaluate)**.
+
+---
+
+## 22. Cached items have no record of which model produced `ext_eval`
+
+**Symptom**: Items have `ext_eval` scores but no `eval_model` field — impossible to tell which model
+generated them or whether results are comparable across runs.
+
+**Root cause**: The original pipeline did not stamp provenance on evaluation results.
+
+**Fix**: Run `--init` once to back-fill provenance labels on all existing items (no API calls):
+
+```bash
+python verify/reeval.py --init          # stamps eval_model = EVAL_MODEL on all qualifying items
+python verify/reeval.py --init --dry-run  # preview how many would be labeled
+```
+
+`eval_model` is also written to each directory's `dir_summary.json` and shown in the
+**Re-evaluate** Streamlit page (`6_Reeval.py`) so you can see at a glance which model each
+output directory was evaluated with.
+
+Items that already have `eval_model` set are skipped by `--init` (idempotent).
+
+---
+
+## 23. `evaluate_inferability` used `EVAL_MODEL` globally — no per-call model override
+
+**Symptom**: All evaluation calls use the same model regardless of what you pass; no way to evaluate
+a single item with a different model without changing the module-level constant.
+
+**Root cause**: The original `evaluate_inferability(output_text, attributes)` signature had no `model`
+parameter; it hardcoded `"model": EVAL_MODEL` in the API request body.
+
+**Fix**: `model: str = EVAL_MODEL` parameter added to both `evaluate_inferability` and `evaluate_both`
+in `verify/backend/evaluation_method/evaluator.py`.  The default is unchanged, so all existing callers
+(`run_batch.py`, `patch_ext_ui.py`) are unaffected.  New callers can pass any OpenRouter model ID:
+
+```python
+ok, result, err = evaluate_inferability(ext_text, attrs, model="google/gemini-2.5-pro")
+```

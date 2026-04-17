@@ -179,6 +179,7 @@ def evaluate_inferability(
     output_text: str,
     attributes: List[str],
     api_key: Optional[str] = None,
+    model: str = EVAL_MODEL,
 ) -> Tuple[bool, Dict[str, Any], Optional[str]]:
     """
     Evaluate whether privacy attributes are inferable from the given output text.
@@ -224,7 +225,7 @@ def evaluate_inferability(
                     "X-Title": "Verify",
                 },
                 json={
-                    "model": EVAL_MODEL,
+                    "model": model,
                     "messages": [
                         {"role": "system", "content": EVAL_SYSTEM_PROMPT},
                         {"role": "user", "content": prompt},
@@ -281,6 +282,7 @@ def evaluate_both(
     original_output: str,
     perturbed_output: str,
     attributes: List[str],
+    model: str = EVAL_MODEL,
 ) -> Dict[str, Any]:
     """
     Evaluate inferability from both original and perturbed outputs.
@@ -296,8 +298,8 @@ def evaluate_both(
         }
     """
     with ThreadPoolExecutor(max_workers=2) as _pool:
-        _orig_fut = _pool.submit(evaluate_inferability, original_output, attributes)
-        _pert_fut = _pool.submit(evaluate_inferability, perturbed_output, attributes)
+        _orig_fut = _pool.submit(evaluate_inferability, original_output, attributes, None, model)
+        _pert_fut = _pool.submit(evaluate_inferability, perturbed_output, attributes, None, model)
         orig_ok, orig_results, orig_err = _orig_fut.result()
         pert_ok, pert_results, pert_err = _pert_fut.result()
 

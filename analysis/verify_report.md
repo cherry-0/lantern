@@ -778,3 +778,175 @@ We use `CondaRunner` to execute the app's *actual* start command (e.g., `python 
 The **HTTP API Wrapper** is the clear winner for the `verify` framework's future optimization. 
 
 The native server approach completely breaks the `_runtime_capture` system, which is the entire point of the Verify app (to track externalizations). The wrapper approach solves the performance bottleneck (by keeping the model in memory) while preserving our ability to perfectly instrument the process from the inside.
+
+---
+
+## 8. Model Configuration Reference
+
+This section documents the model used at every stage of the Verify pipeline: per-app inference, perturbation, inferability evaluation, and input label generation, along with where each can be changed.
+
+### 8.1 App Inference (NATIVE mode)
+
+Each app runs its own model stack when executed in NATIVE mode via `CondaRunner`.
+
+| App | Modality | Model / Backend | API / Runtime | Configure via |
+|---|---|---|---|---|
+| `deeptutor` | text | `google/gemini-2.5-pro` (default) | OpenRouter | `OPENROUTER_DEFAULT_MODEL` in `verify/backend/adapters/base.py:13` |
+| `xend` | text | `google/gemini-2.5-pro` (default) | OpenRouter (LangGraph chain) | `OPENROUTER_DEFAULT_MODEL` in `verify/backend/adapters/base.py:13` |
+| `llm-vtuber` | text | `google/gemini-2.5-pro` (default) | OpenRouter | `OPENROUTER_DEFAULT_MODEL` in `verify/backend/adapters/base.py:13` |
+| `snapdo` | image | `google/gemini-2.5-pro` (default) | OpenRouter VLM | `OPENROUTER_DEFAULT_MODEL` in `verify/backend/adapters/base.py:13` |
+| `budget-lens` | image | `google/gemini-2.5-pro` (default) | OpenRouter VLM | `OPENROUTER_DEFAULT_MODEL` in `verify/backend/adapters/base.py:13` |
+| `chat-driven-expense-tracker` | text | `llama3-8b-8192` | Groq API | hardcoded in `verify/backend/adapters/chatexpensetracker.py` |
+| `google-ai-edge-gallery` | image | `Qwen/Qwen2-VL-2B-Instruct` (default) | local HuggingFace (transformers) | `GOOGLE_AI_EDGE_MODEL_ID` env var; defaults in `verify/backend/runners/googleaiedge_runner.py:32` |
+| `google-ai-edge-gallery` | text | `Qwen/Qwen2.5-1.5B-Instruct` (default) | local HuggingFace (transformers) | `GOOGLE_AI_EDGE_MODEL_ID` env var; defaults in `verify/backend/runners/googleaiedge_runner.py:33` |
+| `tool-neuron` | text | user-supplied GGUF file | llama-cpp-python, Metal GPU offload | `TOOL_NEURON_GGUF_MODEL_PATH` env var (required) |
+| `tool-neuron` | image | Stable Diffusion 1.5 (default) | diffusers (local) | `TOOL_NEURON_SD_MODEL_ID` env var; default in `verify/backend/adapters/toolneuron.py:92` |
+| `momentag` | image | CLIP + BLIP | local (PyTorch) | hardcoded in `verify/backend/runners/momentag_runner.py` |
+| `clone` | image/video | CLIP + BLIP (local) or `google/gemini-2.5-pro` (serverless) | local / OpenRouter | `OPENROUTER_DEFAULT_MODEL` in `verify/backend/adapters/base.py:13` (serverless path) |
+| `skin-disease-detection` | image | TFLite classifiers | local | `.tflite` model paths in `verify/backend/adapters/skindisease.py:39-41` |
+
+> **OpenRouter default**: `OPENROUTER_DEFAULT_MODEL = "google/gemini-2.5-pro"` is defined once in `verify/backend/adapters/base.py:13` and imported by every OpenRouter-backed adapter.  Changing it there updates all affected apps simultaneously.
+
+### 8.2 App Inference (SERVERLESS mode)
+
+When an app is run in SERVERLESS mode, the adapter's `BaseAdapter._call_openrouter()` method is used directly, bypassing the native app pipeline.
+
+| Parameter | Value | Configure via |
+|---|---|---|
+| Model | `google/gemini-2.5-pro` | `OPENROUTER_DEFAULT_MODEL` in `verify/backend/adapters/base.py:13` |
+| API | OpenRouter (`https://openrouter.ai/api/v1`) | `_OPENROUTER_BASE` in `verify/backend/adapters/base.py` |
+| Max tokens | 1024 | `max_tokens` kwarg in `_call_openrouter()` (`base.py`) |
+| Timeout | 60 s | `timeout` kwarg in `_call_openrouter()` (`base.py`) |
+| Image support | base64-encoded inline | handled automatically by `_call_openrouter()` |
+
+### 8.3 Perturbation Methods
+
+| Method | Modality | Model / Tool | Configure via |
+|---|---|---|---|
+| `PrivacyLens-Prompt` | text | `google/gemini-2.0-flash-001` | hardcoded `model` variable in `verify/backend/perturbation_method/PrivacyLens-Prompt/main.py` |
+| `Imago_Obscura` | image | Stable Diffusion (ComfyUI) | ComfyUI model selection / workflow JSON; no Python-level constant |
+| `Simple_Blur` | image | none (PIL only) | blur radius in `verify/backend/perturbation_method/Simple_Blur/main.py` |
+
+### 8.4 Inferability Evaluation
+
+Evaluates whether private attributes can be inferred from an app's externalization channels (UI, NETWORK, STORAGE, etc.).
+
+| Parameter | Value | Configure via |
+|---|---|---|
+| Model | `google/gemini-2.0-flash-001` | `EVAL_MODEL` constant in `verify/backend/evaluation_method/evaluator.py:21` |
+| API | OpenRouter | `_OPENROUTER_BASE` in `evaluator.py` |
+| Max tokens | 4096 | `max_tokens` in `evaluator.py` |
+| Response format | `{"type": "json_object"}` | hardcoded in `evaluator.py` |
+| Retries | 5 | `_MAX_RETRIES` in `evaluator.py` |
+| Scoring | per-attribute `{inferable, score, reasoning}` | prompt template in `evaluator.py` |
+
+### 8.5 Input Label Generation
+
+Attribute labels used as the evaluation target are extracted deterministically from dataset annotations — no model is involved at this step.
+
+| Dataset | Label source |
+|---|---|
+| `HR-VISPR` | VISPR attribute annotations (image-level private attribute labels) |
+| `VISPR` | VISPR annotations |
+| `PrivacyLens` | PrivacyLens context/attribute annotations |
+| `SynthPAI` | SynthPAI synthetic profile attributes |
+| `SROIE2019` | Receipt field annotations (merchant, total, date, …) |
+
+### 8.6 Summary Table
+
+| Pipeline step | Model | Provider | Configure via |
+|---|---|---|---|
+| App inference — most text/image apps (NATIVE) | `google/gemini-2.5-pro` | OpenRouter | `OPENROUTER_DEFAULT_MODEL` in `adapters/base.py:13` |
+| App inference — all apps (SERVERLESS) | `google/gemini-2.5-pro` | OpenRouter | `OPENROUTER_DEFAULT_MODEL` in `adapters/base.py:13` |
+| App inference — `chat-driven-expense-tracker` | `llama3-8b-8192` | Groq | hardcoded in `adapters/chatexpensetracker.py` |
+| App inference — `google-ai-edge-gallery` image | `Qwen2-VL-2B-Instruct` | local HuggingFace | `GOOGLE_AI_EDGE_MODEL_ID` env var |
+| App inference — `google-ai-edge-gallery` text | `Qwen2.5-1.5B-Instruct` | local HuggingFace | `GOOGLE_AI_EDGE_MODEL_ID` env var |
+| App inference — `tool-neuron` text | user GGUF | llama-cpp-python (local) | `TOOL_NEURON_GGUF_MODEL_PATH` env var |
+| App inference — `tool-neuron` image | Stable Diffusion 1.5 | diffusers (local) | `TOOL_NEURON_SD_MODEL_ID` env var |
+| App inference — `momentag`, `clone` (native) | CLIP + BLIP | local PyTorch | hardcoded in respective runner files |
+| Perturbation — `PrivacyLens-Prompt` | `google/gemini-2.0-flash-001` | OpenRouter | `model` var in `PrivacyLens-Prompt/main.py` |
+| Perturbation — `Imago_Obscura` | Stable Diffusion | ComfyUI (local) | ComfyUI workflow model selection |
+| Perturbation — `Simple_Blur` | none | PIL | n/a |
+| Inferability evaluation | `google/gemini-2.0-flash-001` | OpenRouter | `EVAL_MODEL` in `evaluator.py:21` |
+| Input label generation | none (deterministic) | — | dataset annotation files |
+
+---
+
+## 9. Re-evaluation with a Different Model
+
+The inferability evaluation step can be re-run on already-cached results without re-executing any target app.
+
+### 9.1 Why the pipeline cannot do this automatically
+
+The cache key (`verify/backend/utils/cache.py:_make_cache_key`) hashes `{app, dataset, modality, attributes, perturbation_method}`.  The evaluation model is deliberately excluded from the key so that the same cache directory is used regardless of which model scores the results.  As a consequence, on a cache hit `run_batch.py` returns the entire saved item — including existing `ext_eval` scores — without calling `evaluate_inferability` at all.  Changing `EVAL_MODEL` and re-running the pipeline produces no change.
+
+### 9.2 `evaluate_inferability` model parameter
+
+`evaluate_inferability` (and `evaluate_both`) now accept an optional `model` parameter:
+
+```python
+# verify/backend/evaluation_method/evaluator.py
+def evaluate_inferability(
+    output_text: str,
+    attributes: List[str],
+    api_key: Optional[str] = None,
+    model: str = EVAL_MODEL,          # ← new; defaults to EVAL_MODEL constant
+) -> Tuple[bool, Dict[str, Any], Optional[str]]: ...
+```
+
+The default is `EVAL_MODEL = "google/gemini-2.0-flash-001"`, so all existing callers
+(`run_batch.py`, `patch_ext_ui.py`) are unaffected.
+
+### 9.3 `verify/reeval.py` — standalone re-eval script
+
+`reeval.py` operates entirely on cached output JSON files.  It never re-executes target apps or
+perturbation methods.
+
+#### Two modes
+
+| Mode | Flag | API calls | What it does |
+|---|---|---|---|
+| Init | `--init` | none | Stamps `eval_model = EVAL_MODEL` on items that have `ext_eval` but no provenance label |
+| Re-eval | `--model MODEL` | yes — one per item | Re-scores every successful item with MODEL; writes back `ext_eval`, `eval_model`, sets `ext_eval_stale = False` |
+
+#### Data written per item
+
+```json
+{
+  "ext_eval":       { "location": {"inferable": true, "score": 1, "reasoning": "..."}, ... },
+  "ext_eval_ok":    true,
+  "ext_eval_error": null,
+  "eval_model":     "google/gemini-2.5-pro",
+  "ext_eval_stale": false
+}
+```
+
+`dir_summary.json` is updated with `eval_model` and `last_reeval` timestamp.
+
+#### Typical workflow
+
+```bash
+# 1. Back-fill provenance on existing results (one-time, no API calls)
+python verify/reeval.py --init
+
+# 2. Re-evaluate all dirs with a more capable model
+python verify/reeval.py --model google/gemini-2.5-pro
+
+# 3. Re-evaluate a subset
+python verify/reeval.py --model google/gemini-2.5-pro --app deeptutor xend
+python verify/reeval.py --model google/gemini-2.5-pro --dataset PrivacyLens
+
+# 4. Preview without writing
+python verify/reeval.py --dry-run --model google/gemini-2.5-pro
+```
+
+Filters `--app`, `--dataset`, `--dir PATH [PATH…]` and `--workers N` (parallel API calls) are all supported.
+
+### 9.4 Streamlit UI — page 6 "Re-evaluate"
+
+`verify/frontend/pages/6_Reeval.py` wraps `reeval.py` with a point-and-click interface:
+
+- **Table** — one row per output directory; shows App, Modality, Dataset, Method, item counts, current Eval Model, Last Re-eval date.  Eval Model cell is colour-coded: green (✓) = matches active model, amber = different model, grey = not yet labeled.
+- **Initialize labels** button — runs `--init` across all unlabeled dirs; disabled once all are labeled.
+- **Re-evaluate selected** — runs `--model MODEL --dir dir1 dir2 …` for checked rows only, enabling instance-wise model comparison.
+- **Stop** button, live auto-scrolling log, model dropdown + custom-model text input, workers slider, dry-run toggle.
