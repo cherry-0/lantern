@@ -5,16 +5,24 @@ Run --init once to stamp each cached result with the model that produced
 the current ext_eval scores (no API calls — provenance labeling only).
 Then use --model MODEL to re-evaluate with any OpenRouter-compatible model.
 
+Add --prompt2 to use the MCQ prompt (prompt2.yaml) which produces a
+"prediction" field per attribute alongside inferable/score/reasoning.
+Useful for SynthPAI validation: run with --prompt2 first, then open the
+"Evaluation Validation" Streamlit page to compare predictions against
+the SynthPAI ground-truth profile.
+
 Usage:
     python verify/reeval.py --init                              # stamp defaults
     python verify/reeval.py --model google/gemini-2.5-pro       # re-eval all
     python verify/reeval.py --model MODEL --dir PATH [PATH …]   # specific dirs
     python verify/reeval.py --model MODEL --app deeptutor xend  # filter by app
     python verify/reeval.py --model MODEL --dataset PrivacyLens # filter by dataset
+    python verify/reeval.py --model MODEL --prompt2             # MCQ prompt (adds prediction field)
     python verify/reeval.py --dry-run --model MODEL             # preview only
     python verify/reeval.py --dry-run --init                    # preview init
 
 --init and --model are mutually exclusive.
+--prompt2 only applies to --model mode (ignored with --init).
 """
 from __future__ import annotations
 
@@ -40,7 +48,11 @@ DIR_SUMMARY   = "dir_summary.json"
 if str(_LANTERN_ROOT) not in sys.path:
     sys.path.insert(0, str(_LANTERN_ROOT))
 
-from verify.backend.evaluation_method.evaluator import EVAL_MODEL, evaluate_inferability
+from verify.backend.evaluation_method.evaluator import (
+    EVAL_MODEL,
+    evaluate_inferability,
+    evaluate_inferability_v2,
+)
 
 
 # ── Shared helpers ─────────────────────────────────────────────────────────────
@@ -155,9 +167,15 @@ def _process_dir_init(
 
 # ── Re-eval mode ──────────────────────────────────────────────────────────────
 
-def _reeval_one(f: Path, model: str, *, dry_run: bool) -> Tuple[str, Optional[str]]:
+def _reeval_one(
+    f: Path, model: str, *, dry_run: bool, prompt_v2: bool = False
+) -> Tuple[str, Optional[str]]:
     """
     Re-evaluate a single item with *model*.
+
+    prompt_v2=True uses evaluate_inferability_v2 (MCQ prompt), which adds a
+    "prediction" field to each attribute entry in ext_eval.
+
     Returns: (status, error_or_None)
     status: "success" | "failed" | "skipped" | "no_data" | "error"
     """
@@ -178,13 +196,15 @@ def _reeval_one(f: Path, model: str, *, dry_run: bool) -> Tuple[str, Optional[st
     if dry_run:
         return "success", None   # would evaluate
 
-    ok, ext_eval, err = evaluate_inferability(ext_text, attrs, model=model)
+    _eval_fn = evaluate_inferability_v2 if prompt_v2 else evaluate_inferability
+    ok, ext_eval, err = _eval_fn(ext_text, attrs, model=model)
 
-    item["ext_eval"]       = ext_eval
-    item["ext_eval_ok"]    = ok
-    item["ext_eval_error"] = err
-    item["eval_model"]     = model
-    item["ext_eval_stale"] = False
+    item["ext_eval"]        = ext_eval
+    item["ext_eval_ok"]     = ok
+    item["ext_eval_error"]  = err
+    item["eval_model"]      = model
+    item["eval_prompt"]     = "prompt2" if prompt_v2 else "prompt1"
+    item["ext_eval_stale"]  = False
 
     try:
         f.write_text(json.dumps(item, indent=2, default=str))
@@ -202,6 +222,7 @@ def _process_dir_reeval(
     dry_run: bool,
     verbose: bool,
     show_progress: bool,
+    prompt_v2: bool = False,
 ) -> Optional[Dict]:
     cfg = _read_cfg(d)
     if cfg is None:
@@ -221,10 +242,13 @@ def _process_dir_reeval(
     if dry_run or workers <= 1:
         it = _tqdm(files, desc=tag, unit="item", leave=False, disable=not show_progress)
         for f in it:
-            _tally(*_reeval_one(f, model, dry_run=dry_run))
+            _tally(*_reeval_one(f, model, dry_run=dry_run, prompt_v2=prompt_v2))
     else:
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            futs = {pool.submit(_reeval_one, f, model, dry_run=False): f for f in files}
+            futs = {
+                pool.submit(_reeval_one, f, model, dry_run=False, prompt_v2=prompt_v2): f
+                for f in files
+            }
             prog = _tqdm(
                 as_completed(futs), total=len(files),
                 desc=tag, unit="item", leave=False, disable=not show_progress,
@@ -236,13 +260,18 @@ def _process_dir_reeval(
         _patch_summary(d, model)
 
     if verbose:
-        mode = cfg.get("perturbation_method") or "ioc"
+        mode   = cfg.get("perturbation_method") or "ioc"
+        prompt = "prompt2" if prompt_v2 else "prompt1"
         _tqdm_write(
-            f"  [{mode:>14s}]  {tag:<45s}  "
+            f"  [{mode:>14s}]  {tag:<45s}  [{prompt}]  "
             f"success={counts['success']:3d}  failed={counts['failed']:3d}  "
             f"skipped={counts['skipped']:3d}  no_data={counts['no_data']:3d}"
         )
-    return {"dir": str(d), "app": app, "dataset": dataset, "cfg": cfg, "model": model, **counts}
+    return {
+        "dir": str(d), "app": app, "dataset": dataset,
+        "cfg": cfg, "model": model, "prompt": "prompt2" if prompt_v2 else "prompt1",
+        **counts,
+    }
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -277,6 +306,14 @@ def main() -> None:
     parser.add_argument(
         "--dataset", metavar="DATASET", nargs="+",
         help="Filter to specific dataset name(s), e.g. --dataset PrivacyLens",
+    )
+    parser.add_argument(
+        "--prompt2", action="store_true",
+        help=(
+            "Use the MCQ evaluation prompt (prompt2.yaml). "
+            "Adds a 'prediction' field to each attribute in ext_eval. "
+            "Only applies with --model; ignored with --init."
+        ),
     )
     parser.add_argument(
         "--workers", type=int, default=4,
@@ -323,7 +360,9 @@ def main() -> None:
         dirs = filtered
 
     # ── Header ────────────────────────────────────────────────────────────────
-    mode_label = "INIT" if args.init else f"REEVAL  model={args.model}"
+    prompt_v2  = bool(args.prompt2) and not args.init
+    prompt_tag = "  prompt=prompt2" if prompt_v2 else ""
+    mode_label = "INIT" if args.init else f"REEVAL  model={args.model}{prompt_tag}"
     if args.dry_run:
         mode_label = f"DRY RUN ({mode_label})"
 
@@ -354,6 +393,7 @@ def main() -> None:
                 dry_run=args.dry_run,
                 verbose=args.verbose,
                 show_progress=show_progress,
+                prompt_v2=prompt_v2,
             )
         if r is not None:
             results.append(r)

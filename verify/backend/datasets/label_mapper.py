@@ -178,44 +178,44 @@ def privacylens_to_unified(item: Dict[str, Any], unified_attrs: List[str]) -> Di
 
 # ── SynthPAI mapper ──────────────────────────────────────────────────────────
 
-def synthpai_to_unified(profile: Dict[str, Any], unified_attrs: List[str]) -> Dict[str, int]:
+# Maps SynthPAI reviews.human field name → unified attribute name.
+_SYNTHPAI_REVIEW_MAP: Dict[str, str] = {
+    "age":                 "age",
+    "sex":                 "gender",
+    "city_country":        "location",
+    "relationship_status": "marital status",
+    "occupation":          "identity",
+}
+
+
+def synthpai_to_unified(item: Dict[str, Any], unified_attrs: List[str]) -> Dict[str, int]:
     """
-    Map SynthPAI profile fields to the unified attribute list.
+    Map SynthPAI per-post human annotations to the unified attribute list.
 
-    SynthPAI provides complete ground-truth profiles for synthetic Reddit personas.
-    All profile fields are always populated (the dataset guarantees completeness).
+    Ground truth: reviews.human[field].certainty > 0  (human annotator was able
+    to infer that attribute from the specific Reddit post).
 
-    Mapping rules (conservative — only text-applicable attributes):
-        age               → age             (numeric age is present)
-        sex               → gender          (binary sex field is present)
-        city_country      → location        (current city/country is present)
-        relationship_status → marital status (relationship status is present)
-        occupation        → identity        (job/profession is a key identity attribute)
+    This is content-revealed labelling — an attribute is 1 only when a human
+    reviewer read the post and could estimate the value with non-zero certainty.
+    It is NOT the same as profile completeness (every SynthPAI profile has all
+    fields filled in, so profile-based labels are always 1, which is misleading).
 
-    Image-only biometric attributes (face, race, nudity, height, weight, …) are
-    always 0: SynthPAI items are text posts, not images.
+    Image-only biometric attributes (face, race, nudity, …) are always 0:
+    SynthPAI items are text posts, not images.
     """
     result = {attr: 0 for attr in unified_attrs}
 
-    if str(profile.get("age", "")).strip() not in ("", "None", "null"):
-        if "age" in result:
-            result["age"] = 1
+    raw    = item.get("raw") or {}
+    human  = (raw.get("reviews") or {}).get("human") or {}
 
-    if str(profile.get("sex", "")).strip() not in ("", "None", "null"):
-        if "gender" in result:
-            result["gender"] = 1
-
-    if str(profile.get("city_country", "")).strip() not in ("", "None", "null"):
-        if "location" in result:
-            result["location"] = 1
-
-    if str(profile.get("relationship_status", "")).strip() not in ("", "None", "null"):
-        if "marital status" in result:
-            result["marital status"] = 1
-
-    if str(profile.get("occupation", "")).strip() not in ("", "None", "null"):
-        if "identity" in result:
-            result["identity"] = 1
+    for review_field, attr in _SYNTHPAI_REVIEW_MAP.items():
+        if attr not in result:
+            continue
+        review    = human.get(review_field) or {}
+        estimate  = str(review.get("estimate", "") or "").strip()
+        certainty = float(review.get("certainty", 0) or 0)
+        if estimate and estimate not in ("None", "null") and certainty > 0:
+            result[attr] = 1
 
     return result
 
@@ -249,8 +249,7 @@ def get_input_labels(item: Dict[str, Any], unified_attrs: List[str]) -> Dict[str
         return sroie_to_unified(entities, unified_attrs)
 
     if label_source == "synthpai":
-        profile = item.get("synthpai_profile") or {}
-        return synthpai_to_unified(profile, unified_attrs)
+        return synthpai_to_unified(item, unified_attrs)
 
     if "seed" in item or "vignette" in item or "trajectory" in item:
         return privacylens_to_unified(item, unified_attrs)
