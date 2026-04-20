@@ -197,7 +197,9 @@ def main():
             modalities = ", ".join(adapter.supported_modalities) if adapter.supported_modalities else "—"
             python_ver = adapter.env_spec.python if adapter.env_spec else "—"
             effective_mode = st.session_state.app_modes.get(app_name, global_mode)
-            st.caption(f"Python {python_ver} · {modalities} · **{effective_mode}**")
+            from verify.backend.adapters.blackbox_base import BlackBoxAdapter
+            kind = "black-box · device required" if isinstance(adapter, BlackBoxAdapter) else f"Python {python_ver}"
+            st.caption(f"{kind} · {modalities} · **{effective_mode}**")
 
         with col_status:
             if is_running:

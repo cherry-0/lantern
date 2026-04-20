@@ -36,6 +36,9 @@ KNOWN_APPS = [
     "deeptutor", "llm-vtuber", "skin-disease-detection", "google-ai-edge-gallery",
     "tool-neuron",
     "chat-driven-expense-tracker",
+    "photomath",
+    "replika",
+    "expensify",
 ]
 
 STAGE_INPUT = "Input"
