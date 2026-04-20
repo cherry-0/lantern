@@ -25,6 +25,11 @@ verify/backend/perturbation_method/Imago_Obscura/src/
 # result files
 cache/
 
+# closed-source APK binaries (see target-apps/<name>/README.md for download metadata)
+target-apps/*/*.apk
+target-apps/*/*.apkm
+target-apps/*/_split/
+
 # databases
 **/*.sqlite3
 
