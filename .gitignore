@@ -53,3 +53,7 @@ paper/**/*.pdf
 
 # test scripts
 verify/backend/tests/
+
+
+#.omc
+.omc/
