@@ -47,32 +47,8 @@ _REVIEW_MAP: Dict[str, str] = {
 
 
 def _content_labels(result: Dict[str, Any]) -> Dict[str, int]:
-    """
-    Return binary content-revealed labels for a SynthPAI cached result.
-
-    Uses reviews.human[field].certainty > 0 instead of the stored input_labels
-    (which were set from profile completeness and are always 1 for all attributes).
-    Falls back to stored input_labels for non-SynthPAI items.
-    """
-    input_item = result.get("input_item", {})
-    if input_item.get("label_source") != "synthpai":
-        return result.get("input_labels", {})
-
-    stored   = result.get("input_labels", {})
-    derived  = {attr: 0 for attr in stored}
-    raw      = input_item.get("raw") or {}
-    human    = (raw.get("reviews") or {}).get("human") or {}
-
-    for review_field, attr in _REVIEW_MAP.items():
-        if attr not in derived:
-            continue
-        review    = human.get(review_field) or {}
-        estimate  = str(review.get("estimate", "") or "").strip()
-        certainty = float(review.get("certainty", 0) or 0)
-        if estimate and estimate not in ("None", "null") and certainty > 0:
-            derived[attr] = 1
-
-    return derived
+    """Return binary content-revealed labels from the stored input_labels."""
+    return result.get("input_labels", {})
 
 
 # ── SynthPAI profile → attribute mapping ─────────────────────────────────────
