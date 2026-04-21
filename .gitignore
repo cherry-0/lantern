@@ -49,3 +49,6 @@ paper/**/*.pdf
 
 # pycache
 **/__pycache__
+
+# tests
+verify/backend/tests/
