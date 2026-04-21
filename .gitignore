@@ -44,3 +44,13 @@ paper/**/*.pdf
 
 # pycache
 **/__pycache__
+
+
+# apps
+target-apps/**
+
+# tests
+verify/backend/tests/**
+
+# .omc
+.omc/
