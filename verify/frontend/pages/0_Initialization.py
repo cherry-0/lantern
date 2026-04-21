@@ -20,11 +20,6 @@ if str(LANTERN_ROOT) not in sys.path:
 
 import streamlit as st
 
-st.set_page_config(
-    page_title="Verify — Initialization",
-    page_icon="⚙️",
-    layout="wide",
-)
 
 _MODE_OPTIONS = ["native", "serverless"]
 _MODE_LABELS  = ["Native", "Serverless"]
@@ -172,7 +167,7 @@ def main():
     # ── "Initialize All" button ───────────────────────────────────────────────
     _, col_all = st.columns([5, 2])
     with col_all:
-        if st.button("Initialize All", width="stretch", disabled=any_running):
+        if st.button("Initialize All", use_container_width=True, disabled=any_running):
             for app_name, adapter in adapters.items():
                 existing = st.session_state._init_futures.get(app_name)
                 if existing is not None and not existing.done():
@@ -233,7 +228,7 @@ def main():
                 else "Re-initialize" if already_ready
                 else "Initialize"
             )
-            if st.button(btn_label, key=f"init_{app_name}", disabled=is_running, width="stretch"):
+            if st.button(btn_label, key=f"init_{app_name}", disabled=is_running, use_container_width=True):
                 future = st.session_state._executor.submit(adapter.initialize)
                 st.session_state._init_futures[app_name] = future
                 st.session_state._init_results.pop(app_name, None)

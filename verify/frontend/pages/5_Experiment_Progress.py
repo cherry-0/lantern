@@ -31,12 +31,6 @@ if str(LANTERN_ROOT) not in sys.path:
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(
-    page_title="Experiment Progress — Verify",
-    page_icon="📋",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
 
 _BATCH_CONFIG = VERIFY_ROOT / "batch_config.csv"
 _OUTPUTS_DIR  = VERIFY_ROOT / "outputs"

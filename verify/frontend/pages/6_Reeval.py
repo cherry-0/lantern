@@ -31,12 +31,6 @@ if str(LANTERN_ROOT) not in sys.path:
 
 import streamlit as st
 
-st.set_page_config(
-    page_title="Re-evaluate — Verify",
-    page_icon="🔬",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
 
 _REEVAL_SCRIPT = VERIFY_ROOT / "reeval.py"
 _OUTPUTS_DIR   = VERIFY_ROOT / "outputs"

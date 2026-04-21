@@ -21,12 +21,6 @@ if str(LANTERN_ROOT) not in sys.path:
 
 import streamlit as st
 
-st.set_page_config(
-    page_title="View IOC Results — Verify",
-    page_icon="🔬",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
 
 # ── Stage constants (mirrors 2_Input_Output_Comparison.py) ────────────────────
 
@@ -46,7 +40,7 @@ def _display_image(b64_str: str | None, caption: str = ""):
     try:
         if b64_str:
             import base64
-            st.image(base64.b64decode(b64_str), caption=caption, width="stretch")
+            st.image(base64.b64decode(b64_str), caption=caption, use_container_width=True)
         else:
             st.info("Image not available in cache.")
     except Exception as e:
@@ -260,7 +254,7 @@ def _render_aggregated(all_results: List[Dict[str, Any]], unified_attrs: List[st
         .properties(height=280,
                     title=f"Attribute-wise positive rate across {n} item(s)")
     )
-    st.altair_chart(chart, width="stretch")
+    st.altair_chart(chart, use_container_width=True)
     st.caption(
         "Blue = Input annotation positive rate · "
         "Red = Raw output inferability rate · "
@@ -415,7 +409,7 @@ def main():
             selected_dir = None
             selected_cfg = {}
 
-        load_clicked = st.button("📂 Load", type="primary", width="stretch",
+        load_clicked = st.button("📂 Load", type="primary", use_container_width=True,
                                  disabled=selected_dir is None)
 
     # ── Load ──────────────────────────────────────────────────────────────────

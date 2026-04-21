@@ -26,12 +26,6 @@ if str(LANTERN_ROOT) not in sys.path:
 
 import streamlit as st
 
-st.set_page_config(
-    page_title="Batch Runner — Verify",
-    page_icon="⚡",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
 
 _BATCH_SCRIPT = VERIFY_ROOT / "run_batch.py"
 _BATCH_CONFIG = VERIFY_ROOT / "batch_config.csv"

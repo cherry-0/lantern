@@ -23,17 +23,19 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-_PAGES_DIR = Path(__file__).parent / "pages"
+_init_page = st.Page("pages/0_Initialization.py",          title="Initialization",                       icon="⚙️")
 
-pg = st.navigation([
-    st.Page(str(_PAGES_DIR / "0_Initialization.py"),          title="Initialization",                      icon="⚙️"),
-    st.Page(str(_PAGES_DIR / "1_Perturb_Input.py"),           title="Perturb Input",                       icon="🔍"),
-    st.Page(str(_PAGES_DIR / "1_View_Results.py"),            title="View I-PI Comparison Results",        icon="📊"),
-    st.Page(str(_PAGES_DIR / "2_Input_Output_Comparison.py"), title="Input / Output Comparison",           icon="🔄"),
-    st.Page(str(_PAGES_DIR / "3_View_IOC_Results.py"),        title="View Input-Output Comparison Results", icon="🔬"),
-    st.Page(str(_PAGES_DIR / "4_Batch_Runner.py"),            title="Batch Runner",                        icon="⚡"),
-    st.Page(str(_PAGES_DIR / "5_Experiment_Progress.py"),     title="Experiment Progress",                 icon="📋"),
-    st.Page(str(_PAGES_DIR / "6_Reeval.py"),                  title="Re-evaluate",                         icon="🔄"),
-    st.Page(str(_PAGES_DIR / "7_Eval_Validation.py"),         title="Evaluation Validation",               icon="✅"),
-])
+pg = st.navigation(
+    [
+        _init_page,
+        st.Page("pages/1_Perturb_Input.py",           title="Perturb Input",                        icon="🔍"),
+        st.Page("pages/1_View_Results.py",            title="View I-PI Comparison Results",         icon="📊"),
+        st.Page("pages/2_Input_Output_Comparison.py", title="Input / Output Comparison",            icon="🔄"),
+        st.Page("pages/3_View_IOC_Results.py",        title="View Input-Output Comparison Results", icon="🔬"),
+        st.Page("pages/4_Batch_Runner.py",            title="Batch Runner",                         icon="⚡"),
+        st.Page("pages/5_Experiment_Progress.py",     title="Experiment Progress",                  icon="📋"),
+        st.Page("pages/6_Reeval.py",                  title="Re-evaluate",                          icon="🔄"),
+    ],
+    # default=_init_page,
+)
 pg.run()
