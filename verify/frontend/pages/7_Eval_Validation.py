@@ -27,12 +27,12 @@ if str(LANTERN_ROOT) not in sys.path:
 
 import streamlit as st
 
-st.set_page_config(
-    page_title="Evaluation Validation — Verify",
-    page_icon="🎯",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+# st.set_page_config(
+#     page_title="Evaluation Validation — Verify",
+#     page_icon="🎯",
+#     layout="wide",
+#     initial_sidebar_state="expanded",
+# )
 
 # ── SynthPAI content-label helper ────────────────────────────────────────────
 
@@ -508,8 +508,8 @@ def _aggregate_section(items: List[Dict[str, Any]], unified_attrs: List[str]):
                 .properties(height=220, title="Precision / Recall / F1 per attribute")
             )
 
-            st.altair_chart(bar,   width="stretch")
-            st.altair_chart(lines, width="stretch")
+            st.altair_chart(bar,   use_container_width=True)
+            st.altair_chart(lines, use_container_width=True)
             st.caption(
                 "Stacked bar: **green** = TP · **red** = FP · **amber** = FN · **blue-grey** = TN  |  "
                 "Lines: **blue** = Precision · **orange** = Recall · **green** = F1  |  "
@@ -642,7 +642,7 @@ def main():
         selected_label = st.selectbox("Pick a run", list(options.keys()))
         selected_path  = options[selected_label]
 
-        load_btn = st.button("📂 Load", type="primary", width="stretch")
+        load_btn = st.button("📂 Load", type="primary", use_container_width=True)
 
         st.divider()
         st.caption(
