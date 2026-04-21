@@ -201,3 +201,39 @@ def ensure_outputs_dir() -> Path:
     """Ensure the outputs directory exists and return its path."""
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
     return OUTPUTS_DIR
+
+
+# ── Local model inference ─────────────────────────────────────────────────────
+
+def is_infer_local() -> bool:
+    """Return True when INFER_LOCAL=true — route LLM calls to local Ollama instead of OpenRouter."""
+    val = get_env("INFER_LOCAL", "false") or "false"
+    return val.strip().lower() in ("1", "true", "yes")
+
+
+def get_local_model_url() -> Optional[str]:
+    """Return LOCAL_MODEL_URL (Ollama base URL), or None to use the default."""
+    return get_env("LOCAL_MODEL_URL")
+
+
+def get_perturbation_text_model() -> Optional[str]:
+    """Return PERTURBATION_TEXT_MODEL override, or None to use auto-select."""
+    return get_env("PERTURBATION_TEXT_MODEL")
+
+
+def get_perturbation_vision_model() -> Optional[str]:
+    """Return PERTURBATION_VISION_MODEL override, or None to use auto-select."""
+    return get_env("PERTURBATION_VISION_MODEL")
+
+
+def get_eval_model_override() -> Optional[str]:
+    """Return EVAL_MODEL override, or None to use the evaluator default."""
+    return get_env("EVAL_MODEL")
+
+
+def get_eval_timeout() -> int:
+    """Return evaluation HTTP timeout in seconds. Defaults to 300s local, 60s OpenRouter."""
+    val = get_env("EVAL_TIMEOUT")
+    if val and val.strip().isdigit():
+        return int(val.strip())
+    return 300 if is_infer_local() else 60

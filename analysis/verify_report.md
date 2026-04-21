@@ -950,3 +950,298 @@ Filters `--app`, `--dataset`, `--dir PATH [PATH…]` and `--workers N` (parallel
 - **Initialize labels** button — runs `--init` across all unlabeled dirs; disabled once all are labeled.
 - **Re-evaluate selected** — runs `--model MODEL --dir dir1 dir2 …` for checked rows only, enabling instance-wise model comparison.
 - **Stop** button, live auto-scrolling log, model dropdown + custom-model text input, workers slider, dry-run toggle.
+
+---
+
+## 10. How to Use the Verify Pipeline
+
+This section covers everything needed to run the pipeline from scratch — prerequisites, configuration, the Streamlit UI workflow, and the CLI batch runner.
+
+---
+
+### 10.1 Prerequisites
+
+**Python environment** (for the verify pipeline itself — target-app envs are created automatically):
+
+```bash
+# From repo root
+pip install streamlit requests PyYAML Pillow
+```
+
+**conda or mamba** — required for native app execution (serverless mode needs only the above):
+
+```bash
+# Check conda is on PATH
+conda --version
+# or
+mamba --version
+```
+
+**API keys** — at least one of:
+
+| Key | When required |
+|---|---|
+| `OPENROUTER_API_KEY` | `INFER_LOCAL=false` (default) — covers perturbation, evaluation, and serverless app inference |
+| Ollama running locally | `INFER_LOCAL=true` — no API key needed |
+
+---
+
+### 10.2 Environment configuration
+
+Create (or edit) `.env` at the repo root:
+
+```dotenv
+# ── Required for OpenRouter path (default) ────────────────────────────────────
+OPENROUTER_API_KEY=sk-or-...
+
+# ── Execution mode ────────────────────────────────────────────────────────────
+# true  → run target apps natively via conda subprocesses
+# false → call OpenRouter to replicate app output (no app servers needed)
+USE_APP_SERVERS=false
+
+# ── Local model inference (optional) ─────────────────────────────────────────
+# INFER_LOCAL=true
+# LOCAL_MODEL_NAME=gemma4:26b
+
+# ── Debug mode ────────────────────────────────────────────────────────────────
+# DEBUG=true   # returns "example output" instead of realistic serverless strings
+```
+
+Minimum working config for a first run (serverless, OpenRouter):
+
+```dotenv
+OPENROUTER_API_KEY=sk-or-...
+USE_APP_SERVERS=false
+```
+
+---
+
+### 10.3 Dataset placement
+
+Datasets live under `verify/backend/datasets/<dataset_name>/`. The expected layouts:
+
+| Dataset | Place files at |
+|---|---|
+| `VISPR` / `HR-VISPR` | `datasets/VISPR/` or `datasets/HR-VISPR/` — JPEG images + PKL/JSON annotations |
+| `PrivacyLens` | `datasets/PrivacyLens/` — HuggingFace `dataset_dict.json` + Arrow files |
+| `SynthPAI` | `datasets/SynthPAI/` — HuggingFace `dataset_dict.json` + Arrow files |
+| `SROIE2019` | `datasets/SROIE2019/` — `{split}/img/*.jpg` + `{split}/entities/*.txt` |
+
+The pipeline auto-detects format from directory structure; no manual registration needed.
+
+---
+
+### 10.4 Running the Streamlit UI
+
+```bash
+# From repo root
+streamlit run verify/frontend/app.py
+```
+
+Opens at `http://localhost:8501`. The sidebar lists 8 pages in workflow order:
+
+---
+
+#### Page 0 — Initialization ⚙️
+
+**Purpose:** check adapter availability and set up conda environments for native mode.
+
+1. Table shows all registered target apps with their conda env status (`ready` / `pending` / `unavail`).
+2. For each app you plan to run natively, click **Set Up** — this creates the conda env and installs dependencies (one-time, may take 1–5 min per app).
+3. Use the **Native / Serverless** toggle per app to override the global `USE_APP_SERVERS` setting for that session.
+
+> Skip this page entirely if using serverless mode (`USE_APP_SERVERS=false`) — no conda setup needed.
+
+---
+
+#### Page 1 — Perturb Input 🔍
+
+**Purpose:** run a single dataset item through the full pipeline interactively.
+
+1. Select **App**, **Dataset**, **Modality**, and **Privacy Attributes** to evaluate.
+2. Browse dataset items with the item selector; preview the input image or text.
+3. Click **Run Pipeline** — executes:
+   - Original input → target app → captures externalizations
+   - Perturbation (removes selected attributes from input)
+   - Perturbed input → target app → captures externalizations
+   - LLM-as-judge evaluation on both outputs
+4. Results appear side-by-side: original vs. perturbed externalizations, per-attribute inferability scores, and reasoning.
+
+---
+
+#### Page 1 — View I-PI Comparison Results 📊
+
+**Purpose:** browse saved results from the Perturb Input pipeline.
+
+- Filter by app, dataset, modality, attribute.
+- Expand any item to see original/perturbed output, externalizations, and evaluation scores.
+- Download results as JSON.
+
+---
+
+#### Page 2 — Input / Output Comparison 🔄
+
+**Purpose:** run the Input-Output Comparison (IOC) pipeline — measures how much private information leaks from input to app output, without perturbation.
+
+1. Select App, Dataset, Modality, Attributes, and number of items.
+2. Click **Run** — for each item: runs the app, evaluates whether attributes are inferable from output.
+3. Results cached to `verify/outputs/` for later viewing.
+
+---
+
+#### Page 3 — View IOC Results 🔬
+
+**Purpose:** browse saved IOC results.
+
+- Aggregate statistics: inferability rate per attribute across the dataset.
+- Per-item detail: app output text, per-attribute scores, reasoning.
+
+---
+
+#### Page 4 — Batch Runner ⚡
+
+**Purpose:** run large experiments from a CSV config without touching code.
+
+1. Upload or select a batch config CSV (format: `app, modality, dataset, perturbation_method, enabled`).
+2. Set **mode** (IOC / Perturb / Both), **workers**, **max items per run**.
+3. Click **Run Batch** — processes all enabled rows in parallel; live log streams to the page.
+4. Results land in `verify/outputs/` and are immediately viewable in the results pages.
+
+Default config: `verify/batch_config.csv` (or `batch_config_<appname>.csv`).
+
+---
+
+#### Page 5 — Experiment Progress 📋
+
+**Purpose:** monitor overall progress across all output directories.
+
+- Shows completion counts per (app, dataset, modality, method) combination.
+- Identifies which runs are still in progress or errored.
+
+---
+
+#### Page 6 — Re-evaluate 🔄
+
+**Purpose:** re-score already-cached results with a different evaluation model (no re-execution of target apps).
+
+1. Table lists all output directories with their current `eval_model` label.
+2. Select rows to re-evaluate, choose a new model from the dropdown.
+3. Click **Re-evaluate Selected** — calls `evaluate_inferability` on each cached item and writes updated scores back to the JSON files.
+
+---
+
+### 10.5 CLI batch runner
+
+For headless / server runs without the Streamlit UI:
+
+```bash
+cd verify
+
+# Run all enabled rows in batch_config.csv (both IOC + perturbation)
+python run_batch.py
+
+# IOC only, 4 parallel workers, 20 items per app
+python run_batch.py --mode ioc --workers 4 --max-items 20
+
+# Perturbation only, custom config
+python run_batch.py --mode perturb --config batch_config_photomath.csv
+
+# Dry run — print plan without executing
+python run_batch.py --dry-run
+```
+
+**Batch config CSV format** (`verify/batch_config.csv`):
+
+```csv
+app,modality,dataset,perturbation_method,enabled
+xend,text,PrivacyLens,PrivacyLens-Prompt,true
+momentag,image,HR-VISPR,Simple_Blur,true
+snapdo,image,VISPR,Simple_Blur,false
+```
+
+`enabled=false` rows are skipped. `perturbation_method` must match a directory name under `verify/backend/perturbation_method/`.
+
+---
+
+### 10.6 CLI re-evaluation
+
+```bash
+cd verify
+
+# Back-fill eval_model provenance on existing results (no API calls)
+python reeval.py --init
+
+# Re-score everything with a new model
+python reeval.py --model google/gemini-2.5-pro
+
+# Re-score a specific app + dataset
+python reeval.py --model google/gemini-2.5-pro --app xend --dataset PrivacyLens
+
+# Preview without writing
+python reeval.py --dry-run --model google/gemini-2.5-pro
+
+# Parallel API calls
+python reeval.py --model google/gemini-2.5-pro --workers 8
+```
+
+---
+
+### 10.7 Quick end-to-end example (serverless, no conda needed)
+
+```bash
+# 1. Set up .env
+echo "OPENROUTER_API_KEY=sk-or-..." > .env
+echo "USE_APP_SERVERS=false" >> .env
+
+# 2. Place a dataset (e.g. PrivacyLens HuggingFace export)
+#    verify/backend/datasets/PrivacyLens/dataset_dict.json
+#    verify/backend/datasets/PrivacyLens/train/data-00000-of-00001.arrow
+
+# 3. Launch UI
+streamlit run verify/frontend/app.py
+
+# 4. In the UI:
+#    - Page 0: skip (serverless needs no setup)
+#    - Page 1 "Perturb Input": select xend / PrivacyLens / text / [location, identity]
+#    - Browse an item → Run Pipeline
+#    - Observe inferability scores drop after perturbation
+```
+
+Or via CLI:
+
+```bash
+cd verify
+python run_batch.py --mode perturb --config batch_config.csv --workers 2 --max-items 5
+```
+
+---
+
+### 10.8 Output structure
+
+Results are written to `verify/outputs/<app>/<modality>/<dataset>/<perturbation_method>/`:
+
+```
+verify/outputs/
+  xend/
+    text/
+      PrivacyLens/
+        PrivacyLens-Prompt/
+          item_<hash>.json        ← one file per dataset item
+          dir_summary.json        ← aggregate stats for this run
+```
+
+Each `item_<hash>.json` contains:
+
+```json
+{
+  "input":            { "text_content": "...", "attributes": ["location"] },
+  "original_output":  { "output_text": "...", "externalizations": {...} },
+  "perturbed_input":  { "text_content": "...", "perturbation_applied": {...} },
+  "perturbed_output": { "output_text": "...", "externalizations": {...} },
+  "ext_eval": {
+    "original":  { "location": { "inferable": true,  "score": 1, "reasoning": "..." } },
+    "perturbed": { "location": { "inferable": false, "score": 0, "reasoning": "..." } }
+  },
+  "eval_model": "google/gemini-2.0-flash-001"
+}
+```
