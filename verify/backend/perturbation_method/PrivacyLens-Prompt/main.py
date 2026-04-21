@@ -7,22 +7,26 @@ Strategy: use OpenRouter LLM to rewrite text with selected privacy attributes
 
 from typing import Any, Dict, List, Optional, Tuple
 
+from verify.backend.utils.verbose_log import log_perturbation
+
 
 def check_availability() -> Tuple[bool, str]:
-    """Check that requests and yaml are available, and an OpenRouter API key is configured."""
+    """Check that yaml is available and credentials are configured for the active backend."""
     try:
-        import requests  # noqa: F401
-        import yaml      # noqa: F401
+        import yaml  # noqa: F401
     except ImportError:
-        return False, "requests and PyYAML libraries are required. Please install them."
+        return False, "PyYAML is required. Please install it."
 
-    from verify.backend.utils.config import get_openrouter_api_key
+    from verify.backend.utils.config import is_infer_local, get_openrouter_api_key
+
+    if is_infer_local():
+        return True, "PrivacyLens ready (local Ollama backend)."
 
     api_key = get_openrouter_api_key()
     if not api_key or api_key.startswith("your_"):
-        return False, "PrivacyLens requires a valid OPENROUTER_API_KEY in the environment."
+        return False, "PrivacyLens requires a valid OPENROUTER_API_KEY (or set INFER_LOCAL=true)."
 
-    return True, "PrivacyLens ready (OpenRouter API key found)."
+    return True, "PrivacyLens ready (OpenRouter)."
 
 
 def perturb(
@@ -45,19 +49,17 @@ def perturb(
     """
     available, reason = check_availability()
     if not available:
+        log_perturbation(method_name="PrivacyLens", filename=input_item.get("filename", "<unknown>"), attributes=attributes, ok=False, error=reason)
         return False, input_item, reason
 
-    import requests
     import copy
     import yaml
     from pathlib import Path
-    from verify.backend.utils.config import get_openrouter_api_key
 
     text_content = input_item.get("text_content", "")
     if not text_content:
+        log_perturbation(method_name="PrivacyLens", filename=input_item.get("filename", "<unknown>"), attributes=attributes, ok=False, error="No text_content found in input item.")
         return False, input_item, "No text_content found in input item."
-
-    api_key = get_openrouter_api_key()
 
     # Load prompt and attributes from YAML
     prompt_yaml_path = Path(__file__).parent / "prompt" / "prompt_privacylens.yaml"
@@ -65,6 +67,7 @@ def perturb(
         with open(prompt_yaml_path, "r", encoding="utf-8") as f:
             prompt_data = yaml.safe_load(f)
     except Exception as e:
+        log_perturbation(method_name="PrivacyLens", filename=input_item.get("filename", "<unknown>"), attributes=attributes, ok=False, error=f"Failed to load prompt from {prompt_yaml_path}: {e}")
         return False, input_item, f"Failed to load prompt from {prompt_yaml_path}: {e}"
 
     system_prompt_template = prompt_data.get("system_prompt", "")
@@ -82,26 +85,19 @@ def perturb(
         text_content=text_content
     )
 
+    from verify.backend.utils.config import get_perturbation_text_model
+    from verify.backend.utils.llm_client import call_llm
+
     try:
-        resp = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://github.com/Verify",
-                "X-Title": "Verify",
-            },
-            json={
-                "model": "google/gemini-2.0-flash-001",
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 2048,
-            },
+        perturbed_text = call_llm(
+            [{"role": "user", "content": prompt}],
+            model=get_perturbation_text_model(),
+            max_tokens=2048,
             timeout=90,
         )
-        resp.raise_for_status()
-        perturbed_text = resp.json()["choices"][0]["message"]["content"].strip()
     except Exception as e:
-        return False, input_item, f"PrivacyLens API call failed: {e}"
+        log_perturbation(method_name="PrivacyLens", filename=input_item.get("filename", "<unknown>"), attributes=attributes, ok=False, error=f"PrivacyLens call failed: {e}")
+        return False, input_item, f"PrivacyLens call failed: {e}"
 
     perturbed_item = copy.copy(input_item)
     perturbed_item["text_content"] = perturbed_text
@@ -111,4 +107,5 @@ def perturb(
         "attributes": attributes,
     }
 
+    log_perturbation(method_name="PrivacyLens", filename=input_item.get("filename", "<unknown>"), attributes=attributes, ok=True)
     return True, perturbed_item, None

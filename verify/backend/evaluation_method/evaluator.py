@@ -15,9 +15,10 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from verify.backend.utils.config import get_openrouter_api_key
+from verify.backend.utils.config import get_openrouter_api_key, get_eval_model_override, get_eval_timeout
+from verify.backend.utils.llm_client import call_llm, parse_json_response
 
-# Model to use for evaluation
+# Default model — overridden by EVAL_MODEL env var or the model= parameter
 EVAL_MODEL = "google/gemini-2.0-flash-001"
 
 # Load EVAL_SYSTEM_PROMPT from prompts/prompt1.yaml
@@ -187,7 +188,8 @@ def evaluate_inferability(
     Args:
         output_text: the target app's output (e.g. tags, explanation, email body).
         attributes: list of attribute names to evaluate.
-        api_key: optional override for OpenRouter API key.
+        api_key: unused (kept for API compatibility); key resolution is handled by llm_client.
+        model: model override; also resolved from EVAL_MODEL env var if not passed.
 
     Returns:
         (success, results_dict, error_message)
@@ -204,53 +206,31 @@ def evaluate_inferability(
     if not output_text or not output_text.strip():
         return False, {}, "Empty output text provided for evaluation."
 
-    key = api_key or get_openrouter_api_key()
-    if not key or key.startswith("your_"):
-        return False, {}, "No valid OpenRouter API key available for evaluation."
-
-    import re
-    import requests
-
+    # Resolve model: env var > caller arg > module default
+    resolved_model = get_eval_model_override() or model
+    timeout = get_eval_timeout()
     prompt = _build_eval_prompt(output_text, attributes)
+    messages = [
+        {"role": "system", "content": EVAL_SYSTEM_PROMPT},
+        {"role": "user", "content": prompt},
+    ]
     last_error: str = ""
 
     for attempt in range(5):
         try:
-            resp = requests.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {key}",
-                    "Content-Type": "application/json",
-                    "HTTP-Referer": "https://github.com/Verify",
-                    "X-Title": "Verify",
-                },
-                json={
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": EVAL_SYSTEM_PROMPT},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "max_tokens": 4096,
-                    "response_format": {"type": "json_object"},
-                },
-                timeout=60,
+            raw_content = call_llm(
+                messages,
+                model=resolved_model,
+                response_format_json=True,
+                max_tokens=4096,
+                timeout=timeout,
             )
-            resp.raise_for_status()
-            raw_content = resp.json()["choices"][0]["message"]["content"].strip()
 
-            # Strip control characters that can appear in Gemini responses
-            raw_content = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", raw_content)
-
-            # Parse JSON response
             try:
-                results = json.loads(raw_content)
-            except json.JSONDecodeError:
-                json_match = re.search(r"\{.*\}", raw_content, re.DOTALL)
-                if json_match:
-                    results = json.loads(json_match.group())
-                else:
-                    last_error = f"Could not parse JSON from evaluator response: {raw_content[:200]}"
-                    continue  # retry
+                results = parse_json_response(raw_content)
+            except ValueError as e:
+                last_error = str(e)
+                continue  # retry
 
             # Normalize results structure
             normalized: Dict[str, Any] = {}
@@ -273,7 +253,7 @@ def evaluate_inferability(
             return True, normalized, None
 
         except Exception as e:
-            last_error = f"Evaluation API call failed: {e}"
+            last_error = f"Evaluation call failed: {e}"
 
     return False, {}, last_error
 

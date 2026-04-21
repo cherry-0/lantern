@@ -12,6 +12,8 @@ import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from verify.backend.utils.verbose_log import log_perturbation
+
 # What visual elements to look for per privacy attribute
 _ATTRIBUTE_TARGETS = {
     "identity":  "human faces, name badges, ID cards, signatures, or any feature that uniquely identifies a person",
@@ -33,10 +35,13 @@ def check_availability() -> Tuple[bool, str]:
     except ImportError:
         return False, "Pillow is required. Install with: pip install Pillow"
 
-    from verify.backend.utils.config import get_openrouter_api_key
+    from verify.backend.utils.config import is_infer_local, get_openrouter_api_key
+    if is_infer_local():
+        return True, "Simple_Blur ready (local Ollama backend)."
+
     key = get_openrouter_api_key()
     if not key or key.startswith("your_"):
-        return False, "Simple_Blur requires a valid OPENROUTER_API_KEY for region detection."
+        return False, "Simple_Blur requires a valid OPENROUTER_API_KEY (or set INFER_LOCAL=true)."
 
     return True, "Simple_Blur ready."
 
@@ -48,9 +53,8 @@ def _detect_regions(image_b64: str, attributes: List[str]) -> List[Dict[str, flo
     Returns a list of dicts with keys x1, y1, x2, y2 (normalised 0.0–1.0).
     Returns [] if the call fails or no regions are found.
     """
-    import requests
-    from verify.backend.utils.config import get_openrouter_api_key
-    from verify.backend.adapters.base import OPENROUTER_DEFAULT_MODEL
+    from verify.backend.utils.config import get_perturbation_vision_model
+    from verify.backend.utils.llm_client import call_llm
 
     targets = []
     for attr in attributes:
@@ -72,30 +76,13 @@ def _detect_regions(image_b64: str, attributes: List[str]) -> List[Dict[str, flo
     )
 
     try:
-        api_key = get_openrouter_api_key()
-        resp = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://github.com/Verify",
-                "X-Title": "Verify",
-            },
-            json={
-                "model": OPENROUTER_DEFAULT_MODEL,
-                "messages": [{
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
-                    ],
-                }],
-                "max_tokens": 512,
-            },
+        raw = call_llm(
+            [{"role": "user", "content": prompt}],
+            model=get_perturbation_vision_model(),
+            image_b64=image_b64,
+            max_tokens=512,
             timeout=60,
         )
-        resp.raise_for_status()
-        raw = resp.json()["choices"][0]["message"]["content"].strip()
 
         # Extract JSON array from response (may be wrapped in markdown)
         match = re.search(r"\[.*\]", raw, re.DOTALL)
@@ -154,6 +141,7 @@ def perturb(
     """
     available, reason = check_availability()
     if not available:
+        log_perturbation(method_name="Simple_Blur", filename=input_item.get("filename", "<unknown>"), attributes=attributes, ok=False, error=reason)
         return False, input_item, reason
 
     from PIL import Image as PILImage, ImageFilter
@@ -168,10 +156,12 @@ def perturb(
 
         if data is None:
             if not path:
+                log_perturbation(method_name="Simple_Blur", filename=input_item.get("filename", "<unknown>"), attributes=attributes, ok=False, error="No image data or path in input item.")
                 return False, input_item, "No image data or path in input item."
             data = PILImage.open(str(path)).convert("RGB")
 
         if not isinstance(data, PILImage.Image):
+            log_perturbation(method_name="Simple_Blur", filename=input_item.get("filename", "<unknown>"), attributes=attributes, ok=False, error="Input data is not a PIL Image.")
             return False, input_item, "Input data is not a PIL Image."
 
         # Encode to base64 if not already available
@@ -207,7 +197,9 @@ def perturb(
             "blur_radius": BLUR_RADIUS,
         }
 
+        log_perturbation(method_name="Simple_Blur", filename=input_item.get("filename", "<unknown>"), attributes=attributes, ok=True)
         return True, perturbed_item, None
 
     except Exception as e:
+        log_perturbation(method_name="Simple_Blur", filename=input_item.get("filename", "<unknown>"), attributes=attributes, ok=False, error=f"Simple_Blur perturbation failed: {e}")
         return False, input_item, f"Simple_Blur perturbation failed: {e}"
