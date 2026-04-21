@@ -22,12 +22,6 @@ if str(LANTERN_ROOT) not in sys.path:
 
 import streamlit as st
 
-st.set_page_config(
-    page_title="Input-Output Comparison — Verify",
-    page_icon="🔬",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -299,9 +293,9 @@ def _display_image(b64_str: str | None, data=None):
     try:
         if b64_str:
             import base64
-            st.image(base64.b64decode(b64_str), width="stretch")
+            st.image(base64.b64decode(b64_str), use_container_width=True)
         elif data is not None:
-            st.image(data, width="stretch")
+            st.image(data, use_container_width=True)
         else:
             st.warning("No image available.")
     except Exception as e:
@@ -459,7 +453,7 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
                     cols = st.columns(min(len(frames), 2))
                     for c, f in zip(cols, frames[:2]):
                         with c:
-                            st.image(f, width="stretch")
+                            st.image(f, use_container_width=True)
                 else:
                     st.info("No media available.")
 
@@ -589,7 +583,7 @@ def _render_aggregated(all_results: List[Dict[str, Any]], unified_attrs: List[st
             title=f"Attribute-wise positive rate across {n} item(s)",
         )
     )
-    st.altair_chart(chart, width="stretch")
+    st.altair_chart(chart, use_container_width=True)
     st.caption(
         f"Blue = Input annotation positive rate · "
         f"Red = Raw output inferability rate · "
@@ -710,7 +704,7 @@ def main():
             "▶ Run Comparison",
             type="primary",
             disabled=not (app_available and unified_attrs),
-            width="stretch",
+            use_container_width=True,
         )
         if not app_available:
             st.caption(f"App '{selected_app}' is not available.")

@@ -21,12 +21,6 @@ if str(LANTERN_ROOT) not in sys.path:
 
 import streamlit as st
 
-st.set_page_config(
-    page_title="View Results — Verify",
-    page_icon="📂",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
 
 # ─── Helpers (mirrors app.py) ─────────────────────────────────────────────────
 
@@ -35,9 +29,9 @@ def _display_image(b64_str: str | None, data=None, caption: str = ""):
         if b64_str:
             import base64
             img_data = base64.b64decode(b64_str)
-            st.image(img_data, caption=caption, width="stretch")
+            st.image(img_data, caption=caption, use_container_width=True)
         elif data is not None:
-            st.image(data, caption=caption, width="stretch")
+            st.image(data, caption=caption, use_container_width=True)
         else:
             st.warning("No image data available.")
     except Exception as e:
@@ -56,7 +50,7 @@ def _display_frames(frames: list, caption_prefix: str = "Frame"):
     cols = st.columns(min(len(frames), 4))
     for i, (col, frame) in enumerate(zip(cols, frames)):
         with col:
-            st.image(frame, caption=f"{caption_prefix} {i+1}", width="stretch")
+            st.image(frame, caption=f"{caption_prefix} {i+1}", use_container_width=True)
 
 
 def _eval_chart(eval_results: dict, stage_label: str, key_suffix: str = ""):
@@ -101,7 +95,7 @@ def _eval_chart(eval_results: dict, stage_label: str, key_suffix: str = ""):
         )
         .properties(height=200)
     )
-    st.altair_chart(chart, width="stretch")
+    st.altair_chart(chart, use_container_width=True)
 
 
 def _find_image_path(filename: str, dataset_name: str) -> Path | None:
@@ -455,7 +449,7 @@ def _render_aggregated_chart(items: list, attributes: list):
         )
         .properties(height=250)
     )
-    st.altair_chart(chart, width="stretch")
+    st.altair_chart(chart, use_container_width=True)
     st.caption("Average inferability score across all items (lower is better after perturbation).")
 
 
@@ -572,7 +566,7 @@ def main():
         else:
             run_dir_str = ""
 
-        load_clicked = st.button("📂 Load", type="primary", width="stretch")
+        load_clicked = st.button("📂 Load", type="primary", use_container_width=True)
 
     # ── Load on button click ───────────────────────────────────────────────
     if load_clicked:
@@ -696,7 +690,7 @@ def main():
             })
         if rows:
             st.markdown("**Average inferability scores:**")
-            st.dataframe(pd.DataFrame(rows), width="stretch")
+            st.dataframe(pd.DataFrame(rows), use_container_width=True)
 
     # Download buttons
     report_dir = Path(run_dir_loaded) if run_dir_loaded else None
@@ -712,7 +706,7 @@ def main():
                     data=json_path.read_text(),
                     file_name="verify_report.json",
                     mime="application/json",
-                    width="stretch",
+                    use_container_width=True,
                 )
         with col_csv:
             csv_path = report_dir / "report.csv"
@@ -722,7 +716,7 @@ def main():
                     data=csv_path.read_text(),
                     file_name="verify_report.csv",
                     mime="text/csv",
-                    width="stretch",
+                    use_container_width=True,
                 )
 
     # ── Per-item results ───────────────────────────────────────────────────
