@@ -9,6 +9,7 @@ stage-wise view as the live Input-Output Comparison page.
 
 from __future__ import annotations
 
+import io
 import json
 import sys
 from pathlib import Path
@@ -45,6 +46,42 @@ def _display_image(b64_str: str | None, caption: str = ""):
             st.info("Image not available in cache.")
     except Exception as e:
         st.error(f"Could not display image: {e}")
+
+
+def _find_image_path(filename: str, dataset_name: str) -> Path | None:
+    """Return the filesystem path of an image in a dataset, or None."""
+    try:
+        from verify.backend.utils.config import get_dataset_path
+        dataset_path = get_dataset_path(dataset_name)
+        if dataset_path is None:
+            return None
+        _SPLITS = ["val2017", "test2017", "train2017"]
+        for split in _SPLITS:
+            p = dataset_path / split / filename
+            if p.exists():
+                return p
+        p = dataset_path / filename
+        if p.exists():
+            return p
+        return None
+    except Exception:
+        return None
+
+
+def _load_original_image(filename: str, dataset_name: str) -> str | None:
+    """Load original image from dataset and return as base64 string."""
+    try:
+        from PIL import Image as PILImage
+        img_path = _find_image_path(filename, dataset_name)
+        if img_path is None:
+            return None
+        img = PILImage.open(str(img_path)).convert("RGB")
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        import base64
+        return base64.b64encode(buf.getvalue()).decode("utf-8")
+    except Exception:
+        return None
 
 
 def _stage_table(
@@ -138,7 +175,13 @@ def _delete_item_from_cache(cache_dir: Path, filename: str) -> bool:
         return False
 
 
-def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int, cache_dir: Path | None = None):
+def _render_item(
+    result: Dict[str, Any],
+    unified_attrs: List[str],
+    idx: int,
+    cache_dir: Path | None = None,
+    dataset_name: str = "unknown",
+):
     filename    = result.get("filename", "unknown")
     status      = result.get("status", "")
     modality    = result.get("modality", "")
@@ -168,7 +211,11 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int, cac
         with col_in:
             st.markdown("**Input**")
             if modality == "image":
-                _display_image(input_item.get("image_base64"), caption=filename)
+                # Try cache first (new results), fallback to dataset (legacy)
+                image_b64 = input_item.get("image_base64")
+                if not image_b64 and dataset_name != "unknown":
+                    image_b64 = _load_original_image(filename, dataset_name)
+                _display_image(image_b64, caption=filename)
                 prompt_text = result.get("prompt_text", "").strip()
                 if prompt_text:
                     st.caption("**Prompt sent to model:**")
@@ -525,7 +572,7 @@ def main():
     )
     cache_dir_path = Path(cache_dir_str) if cache_dir_str else None
     for idx, result in enumerate(items):
-        _render_item(result, unified_attrs, idx, cache_dir_path)
+        _render_item(result, unified_attrs, idx, cache_dir_path, dataset_name)
 
     # ── Delete ────────────────────────────────────────────────────────────────
     if cache_dir_str:
