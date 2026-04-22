@@ -368,9 +368,10 @@ def _reasoning_expander(
     output_eval: Dict[str, Any],
     ext_eval: Dict[str, Any],
     unified_attrs: List[str],
+    idx: int = 0,
 ):
     """Collapsible reasoning panel: one row per attribute, side-by-side output vs ext."""
-    with st.expander("Reasoning details", expanded=False):
+    if st.checkbox("Show reasoning details", value=False, key=f"reasoning_{idx}"):
         col_out, col_ext = st.columns(2)
         with col_out:
             st.markdown(f"**{STAGE_OUTPUT}**")
@@ -509,6 +510,7 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
             result.get("output_eval", {}),
             result.get("ext_eval", {}),
             unified_attrs,
+            idx,
         )
 
 

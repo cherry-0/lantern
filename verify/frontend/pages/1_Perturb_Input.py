@@ -283,14 +283,16 @@ def _render_item_result(result: dict):
                 # Render Externalizations
                 exts = orig_out.get("externalizations", {})
                 if exts:
-                    with st.expander("🌐 Captured Externalizations", expanded=True):
+                    st.markdown("**🌐 Captured Externalizations**")
+                    with st.container():
                         for channel, content in exts.items():
                             st.markdown(f"**{channel}**")
                             st.caption(content)
 
                 structured = orig_out.get("structured_output", {})
                 if structured:
-                    with st.expander("Structured output"):
+                    st.markdown("**Structured output**")
+                    with st.container():
                         st.json(structured)
             else:
                 st.error(orig_out.get("error", "Pipeline failed.") if orig_out else "No output.")
@@ -309,7 +311,8 @@ def _render_item_result(result: dict):
                 # Render Externalizations
                 exts = pert_out.get("externalizations", {})
                 if exts:
-                    with st.expander("🌐 Captured Externalizations", expanded=True):
+                    st.markdown("**🌐 Captured Externalizations**")
+                    with st.container():
                         # Handle phase-aware structure: {"DURING": {...}, "POST": {...}}
                         if "DURING" in exts or "POST" in exts:
                             for phase in ["DURING", "POST"]:
@@ -332,7 +335,8 @@ def _render_item_result(result: dict):
 
                 structured = pert_out.get("structured_output", {})
                 if structured:
-                    with st.expander("Structured output"):
+                    st.markdown("**Structured output**")
+                    with st.container():
                         st.json(structured)
             else:
                 st.error(pert_out.get("error", "Pipeline failed.") if pert_out else "No output.")

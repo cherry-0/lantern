@@ -92,8 +92,10 @@ def _reasoning_expander(
     output_eval:   Dict[str, Any],
     ext_eval:      Dict[str, Any],
     unified_attrs: List[str],
+    idx: int = 0,
 ):
-    with st.expander("Reasoning details", expanded=False):
+    """Collapsible reasoning panel using checkbox to avoid nested expanders."""
+    if st.checkbox("Show reasoning details", value=False, key=f"reasoning_{idx}"):
         col_out, col_ext = st.columns(2)
         with col_out:
             st.markdown(f"**{STAGE_OUTPUT}**")
@@ -122,7 +124,21 @@ def _reasoning_expander(
                     st.caption(reason)
 
 
-def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
+def _delete_item_from_cache(cache_dir: Path, filename: str) -> bool:
+    """Delete a single item JSON file from the cache directory."""
+    try:
+        # Construct the JSON filename from the original filename
+        json_name = Path(filename).stem + ".json"
+        item_path = cache_dir / json_name
+        if item_path.exists():
+            item_path.unlink()
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int, cache_dir: Path | None = None):
     filename    = result.get("filename", "unknown")
     status      = result.get("status", "")
     modality    = result.get("modality", "")
@@ -141,6 +157,10 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
                      expanded=(status == "failed")):
         if status == "failed":
             st.error(f"Error: {result.get('error', 'Unknown error')}")
+            # Show delete option even for failed items
+            if cache_dir:
+                st.divider()
+                _render_item_delete_button(cache_dir, filename, idx)
             return
 
         col_in, col_out = st.columns([1, 2])
@@ -201,7 +221,35 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
             result.get("output_eval", {}),
             result.get("ext_eval", {}),
             unified_attrs,
+            idx,
         )
+
+        # Per-item delete button
+        if cache_dir:
+            st.divider()
+            _render_item_delete_button(cache_dir, filename, idx)
+
+
+def _render_item_delete_button(cache_dir: Path, filename: str, idx: int):
+    """Render a delete button for a single item inside an expander."""
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        confirm_key = f"vioc_del_confirm_{idx}"
+        confirmed = st.checkbox("Confirm delete", key=confirm_key)
+    with col2:
+        if st.button("🗑️ Delete", key=f"vioc_del_btn_{idx}", type="secondary", disabled=not confirmed):
+            if _delete_item_from_cache(cache_dir, filename):
+                st.success(f"Deleted: {filename}")
+                # Remove from session state items
+                items_key = "vioc_items"
+                if items_key in st.session_state:
+                    st.session_state[items_key] = [
+                        item for item in st.session_state[items_key]
+                        if item.get("filename") != filename
+                    ]
+                st.rerun()
+            else:
+                st.error(f"Failed to delete: {filename}")
 
 
 def _render_aggregated(all_results: List[Dict[str, Any]], unified_attrs: List[str]):
@@ -475,8 +523,9 @@ def main():
         f"Results — {app_name} / {dataset_name} / {modality} "
         f"({n} item{'s' if n != 1 else ''})"
     )
+    cache_dir_path = Path(cache_dir_str) if cache_dir_str else None
     for idx, result in enumerate(items):
-        _render_item(result, unified_attrs, idx)
+        _render_item(result, unified_attrs, idx, cache_dir_path)
 
     # ── Delete ────────────────────────────────────────────────────────────────
     if cache_dir_str:

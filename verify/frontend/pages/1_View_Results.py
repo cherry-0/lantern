@@ -225,7 +225,94 @@ def _render_generated_task(result: dict):
     )
 
 
-def _render_item_result(result: dict, dataset_name: str, modality: str, run_dir: str = ""):
+def _delete_item_from_cache_and_report(
+    cache_dir: Path | None, run_dir: Path | None, filename: str
+) -> tuple[bool, str]:
+    """
+    Delete a single item from cache directory and update report.json.
+    Returns (success, message).
+    """
+    errors = []
+    
+    # 1. Delete from cache directory if it exists
+    if cache_dir and cache_dir.exists():
+        try:
+            json_name = Path(filename).stem + ".json"
+            item_path = cache_dir / json_name
+            if item_path.exists():
+                item_path.unlink()
+        except Exception as e:
+            errors.append(f"Cache delete: {e}")
+    
+    # 2. Update report.json to remove the item
+    if run_dir and run_dir.exists():
+        try:
+            report_path = run_dir / "report.json"
+            if report_path.exists():
+                report = json.loads(report_path.read_text())
+                items = report.get("items", [])
+                original_count = len(items)
+                report["items"] = [item for item in items if item.get("filename") != filename]
+                new_count = len(report["items"])
+                
+                if new_count < original_count:
+                    # Update metadata counts
+                    report["metadata"] = report.get("metadata", {})
+                    report["metadata"]["total_items"] = new_count
+                    report["metadata"]["successful_items"] = sum(
+                        1 for item in report["items"] if item.get("status") == "success"
+                    )
+                    report["metadata"]["failed_items"] = sum(
+                        1 for item in report["items"] if item.get("status") == "failed"
+                    )
+                    
+                    report_path.write_text(json.dumps(report, indent=2))
+        except Exception as e:
+            errors.append(f"Report update: {e}")
+    
+    if errors:
+        return False, "; ".join(errors)
+    return True, "Deleted successfully"
+
+
+def _render_item_delete_button(
+    cache_dir: Path | None, run_dir: Path | None, filename: str, idx: int
+):
+    """Render a delete button for a single item inside an expander."""
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        confirm_key = f"vr_del_confirm_{idx}"
+        confirmed = st.checkbox("Confirm delete", key=confirm_key)
+    with col2:
+        if st.button("🗑️ Delete", key=f"vr_del_btn_{idx}", type="secondary", disabled=not confirmed):
+            success, msg = _delete_item_from_cache_and_report(cache_dir, run_dir, filename)
+            if success:
+                st.success(f"Deleted: {filename}")
+                # Remove from session state report items
+                report = st.session_state.get("vr_report", {})
+                if report and "items" in report:
+                    report["items"] = [
+                        item for item in report["items"]
+                        if item.get("filename") != filename
+                    ]
+                    # Update metadata
+                    if "metadata" in report:
+                        report["metadata"]["total_items"] = len(report["items"])
+                        report["metadata"]["successful_items"] = sum(
+                            1 for item in report["items"] if item.get("status") == "success"
+                        )
+                        report["metadata"]["failed_items"] = sum(
+                            1 for item in report["items"] if item.get("status") == "failed"
+                        )
+                st.rerun()
+            else:
+                st.error(f"Failed to delete: {msg}")
+
+
+def _render_item_result(
+    result: dict, dataset_name: str, modality: str, run_dir: str = "",
+    cache_dir: Path | None = None, idx: int = 0
+):
     filename = result.get("filename", "Unknown")
     status = result.get("status", "")
 
@@ -235,6 +322,10 @@ def _render_item_result(result: dict, dataset_name: str, modality: str, run_dir:
     with st.expander(f"{status_icon} {filename}{from_cache}", expanded=(status == "failed")):
         if status == "failed":
             st.error(f"Error: {result.get('error', 'Unknown error')}")
+            # Show delete option even for failed items
+            if cache_dir or run_dir:
+                st.divider()
+                _render_item_delete_button(cache_dir, Path(run_dir) if run_dir else None, filename, idx)
             return
 
         if status == "skipped":
@@ -243,6 +334,10 @@ def _render_item_result(result: dict, dataset_name: str, modality: str, run_dir:
             if orig_out and orig_out.get("success"):
                 st.markdown("**Original Output (perturbation skipped):**")
                 st.text(orig_out.get("output_text", ""))
+            # Show delete option for skipped items
+            if cache_dir or run_dir:
+                st.divider()
+                _render_item_delete_button(cache_dir, Path(run_dir) if run_dir else None, filename, idx)
             return
 
         orig_input = result.get("original_input", {})
@@ -307,7 +402,8 @@ def _render_item_result(result: dict, dataset_name: str, modality: str, run_dir:
                 )
                 exts = orig_out.get("externalizations", {})
                 if exts:
-                    with st.expander("🌐 Captured Externalizations", expanded=True):
+                    st.markdown("**🌐 Captured Externalizations**")
+                    with st.container():
                         # Handle phase-aware structure: {"DURING": {...}, "POST": {...}}
                         if "DURING" in exts or "POST" in exts:
                             for phase in ["DURING", "POST"]:
@@ -328,9 +424,9 @@ def _render_item_result(result: dict, dataset_name: str, modality: str, run_dir:
                                 st.markdown(f"**[{channel}]**")
                                 st.caption(content)
                 structured = orig_out.get("structured_output", {})
-                if structured:
-                    with st.expander("Structured output"):
-                        st.json(structured)
+                # if structured:
+                #     with st.expander("Structured output"):
+                #         st.json(structured)
             else:
                 st.error(orig_out.get("error", "Pipeline failed.") if orig_out else "No output.")
 
@@ -346,7 +442,8 @@ def _render_item_result(result: dict, dataset_name: str, modality: str, run_dir:
                 )
                 exts = pert_out.get("externalizations", {})
                 if exts:
-                    with st.expander("🌐 Captured Externalizations", expanded=True):
+                    st.markdown("**🌐 Captured Externalizations**")
+                    with st.container():
                         # Handle phase-aware structure: {"DURING": {...}, "POST": {...}}
                         if "DURING" in exts or "POST" in exts:
                             for phase in ["DURING", "POST"]:
@@ -367,9 +464,9 @@ def _render_item_result(result: dict, dataset_name: str, modality: str, run_dir:
                                 st.markdown(f"**[{channel}]**")
                                 st.caption(content)
                 structured = pert_out.get("structured_output", {})
-                if structured:
-                    with st.expander("Structured output"):
-                        st.json(structured)
+                # if structured:
+                #     with st.expander("Structured output"):
+                #         st.json(structured)
             else:
                 st.error(pert_out.get("error", "Pipeline failed.") if pert_out else "No output.")
 
@@ -402,6 +499,11 @@ def _render_item_result(result: dict, dataset_name: str, modality: str, run_dir:
                 st.error(f"Evaluation error: {evaluation['perturbed_error']}")
             else:
                 st.info("No evaluation results.")
+
+        # Per-item delete button for successful items
+        if cache_dir or run_dir:
+            st.divider()
+            _render_item_delete_button(cache_dir, Path(run_dir) if run_dir else None, filename, idx)
 
 
 def _render_aggregated_chart(items: list, attributes: list):
@@ -724,8 +826,12 @@ def main():
     n = len(items)
     st.subheader(f"Results — {app_name} / {dataset_name} / {modality} ({n} item{'s' if n != 1 else ''})")
 
-    for result in items:
-        _render_item_result(result, dataset_name, modality, run_dir=run_dir_loaded)
+    cache_dir_path = _get_cache_dir_for_run(run_config)
+    for idx, result in enumerate(items):
+        _render_item_result(
+            result, dataset_name, modality,
+            run_dir=run_dir_loaded, cache_dir=cache_dir_path, idx=idx
+        )
 
     # ── Delete record ──────────────────────────────────────────────────────
     st.divider()
