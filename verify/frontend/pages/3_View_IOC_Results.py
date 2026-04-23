@@ -21,6 +21,11 @@ if str(LANTERN_ROOT) not in sys.path:
     sys.path.insert(0, str(LANTERN_ROOT))
 
 import streamlit as st
+from verify.backend.evaluation_method.evaluator import (
+    get_aggregate_eval_entry,
+    get_channel_eval_entries,
+    is_channelwise_eval_entry,
+)
 
 
 # ── Stage constants (mirrors 2_Input_Output_Comparison.py) ────────────────────
@@ -106,7 +111,7 @@ def _stage_table(
         f'<td style="{_AT}">{attr}</td>'
         f'{cell(input_labels.get(attr, 0) == 1)}'
         f'{cell(isinstance(output_eval.get(attr), dict) and bool(output_eval[attr].get("inferable")))}'
-        f'{cell(isinstance(ext_eval.get(attr),   dict) and bool(ext_eval[attr].get("inferable")))}'
+        f'{cell(bool(get_aggregate_eval_entry(ext_eval.get(attr)).get("inferable")))}'
         f"</tr>"
         for attr in unified_attrs
     )
@@ -154,11 +159,22 @@ def _reasoning_expander(
                     entry = ext_eval.get(attr)
                     if not isinstance(entry, dict):
                         continue
-                    icon   = "🔴" if entry.get("inferable") else "🟢"
-                    reason = entry.get("reasoning", "—")
+                    agg = get_aggregate_eval_entry(entry)
+                    icon   = "🔴" if agg.get("inferable") else "🟢"
+                    reason = agg.get("reasoning", "—")
                     st.markdown(f'{icon} <span style="font-size:0.9em"><b>{attr}</b></span>',
                                 unsafe_allow_html=True)
-                    st.caption(reason)
+                    if is_channelwise_eval_entry(entry):
+                        st.caption(f"Aggregate: {reason}")
+                        channels = get_channel_eval_entries(entry)
+                        for channel, channel_entry in channels.items():
+                            st.caption(
+                                f"[{channel}] "
+                                f'{"inferable" if channel_entry.get("inferable") else "not inferable"}: '
+                                f'{channel_entry.get("reasoning", "—")}'
+                            )
+                    else:
+                        st.caption(reason)
 
 
 def _delete_item_from_cache(cache_dir: Path, filename: str) -> bool:
@@ -187,6 +203,7 @@ def _render_item(
     modality    = result.get("modality", "")
     input_item  = result.get("input_item", {})
     input_labels = result.get("input_labels", {})
+    eval_prompt = result.get("eval_prompt", "prompt1")
 
     status_icon  = {"success": "✅", "failed": "❌"}.get(status, "")
     from_cache   = " (cached)" if result.get("from_cache") else ""
@@ -252,6 +269,11 @@ def _render_item(
 
         st.divider()
         st.markdown("**Stage-wise attribute presence**")
+        st.caption(
+            "Externalized stage uses the aggregate externalized result."
+            if eval_prompt == "prompt3"
+            else "Externalized stage uses the stored ext_eval result."
+        )
 
         if result.get("output_eval_error"):
             st.warning(f"Output evaluation error: {result['output_eval_error']}")
@@ -318,8 +340,7 @@ def _render_aggregated(all_results: List[Dict[str, Any]], unified_attrs: List[st
             for r in success
         ) / n
         ext_rate = sum(
-            1 if (isinstance(r.get("ext_eval", {}).get(attr), dict)
-                  and r["ext_eval"][attr].get("inferable")) else 0
+            1 if bool(get_aggregate_eval_entry(r.get("ext_eval", {}).get(attr)).get("inferable")) else 0
             for r in success
         ) / n
         rows += [

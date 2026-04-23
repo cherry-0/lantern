@@ -21,6 +21,11 @@ if str(LANTERN_ROOT) not in sys.path:
     sys.path.insert(0, str(LANTERN_ROOT))
 
 import streamlit as st
+from verify.backend.evaluation_method.evaluator import (
+    get_aggregate_eval_entry,
+    get_channel_eval_entries,
+    is_channelwise_eval_entry,
+)
 
 
 # ─── Constants ────────────────────────────────────────────────────────────────
@@ -331,8 +336,8 @@ def _stage_table(
         in_val = input_labels.get(attr, 0) == 1
         out_entry = output_eval.get(attr, {})
         out_val = isinstance(out_entry, dict) and bool(out_entry.get("inferable"))
-        ext_entry = ext_eval.get(attr, {})
-        ext_val = isinstance(ext_entry, dict) and bool(ext_entry.get("inferable"))
+        ext_entry = get_aggregate_eval_entry(ext_eval.get(attr))
+        ext_val = bool(ext_entry.get("inferable"))
 
         def cell(flag: bool) -> str:
             bg = _BG_YES if flag else _BG_NO
@@ -395,13 +400,24 @@ def _reasoning_expander(
                     entry = ext_eval.get(attr)
                     if not isinstance(entry, dict):
                         continue
-                    icon = "🔴" if entry.get("inferable") else "🟢"
-                    reason = entry.get("reasoning", "—")
+                    agg = get_aggregate_eval_entry(entry)
+                    icon = "🔴" if agg.get("inferable") else "🟢"
+                    reason = agg.get("reasoning", "—")
                     st.markdown(
                         f'{icon} <span style="font-size:0.9em"><b>{attr}</b></span>',
                         unsafe_allow_html=True,
                     )
-                    st.caption(reason)
+                    if is_channelwise_eval_entry(entry):
+                        st.caption(f"Aggregate: {reason}")
+                        channels = get_channel_eval_entries(entry)
+                        for channel, channel_entry in channels.items():
+                            st.caption(
+                                f"[{channel}] "
+                                f'{"inferable" if channel_entry.get("inferable") else "not inferable"}: '
+                                f'{channel_entry.get("reasoning", "—")}'
+                            )
+                    else:
+                        st.caption(reason)
 
 
 def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
@@ -543,10 +559,7 @@ def _render_aggregated(all_results: List[Dict[str, Any]], unified_attrs: List[st
         ) / n
 
         ext_rate = sum(
-            1 if (
-                isinstance(r.get("ext_eval", {}).get(attr), dict)
-                and r["ext_eval"][attr].get("inferable")
-            ) else 0
+            1 if bool(get_aggregate_eval_entry(r.get("ext_eval", {}).get(attr)).get("inferable")) else 0
             for r in success
         ) / n
 

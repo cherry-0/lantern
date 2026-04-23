@@ -54,7 +54,7 @@ def _scan_dirs() -> List[Dict]:
     """
     Scan all output directories.  Returns list of dicts with:
       dir, dir_name, app_name, dataset_name, modality, method,
-      total, success, failed, eval_model, last_reeval, has_summary
+      total, success, failed, eval_model, eval_prompt, last_reeval, has_summary
     """
     if not _OUTPUTS_DIR.exists():
         return []
@@ -93,6 +93,7 @@ def _scan_dirs() -> List[Dict]:
             "success":      summary.get("success",    0),
             "failed":       summary.get("failed",     0),
             "eval_model":   summary.get("eval_model", ""),
+            "eval_prompt":  summary.get("eval_prompt", ""),
             "last_reeval":  summary.get("last_reeval",""),
             "has_summary":  bool(summary),
         })
@@ -165,6 +166,18 @@ def main() -> None:
         )
         model: str = custom_model.strip() if custom_model.strip() else model_choice
         st.caption(f"Active model: `{model}`")
+
+        prompt_mode = st.radio(
+            "Evaluation prompt",
+            ["prompt1", "prompt2", "prompt3"],
+            index=0,
+            disabled=running,
+            help=(
+                "prompt1: binary inferability. "
+                "prompt2: binary inferability + prediction. "
+                "prompt3: aggregate externalized result + per-channel threat."
+            ),
+        )
 
         st.divider()
         workers = st.slider("Parallel workers", 1, 8, 4, disabled=running,
@@ -244,9 +257,9 @@ def main() -> None:
                                label_visibility="collapsed")
 
     # Header
-    hdr_cols = st.columns([0.4, 2, 1.2, 2, 1, 1, 3, 2])
+    hdr_cols = st.columns([0.4, 2, 1.1, 2, 1, 1, 1.2, 2.7, 1.6])
     for col, label in zip(hdr_cols, ["", "App", "Modality", "Dataset", "Method",
-                                      "Items", "Eval Model", "Last Re-eval"]):
+                                      "Items", "Prompt", "Eval Model", "Last Re-eval"]):
         col.markdown(f"**{label}**")
     st.divider()
 
@@ -259,7 +272,7 @@ def main() -> None:
             if search.lower() not in haystack:
                 continue
 
-        cols = st.columns([0.4, 2, 1.2, 2, 1, 1, 3, 2])
+        cols = st.columns([0.4, 2, 1.1, 2, 1, 1, 1.2, 2.7, 1.6])
 
         checked = cols[0].checkbox(
             "select",
@@ -294,6 +307,8 @@ def main() -> None:
                 f'{_html.escape(ev)}</span>'
             )
 
+        prompt_cell = row["eval_prompt"] or "—"
+
         items_str  = f"{row['success']} / {row['total']}" if row["total"] else "—"
         last_re    = row["last_reeval"][:10] if row["last_reeval"] else "—"
 
@@ -302,8 +317,9 @@ def main() -> None:
         cols[3].write(row["dataset_name"])
         cols[4].write(row["method"])
         cols[5].write(items_str)
-        cols[6].markdown(ev_cell, unsafe_allow_html=True)
-        cols[7].write(last_re)
+        cols[6].write(prompt_cell)
+        cols[7].markdown(ev_cell, unsafe_allow_html=True)
+        cols[8].write(last_re)
 
     n_sel = len(selected_dirs)
     st.caption(f"{n_sel} of {len(dirs)} directories selected")
@@ -330,6 +346,10 @@ def main() -> None:
                     "--workers", str(workers),
                     "--dir",
                 ] + selected_dirs
+                if prompt_mode == "prompt2":
+                    cmd.append("--prompt2")
+                elif prompt_mode == "prompt3":
+                    cmd.append("--prompt3")
                 if verbose:  cmd.append("--verbose")
                 if dry_run:  cmd.append("--dry-run")
                 rs.update({"running": True, "log": [f"$ {' '.join(cmd)}", ""],
