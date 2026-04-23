@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 LANTERN_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 VERIFY_ROOT  = Path(__file__).resolve().parent.parent.parent
@@ -58,6 +58,29 @@ def _write_temp_csv(rows: List[Dict[str, str]], path: Path) -> None:
         writer.writeheader()
         for row in rows:
             writer.writerow(row)
+
+
+def _stable_unique(values: List[str]) -> List[str]:
+    """Return unique values preserving first-seen order."""
+    seen = set()
+    result: List[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def _group_rows_by_cell(rows: List[Dict[str, str]]) -> Tuple[List[str], List[str], Dict[Tuple[str, str], List[Tuple[int, Dict[str, str]]]]]:
+    """Group CSV rows by (app, dataset) for matrix rendering."""
+    apps = _stable_unique([row.get("app_name", "") for row in rows])
+    datasets = _stable_unique([row.get("dataset_name", "") for row in rows])
+    grouped: Dict[Tuple[str, str], List[Tuple[int, Dict[str, str]]]] = {}
+    for i, row in enumerate(rows):
+        key = (row.get("app_name", ""), row.get("dataset_name", ""))
+        grouped.setdefault(key, []).append((i, row))
+    return apps, datasets, grouped
 
 
 # ── Log parsing for per-task progress ────────────────────────────────────────
@@ -157,6 +180,7 @@ def main() -> None:
                                             "progress": {}}
     bs = st.session_state["batch_state"]
     running: bool = bs["running"]
+    apps, datasets, grouped_rows = _group_rows_by_cell(all_rows)
 
     # ── Sidebar: run settings ─────────────────────────────────────────────────
     with st.sidebar:
@@ -194,43 +218,97 @@ def main() -> None:
 
     # ── Config checklist ──────────────────────────────────────────────────────
     st.subheader("Config Checklist")
+    st.caption("Rows are apps. Columns are datasets. Each cell shows every available config option for that app/dataset pair.")
+    st.markdown(
+        """
+<style>
+.batch-app-cell {
+    padding: 0.35rem 0.15rem 0.15rem 0.1rem;
+    font-weight: 600;
+    font-size: 0.95rem;
+}
+.batch-empty-cell {
+    color: #999;
+    font-size: 0.85rem;
+    padding: 0.35rem 0.1rem;
+}
+.batch-option-line {
+    padding-top: 0.1rem;
+    padding-bottom: 0.2rem;
+    line-height: 1.25;
+}
+.batch-pill {
+    display: inline-block;
+    padding: 0.1rem 0.45rem;
+    border-radius: 999px;
+    color: #fff;
+    font-size: 0.74rem;
+    font-weight: 600;
+    margin-right: 0.35rem;
+}
+.batch-method {
+    font-size: 0.82rem;
+    font-weight: 600;
+}
+.batch-meta {
+    color: #777;
+    font-size: 0.76rem;
+    margin-left: 0.3rem;
+}
+</style>
+""",
+        unsafe_allow_html=True,
+    )
 
-    hdr = st.columns([0.5, 2.5, 1.5, 2, 2.5, 1.5])
-    for col, label in zip(hdr, ["", "App", "Modality", "Dataset", "Perturbation", "Max items"]):
-        col.markdown(f"**{label}**")
+    header_cols = st.columns([1.4] + [1.8] * len(datasets))
+    header_cols[0].markdown("**App \\ Dataset**")
+    for j, dataset in enumerate(datasets, start=1):
+        header_cols[j].markdown(f"**{dataset}**")
     st.divider()
 
     selected_rows: List[Dict[str, str]] = []
 
-    for i, row in enumerate(all_rows):
-        default = row.get("enabled", "true").lower() not in ("false", "0", "no")
-        cols = st.columns([0.5, 2.5, 1.5, 2, 2.5, 1.5])
-
-        checked = cols[0].checkbox(
-            "Include row",
-            value=st.session_state.get(f"batch_row_{i}", default),
-            key=f"batch_row_{i}",
-            label_visibility="collapsed",
-            disabled=running,
+    for app_name in apps:
+        row_cols = st.columns([1.4] + [1.8] * len(datasets))
+        row_cols[0].markdown(
+            f'<div class="batch-app-cell">{_html.escape(app_name or "—")}</div>',
+            unsafe_allow_html=True,
         )
 
-        app_name = row.get("app_name", "")
-        modality = row.get("modality", "")
-        tag_color = "#4a90d9" if modality == "image" else "#e07b2a"
-        mod_badge = (
-            f'<span style="background:{tag_color};color:#fff;'
-            f'padding:2px 8px;border-radius:10px;font-size:0.82em">'
-            f'{modality}</span>'
-        )
+        for dataset_idx, dataset_name in enumerate(datasets, start=1):
+            cell_rows = grouped_rows.get((app_name, dataset_name), [])
+            with row_cols[dataset_idx].container(border=True):
+                if not cell_rows:
+                    st.markdown('<div class="batch-empty-cell">—</div>', unsafe_allow_html=True)
+                    continue
 
-        cols[1].write(app_name)
-        cols[2].markdown(mod_badge, unsafe_allow_html=True)
-        cols[3].write(row.get("dataset_name", ""))
-        cols[4].write(row.get("perturbation_method", "") or "—")
-        cols[5].write(row.get("max_items", "") or "—")
+                for i, row in cell_rows:
+                    default = row.get("enabled", "true").lower() not in ("false", "0", "no")
+                    checked = st.checkbox(
+                        f"{app_name}/{dataset_name}/{i}",
+                        value=st.session_state.get(f"batch_row_{i}", default),
+                        key=f"batch_row_{i}",
+                        label_visibility="collapsed",
+                        disabled=running,
+                    )
 
-        if checked:
-            selected_rows.append({**row, "enabled": "true"})
+                    modality = row.get("modality", "") or "?"
+                    tag_color = "#4a90d9" if modality == "image" else "#e07b2a"
+                    method = row.get("perturbation_method", "") or "—"
+                    max_items = row.get("max_items", "") or "all"
+                    st.markdown(
+                        (
+                            '<div class="batch-option-line">'
+                            f'<span class="batch-pill" style="background:{tag_color}">{_html.escape(modality)}</span>'
+                            f'<span class="batch-method">{_html.escape(method)}</span>'
+                            f'<span class="batch-meta">max={_html.escape(max_items)}</span>'
+                            '</div>'
+                        ),
+                        unsafe_allow_html=True,
+                    )
+
+                    if checked:
+                        selected_rows.append({**row, "enabled": "true"})
 
     n_sel = len(selected_rows)
     st.caption(f"{n_sel} of {len(all_rows)} configs selected")
