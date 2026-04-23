@@ -54,3 +54,5 @@ verify/backend/tests/**
 
 # .omc
 .omc/
+
+verify/_batch_config_ui_temp.csv
