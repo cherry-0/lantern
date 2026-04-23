@@ -21,6 +21,8 @@ if str(LANTERN_ROOT) not in sys.path:
 
 import streamlit as st
 
+DISPLAY_PREVIEW_CHARS = 4000
+
 
 # ─── Helpers (mirrors app.py) ─────────────────────────────────────────────────
 
@@ -41,6 +43,27 @@ def _display_image(b64_str: str | None, data=None, caption: str = ""):
 def _display_text(text: str, key_suffix: str = ""):
     st.text_area(f"text_display_{key_suffix}", value=text, height=200, disabled=True,
                  label_visibility="collapsed", key=f"txt_{key_suffix}")
+
+
+def _display_externalized_preview(text: str, key_suffix: str = ""):
+    show_full = st.session_state.get("show_full_externalizations", False)
+    if show_full or len(text) <= DISPLAY_PREVIEW_CHARS:
+        value = text
+    else:
+        value = text[:DISPLAY_PREVIEW_CHARS] + "\n\n[truncated for display]"
+    st.text_area(
+        f"ext_display_{key_suffix}",
+        value=value,
+        height=140,
+        disabled=True,
+        label_visibility="collapsed",
+        key=f"ext_{key_suffix}",
+    )
+    if not show_full and len(text) > DISPLAY_PREVIEW_CHARS:
+        st.caption(
+            f"Display preview limited to {DISPLAY_PREVIEW_CHARS:,} chars. "
+            "Enable `Show full externalizations` in the sidebar to inspect the full captured text."
+        )
 
 
 def _display_frames(frames: list, caption_prefix: str = "Frame"):
@@ -415,14 +438,14 @@ def _render_item_result(
                                 st.markdown(f"**{label}**")
                                 for channel, content in phase_data.items():
                                     st.markdown(f"*{channel}*")
-                                    st.caption(content)
+                                    _display_externalized_preview(content, f"orig_{filename}_{phase}_{channel}")
                                 if phase == "DURING" and "POST" in exts:
                                     st.divider()
                         else:
                             # Fallback for old flat dictionary structure
                             for channel, content in exts.items():
                                 st.markdown(f"**[{channel}]**")
-                                st.caption(content)
+                                _display_externalized_preview(content, f"orig_{filename}_{channel}")
                 structured = orig_out.get("structured_output", {})
                 # if structured:
                 #     with st.expander("Structured output"):
@@ -455,14 +478,14 @@ def _render_item_result(
                                 st.markdown(f"**{label}**")
                                 for channel, content in phase_data.items():
                                     st.markdown(f"*{channel}*")
-                                    st.caption(content)
+                                    _display_externalized_preview(content, f"pert_{filename}_{phase}_{channel}")
                                 if phase == "DURING" and "POST" in exts:
                                     st.divider()
                         else:
                             # Fallback for old flat dictionary structure
                             for channel, content in exts.items():
                                 st.markdown(f"**[{channel}]**")
-                                st.caption(content)
+                                _display_externalized_preview(content, f"pert_{filename}_{channel}")
                 structured = pert_out.get("structured_output", {})
                 # if structured:
                 #     with st.expander("Structured output"):
@@ -642,6 +665,13 @@ def main():
     # ── Sidebar: directory picker ─────────────────────────────────────────
     with st.sidebar:
         st.header("Select Output Directory")
+        st.toggle(
+            "Show full externalizations",
+            key="show_full_externalizations",
+            value=False,
+            help="Display the full captured externalization text instead of a shortened preview.",
+        )
+        st.divider()
 
         available_dirs = _list_output_dirs()
         dir_options = [str(d) for d in available_dirs]

@@ -24,6 +24,8 @@ if str(LANTERN_ROOT) not in sys.path:
 
 import streamlit as st
 
+DISPLAY_PREVIEW_CHARS = 4000
+
 # ─── Page config ─────────────────────────────────────────────────────────────
 
 # ─── Lazy imports (backend modules) ──────────────────────────────────────────
@@ -105,6 +107,27 @@ def _display_text(text: str, label: str = "", key_suffix: str = ""):
     unique_label = f"text_area_{key_suffix}" if key_suffix else "text_area"
     st.text_area(unique_label, value=text, height=200, disabled=True, 
                  label_visibility="collapsed", key=f"text_{key_suffix}")
+
+
+def _display_externalized_preview(text: str, key_suffix: str = ""):
+    show_full = st.session_state.get("show_full_externalizations", False)
+    if show_full or len(text) <= DISPLAY_PREVIEW_CHARS:
+        value = text
+    else:
+        value = text[:DISPLAY_PREVIEW_CHARS] + "\n\n[truncated for display]"
+    st.text_area(
+        f"ext_area_{key_suffix}",
+        value=value,
+        height=140,
+        disabled=True,
+        label_visibility="collapsed",
+        key=f"ext_{key_suffix}",
+    )
+    if not show_full and len(text) > DISPLAY_PREVIEW_CHARS:
+        st.caption(
+            f"Display preview limited to {DISPLAY_PREVIEW_CHARS:,} chars. "
+            "Enable `Show full externalizations` in the sidebar to inspect the full captured text."
+        )
 
 
 def _display_frames(frames: list, caption_prefix: str = "Frame"):
@@ -287,7 +310,7 @@ def _render_item_result(result: dict):
                     with st.container():
                         for channel, content in exts.items():
                             st.markdown(f"**{channel}**")
-                            st.caption(content)
+                            _display_externalized_preview(content, f"orig_{filename}_{channel}")
 
                 structured = orig_out.get("structured_output", {})
                 if structured:
@@ -324,7 +347,7 @@ def _render_item_result(result: dict):
                                 st.markdown(f"**{label}**")
                                 for channel, content in phase_data.items():
                                     st.markdown(f"*{channel}*")
-                                    st.caption(content)
+                                    _display_externalized_preview(content, f"pert_{filename}_{phase}_{channel}")
                                 if phase == "DURING" and "POST" in exts:
                                     st.divider()
                         else:
@@ -455,6 +478,13 @@ def main():
     # ── Sidebar controls ──────────────────────────────────────────────────────
     with st.sidebar:
         st.header("Configuration")
+        st.toggle(
+            "Show full externalizations",
+            key="show_full_externalizations",
+            value=False,
+            help="Display the full captured externalization text instead of a shortened preview.",
+        )
+        st.divider()
 
         # App dropdown
         st.subheader("Target App")
