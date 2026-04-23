@@ -48,6 +48,8 @@ STAGE_COLORS = {
     STAGE_EXT: "#f0ad4e",
 }
 
+DISPLAY_PREVIEW_CHARS = 4000
+
 
 # ─── Config loaders ───────────────────────────────────────────────────────────
 
@@ -82,6 +84,32 @@ def _build_ext_text(externalizations: Dict[str, str]) -> str:
         f"[{channel.upper()}] {content}"
         for channel, content in externalizations.items()
     )
+
+
+def _display_preview_text(text: str, area_key: str, *, empty_text: str, height: int = 200) -> None:
+    """Show a truncated preview in the UI while preserving the full stored text."""
+    show_full = st.session_state.get("show_full_externalizations", False)
+    if not text.strip():
+        value = empty_text
+    elif show_full or len(text) <= DISPLAY_PREVIEW_CHARS:
+        value = text
+    else:
+        value = text[:DISPLAY_PREVIEW_CHARS] + "\n\n[truncated for display]"
+
+    st.text_area(
+        area_key,
+        value=value,
+        height=height,
+        disabled=True,
+        label_visibility="collapsed",
+        key=area_key,
+    )
+
+    if text.strip() and not show_full and len(text) > DISPLAY_PREVIEW_CHARS:
+        st.caption(
+            f"Display preview limited to {DISPLAY_PREVIEW_CHARS:,} chars. "
+            "Enable `Show full externalizations` in the sidebar to inspect the full captured text."
+        )
 
 
 def _ioc_cache_dir(app_name: str, dataset_name: str, modality: str) -> "Path":
@@ -491,18 +519,12 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
             with ext_col:
                 st.markdown(f"**{STAGE_EXT}**")
                 ext_text = result.get("ext_text", "")
-                if ext_text.strip():
-                    st.text_area(
-                        "externalized_text", value=ext_text, height=200, disabled=True,
-                        label_visibility="collapsed",
-                        key=f"ioc_ext_{idx}",
-                    )
-                else:
-                    st.text_area(
-                        "externalized_text_empty", value="No externalizations captured.", height=200,
-                        disabled=True, label_visibility="collapsed",
-                        key=f"ioc_ext_{idx}",
-                    )
+                _display_preview_text(
+                    ext_text,
+                    f"ioc_ext_{idx}",
+                    empty_text="No externalizations captured.",
+                    height=200,
+                )
 
         st.divider()
 
@@ -633,6 +655,13 @@ def main():
     # ── Sidebar ───────────────────────────────────────────────────────────────
     with st.sidebar:
         st.header("Configuration")
+        st.toggle(
+            "Show full externalizations",
+            key="show_full_externalizations",
+            value=False,
+            help="Display the full captured externalization text instead of a shortened preview.",
+        )
+        st.divider()
 
         # App
         st.subheader("Target App")
