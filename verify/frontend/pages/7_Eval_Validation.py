@@ -26,6 +26,7 @@ if str(LANTERN_ROOT) not in sys.path:
     sys.path.insert(0, str(LANTERN_ROOT))
 
 import streamlit as st
+from verify.backend.evaluation_method.evaluator import get_aggregate_eval_entry
 
 # st.set_page_config(
 #     page_title="Evaluation Validation — Verify",
@@ -177,19 +178,18 @@ def _binary_table(
     for attr in unified_attrs:
         gt_val     = input_labels.get(attr, 0)
         gt_flag    = gt_val == 1
-        entry      = ext_eval.get(attr)
-        pred_flag  = isinstance(entry, dict) and bool(entry.get("inferable"))
+        entry      = get_aggregate_eval_entry(ext_eval.get(attr))
+        pred_flag  = bool(entry.get("inferable"))
         match      = gt_flag == pred_flag
 
         gt_cell    = f'<td style="{_TD}{"background:#d4f5d4;" if gt_flag else _PLAIN}">{"✅" if gt_flag else ""}</td>'
         pred_cell  = f'<td style="{_TD}{"background:#d4f5d4;" if pred_flag else _PLAIN}">{"✅" if pred_flag else ""}</td>'
         match_cell = f'<td style="{_TD}{_GREEN if match else _RED}">{"✅" if match else "❌"}</td>'
         reasoning  = ""
-        if isinstance(entry, dict):
-            r = entry.get("reasoning", "")
-            if r:
-                safe_r = r.replace("<", "&lt;").replace(">", "&gt;")
-                reasoning = f'<span style="font-size:0.8em;color:#666">{safe_r}</span>'
+        r = entry.get("reasoning", "")
+        if r:
+            safe_r = r.replace("<", "&lt;").replace(">", "&gt;")
+            reasoning = f'<span style="font-size:0.8em;color:#666">{safe_r}</span>'
 
         rows += (
             f"<tr>"
@@ -391,7 +391,7 @@ def _aggregate_section(items: List[Dict[str, Any]], unified_attrs: List[str]):
         for r in success:
             gt   = _content_labels(r).get(attr, 0) == 1
             entry = r.get("ext_eval", {}).get(attr)
-            pred  = isinstance(entry, dict) and bool(entry.get("inferable"))
+            pred  = bool(get_aggregate_eval_entry(entry).get("inferable"))
             if gt and pred:
                 tp += 1
             elif not gt and not pred:

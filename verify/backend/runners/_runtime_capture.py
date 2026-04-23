@@ -146,7 +146,7 @@ def _record_network(method: str, url: str, status: int, phase: str | None = None
     if not any(frag in url for frag in _SKIP_URL_FRAGMENTS):
         _events["NETWORK"].append({
             "phase": phase if phase is not None else _current_phase,
-            "content": f"[{method.upper()}] {url[:120]} → {status}",
+            "content": f"[{method.upper()}] {url} → {status}",
         })
 
 
@@ -161,7 +161,7 @@ class _CaptureHandler(logging.Handler):
             # Always keep WARNING+ regardless of source
             if record.levelno >= logging.WARNING:
                 msg = self.format(record)
-                _record_event("LOGGING", msg[:300])
+                _record_event("LOGGING", msg)
                 return
 
             # Filter out noisy Django / framework namespaces at DEBUG/INFO
@@ -172,7 +172,7 @@ class _CaptureHandler(logging.Handler):
             msg_lower = record.getMessage().lower()
             if any(kw in msg_lower for kw in _INTERESTING_KEYWORDS):
                 msg = self.format(record)
-                _record_event("LOGGING", msg[:300])
+                _record_event("LOGGING", msg)
         except Exception:
             pass
 
@@ -264,14 +264,14 @@ def install() -> None:
 
         _orig_send_text = _WS.send_text
         async def _patched_send_text(self, data: str):
-            record_ui_event("PUSH", data[:500])
+            record_ui_event("PUSH", data)
             return await _orig_send_text(self, data)
         _WS.send_text = _patched_send_text
 
         _orig_send_json = _WS.send_json
         async def _patched_send_json(self, data: any, **kwargs):
             import json
-            record_ui_event("PUSH", json.dumps(data)[:500])
+            record_ui_event("PUSH", json.dumps(data))
             return await _orig_send_json(self, data, **kwargs)
         _WS.send_json = _patched_send_json
     except (ImportError, AttributeError):
@@ -291,13 +291,13 @@ def install() -> None:
                 # Determine the executable name for filtering
                 if isinstance(args, (list, tuple)) and args:
                     exe = str(args[0]).split(_os.sep)[-1].split(".")[0].lower()
-                    cmd_preview = " ".join(str(a) for a in args[:8])
+                    cmd_preview = " ".join(str(a) for a in args)
                 else:
                     exe = str(args).split(_os.sep)[-1].split(".")[0].lower()
-                    cmd_preview = str(args)[:200]
+                    cmd_preview = str(args)
 
                 if exe not in _SKIP_SUBPROCESS_NAMES:
-                    _record_event("IPC", f"[SUBPROCESS] {cmd_preview[:200]}")
+                    _record_event("IPC", f"[SUBPROCESS] {cmd_preview}")
             except Exception:
                 pass
             _orig_popen_init(self, args, **kwargs)
@@ -360,7 +360,7 @@ def install() -> None:
         def _patched_send_message(self, msg, *args, **kwargs):
             frm = msg.get("From", "?")
             to = msg.get("To", "?")
-            subj = msg.get("Subject", "")[:80]
+            subj = msg.get("Subject", "")
             _record_event(
                 "NETWORK",
                 f"[SMTP] send_message from={frm!r} to={to!r} subject={subj!r} "
@@ -387,7 +387,7 @@ def install() -> None:
             try:
                 cmd = str(args[0]).upper() if args else ""
                 if cmd in _REDIS_INTERESTING:
-                    key_preview = str(args[1])[:80] if len(args) > 1 else ""
+                    key_preview = str(args[1]) if len(args) > 1 else ""
                     _record_event("IPC", f"[REDIS] {cmd} key={key_preview!r}")
             except Exception:
                 pass
@@ -407,7 +407,7 @@ def install() -> None:
 
         async def _patched_channels_async_send(self, text_data=None, bytes_data=None, close=False):
             if text_data:
-                record_ui_event("PUSH", str(text_data)[:500])
+                record_ui_event("PUSH", str(text_data))
             return await _orig_channels_async_send(
                 self, text_data=text_data, bytes_data=bytes_data, close=close
             )
@@ -423,7 +423,7 @@ def install() -> None:
 
         def _patched_channels_sync_send(self, text_data=None, bytes_data=None, close=False):
             if text_data:
-                record_ui_event("PUSH", str(text_data)[:500])
+                record_ui_event("PUSH", str(text_data))
             return _orig_channels_sync_send(
                 self, text_data=text_data, bytes_data=bytes_data, close=close
             )
@@ -547,7 +547,7 @@ def connect_django_signals() -> None:
 
         def _on_save(sender, instance, created: bool, **kwargs):
             action = "CREATE" if created else "UPDATE"
-            _record_event("STORAGE", f"[{sender.__name__}] {action}: {str(instance)[:150]}")
+            _record_event("STORAGE", f"[{sender.__name__}] {action}: {str(instance)}")
 
         post_save.connect(_on_save, weak=False)
     except Exception:
@@ -574,18 +574,14 @@ def finalize() -> dict:
         if not phase_events:
             continue
 
-        # Deduplicate and cap
+        # Deduplicate while preserving first-seen order.
         seen = set()
         deduped = []
-        cap = 15 if channel == "NETWORK" else (10 if channel in ("STORAGE", "IPC") else 8)
         for entry in phase_events:
             if entry not in seen:
                 seen.add(entry)
                 deduped.append(entry)
-            if len(deduped) >= cap:
-                break
 
         result[channel] = "\n".join(deduped)
 
     return result
-
