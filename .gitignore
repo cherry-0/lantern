@@ -28,6 +28,11 @@ target-apps/
 # result files
 cache/
 
+# closed-source APK binaries (see target-apps/<name>/README.md for download metadata)
+target-apps/*/*.apk
+target-apps/*/*.apkm
+target-apps/*/_split/
+
 # databases
 **/*.sqlite3
 
@@ -53,9 +58,19 @@ logs/
 # pycache
 **/__pycache__
 
-# temp files
+
+
+# apps
+target-apps/**
+
+# tests
+verify/backend/tests/**
+
+# .omc
+.omc/
+
+# logs/
+logs/
+
+
 verify/_batch_config_ui_temp.csv
-
-# test files
-verify/backend/tests/
-

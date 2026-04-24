@@ -13,6 +13,9 @@ from verify.backend.adapters.skindisease import SkinDiseaseAdapter
 from verify.backend.adapters.googleaiedge import GoogleAIEdgeAdapter
 from verify.backend.adapters.toolneuron import ToolNeuronAdapter
 from verify.backend.adapters.chatexpensetracker import ChatExpenseTrackerAdapter
+from verify.backend.adapters.photomath_blackbox import PhotomathAdapter
+from verify.backend.adapters.replika_blackbox import ReplikaAdapter
+from verify.backend.adapters.expensify_blackbox import ExpensifyAdapter
 
 # Registry: name → adapter class
 ADAPTER_REGISTRY: Dict[str, Type[BaseAdapter]] = {
@@ -27,6 +30,9 @@ ADAPTER_REGISTRY: Dict[str, Type[BaseAdapter]] = {
     "google-ai-edge-gallery": GoogleAIEdgeAdapter,
     "tool-neuron": ToolNeuronAdapter,
     "chat-driven-expense-tracker": ChatExpenseTrackerAdapter,
+    "photomath": PhotomathAdapter,
+    "replika": ReplikaAdapter,
+    "expensify": ExpensifyAdapter,
 }
 
 

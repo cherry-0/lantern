@@ -20,11 +20,6 @@ if str(LANTERN_ROOT) not in sys.path:
 
 import streamlit as st
 
-st.set_page_config(
-    page_title="Verify — Initialization",
-    page_icon="⚙️",
-    layout="wide",
-)
 
 _MODE_OPTIONS = ["native", "serverless"]
 _MODE_LABELS  = ["Native", "Serverless"]
@@ -172,7 +167,7 @@ def main():
     # ── "Initialize All" button ───────────────────────────────────────────────
     _, col_all = st.columns([5, 2])
     with col_all:
-        if st.button("Initialize All", width="stretch", disabled=any_running):
+        if st.button("Initialize All", use_container_width=True, disabled=any_running):
             for app_name, adapter in adapters.items():
                 existing = st.session_state._init_futures.get(app_name)
                 if existing is not None and not existing.done():
@@ -197,7 +192,9 @@ def main():
             modalities = ", ".join(adapter.supported_modalities) if adapter.supported_modalities else "—"
             python_ver = adapter.env_spec.python if adapter.env_spec else "—"
             effective_mode = st.session_state.app_modes.get(app_name, global_mode)
-            st.caption(f"Python {python_ver} · {modalities} · **{effective_mode}**")
+            from verify.backend.adapters.blackbox_base import BlackBoxAdapter
+            kind = "black-box · device required" if isinstance(adapter, BlackBoxAdapter) else f"Python {python_ver}"
+            st.caption(f"{kind} · {modalities} · **{effective_mode}**")
 
         with col_status:
             if is_running:
@@ -233,7 +230,7 @@ def main():
                 else "Re-initialize" if already_ready
                 else "Initialize"
             )
-            if st.button(btn_label, key=f"init_{app_name}", disabled=is_running, width="stretch"):
+            if st.button(btn_label, key=f"init_{app_name}", disabled=is_running, use_container_width=True):
                 future = st.session_state._executor.submit(adapter.initialize)
                 st.session_state._init_futures[app_name] = future
                 st.session_state._init_results.pop(app_name, None)

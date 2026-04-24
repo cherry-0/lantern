@@ -1,8 +1,8 @@
 """
 Re-evaluate — Re-run inferability evaluation with a different model.
 
-Lists every output directory, shows which eval model produced its current
-ext_eval scores, and lets you re-evaluate selected directories with any
+Lists output run groups, shows which eval model produced their current
+ext_eval scores, and lets you re-evaluate all directories in selected groups with any
 OpenRouter-compatible model.
 
 Workflow:
@@ -31,12 +31,6 @@ if str(LANTERN_ROOT) not in sys.path:
 
 import streamlit as st
 
-st.set_page_config(
-    page_title="Re-evaluate — Verify",
-    page_icon="🔬",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
 
 _REEVAL_SCRIPT = VERIFY_ROOT / "reeval.py"
 _OUTPUTS_DIR   = VERIFY_ROOT / "outputs"
@@ -58,13 +52,33 @@ _SUGGESTED_MODELS = [
 @st.cache_data(ttl=10)
 def _scan_dirs() -> List[Dict]:
     """
-    Scan all output directories.  Returns list of dicts with:
-      dir, dir_name, app_name, dataset_name, modality, method,
-      total, success, failed, eval_model, last_reeval, has_summary
+    Scan all output directories and aggregate them into run groups keyed by:
+      (app_name, dataset_name, modality, perturbation_method)
+
+    Returns list of dicts with:
+      dirs, dir_count, app_name, dataset_name, modality, method,
+      total, success, failed, eval_model, eval_prompt, last_reeval, has_summary
     """
     if not _OUTPUTS_DIR.exists():
         return []
-    rows: List[Dict] = []
+
+    def _merge_item_state(
+        existing: Optional[tuple[str, bool]],
+        incoming_status: str,
+        incoming_stale: bool,
+    ) -> tuple[str, bool]:
+        if existing is None:
+            return incoming_status, incoming_stale
+        status_rank = {"success": 3, "failed": 2, "error": 1}
+        existing_status, existing_stale = existing
+        if status_rank.get(incoming_status, 0) > status_rank.get(existing_status, 0):
+            return incoming_status, incoming_stale
+        if incoming_status == existing_status == "success":
+            return "success", existing_stale or incoming_stale
+        return existing_status, existing_stale
+
+    groups: Dict[tuple, Dict] = {}
+
     for d in sorted(_OUTPUTS_DIR.iterdir()):
         if not d.is_dir():
             continue
@@ -73,12 +87,35 @@ def _scan_dirs() -> List[Dict]:
             continue
         try:
             cfg = json.loads(cfg_path.read_text())
-            app     = cfg.get("app_name",     "").strip()
+            app = cfg.get("app_name", "").strip()
             dataset = cfg.get("dataset_name", "").strip()
             if not app or not dataset:
                 continue
+            modality = cfg.get("modality", "").strip()
+            method = cfg.get("perturbation_method", "") or "ioc"
         except Exception:
             continue
+
+        key = (app, dataset, modality, method)
+        group = groups.setdefault(
+            key,
+            {
+                "dirs": [],
+                "app_name": app,
+                "dataset_name": dataset,
+                "modality": modality,
+                "method": method,
+                "items": {},
+                "summary_total": 0,
+                "summary_success": 0,
+                "summary_failed": 0,
+                "has_summary": False,
+                "eval_models": set(),
+                "eval_prompts": set(),
+                "last_reeval": "",
+            },
+        )
+        group["dirs"].append(str(d))
 
         summary: Dict = {}
         summary_path = d / _DIR_SUMMARY
@@ -87,21 +124,77 @@ def _scan_dirs() -> List[Dict]:
                 summary = json.loads(summary_path.read_text())
             except Exception:
                 pass
+        if summary:
+            group["has_summary"] = True
+            group["summary_total"] += int(summary.get("total", 0) or 0)
+            group["summary_success"] += int(summary.get("success", 0) or 0)
+            group["summary_failed"] += int(summary.get("failed", 0) or 0)
+            if summary.get("eval_model"):
+                group["eval_models"].add(str(summary["eval_model"]))
+            if summary.get("eval_prompt"):
+                group["eval_prompts"].add(str(summary["eval_prompt"]))
+            last_reeval = str(summary.get("last_reeval", "") or "")
+            if last_reeval and last_reeval > group["last_reeval"]:
+                group["last_reeval"] = last_reeval
 
-        rows.append({
-            "dir":          str(d),
-            "dir_name":     d.name,
-            "app_name":     app,
-            "dataset_name": dataset,
-            "modality":     cfg.get("modality", ""),
-            "method":       cfg.get("perturbation_method", "") or "ioc",
-            "total":        summary.get("total",      0),
-            "success":      summary.get("success",    0),
-            "failed":       summary.get("failed",     0),
-            "eval_model":   summary.get("eval_model", ""),
-            "last_reeval":  summary.get("last_reeval",""),
-            "has_summary":  bool(summary),
-        })
+        saw_item_json = False
+        for f in d.iterdir():
+            if f.suffix != ".json" or f.name in ("run_config.json", _DIR_SUMMARY):
+                continue
+            saw_item_json = True
+            try:
+                data = json.loads(f.read_text())
+                item_name = str(data.get("filename") or f.stem)
+                group["items"][item_name] = _merge_item_state(
+                    group["items"].get(item_name),
+                    str(data.get("status", "")),
+                    bool(data.get("ext_eval_stale", False)),
+                )
+            except Exception:
+                item_name = f.stem
+                group["items"][item_name] = _merge_item_state(
+                    group["items"].get(item_name),
+                    "error",
+                    False,
+                )
+
+        if not saw_item_json and not summary:
+            group["items"][d.name] = _merge_item_state(
+                group["items"].get(d.name),
+                "error",
+                False,
+            )
+
+    rows: List[Dict] = []
+    for group in groups.values():
+        if group["items"]:
+            total = len(group["items"])
+            success = sum(1 for st, _ in group["items"].values() if st == "success")
+            failed = sum(1 for st, _ in group["items"].values() if st == "failed")
+        else:
+            total = group["summary_total"]
+            success = group["summary_success"]
+            failed = group["summary_failed"]
+
+        eval_models = sorted(group["eval_models"])
+        eval_prompts = sorted(group["eval_prompts"])
+        rows.append(
+            {
+                "dirs": group["dirs"],
+                "dir_count": len(group["dirs"]),
+                "app_name": group["app_name"],
+                "dataset_name": group["dataset_name"],
+                "modality": group["modality"],
+                "method": group["method"],
+                "total": total,
+                "success": success,
+                "failed": failed,
+                "eval_model": eval_models[0] if len(eval_models) == 1 else ("mixed" if eval_models else ""),
+                "eval_prompt": eval_prompts[0] if len(eval_prompts) == 1 else ("mixed" if eval_prompts else ""),
+                "last_reeval": group["last_reeval"],
+                "has_summary": group["has_summary"],
+            }
+        )
     return rows
 
 
@@ -137,6 +230,7 @@ def main() -> None:
     st.markdown(
         "Re-run the inferability evaluator on already-cached output results "
         "using a different model, without re-executing any target app.  \n"
+        "Rows are aggregated run groups keyed by app / dataset / modality / method.  \n"
         "Run **Initialize labels** once first to record which model produced "
         "the current `ext_eval` scores."
     )
@@ -172,9 +266,29 @@ def main() -> None:
         model: str = custom_model.strip() if custom_model.strip() else model_choice
         st.caption(f"Active model: `{model}`")
 
+        prompt_mode = st.radio(
+            "Evaluation prompt",
+            ["prompt1", "prompt2", "prompt3"],
+            index=0,
+            disabled=running,
+            help=(
+                "prompt1: binary inferability. "
+                "prompt2: binary inferability + prediction. "
+                "prompt3: aggregate externalized result + per-channel threat."
+            ),
+        )
+
         st.divider()
         workers = st.slider("Parallel workers", 1, 8, 4, disabled=running,
                             help="Concurrent API calls per directory")
+        dir_workers = st.slider(
+            "Directory workers",
+            1,
+            8,
+            1,
+            disabled=running,
+            help="Number of output directories to process concurrently",
+        )
         verbose = st.toggle("Verbose output", value=False, disabled=running)
         dry_run = st.toggle("Dry run (no writes)", value=False, disabled=running)
         st.divider()
@@ -234,7 +348,7 @@ def main() -> None:
     st.divider()
 
     # ── Directory table ───────────────────────────────────────────────────────
-    st.subheader("Output Directories")
+    st.subheader("Output Groups")
 
     sa_col, da_col, _, filt_col = st.columns([1, 1, 2, 3])
     if sa_col.button("Select all",   disabled=running, use_container_width=True):
@@ -250,9 +364,9 @@ def main() -> None:
                                label_visibility="collapsed")
 
     # Header
-    hdr_cols = st.columns([0.4, 2, 1.2, 2, 1, 1, 3, 2])
+    hdr_cols = st.columns([0.4, 2, 1.1, 2, 1, 0.8, 1, 1.2, 2.7, 1.6])
     for col, label in zip(hdr_cols, ["", "App", "Modality", "Dataset", "Method",
-                                      "Items", "Eval Model", "Last Re-eval"]):
+                                      "Dirs", "Items", "Prompt", "Eval Model", "Last Re-eval"]):
         col.markdown(f"**{label}**")
     st.divider()
 
@@ -265,7 +379,7 @@ def main() -> None:
             if search.lower() not in haystack:
                 continue
 
-        cols = st.columns([0.4, 2, 1.2, 2, 1, 1, 3, 2])
+        cols = st.columns([0.4, 2, 1.1, 2, 1, 0.8, 1, 1.2, 2.7, 1.6])
 
         checked = cols[0].checkbox(
             "select",
@@ -275,7 +389,7 @@ def main() -> None:
             disabled=running,
         )
         if checked:
-            selected_dirs.append(row["dir"])
+            selected_dirs.extend(row["dirs"])
 
         # Modality badge
         mod_color = "#4a90d9" if row["modality"] == "image" else "#e07b2a"
@@ -300,6 +414,8 @@ def main() -> None:
                 f'{_html.escape(ev)}</span>'
             )
 
+        prompt_cell = row["eval_prompt"] or "—"
+
         items_str  = f"{row['success']} / {row['total']}" if row["total"] else "—"
         last_re    = row["last_reeval"][:10] if row["last_reeval"] else "—"
 
@@ -307,12 +423,15 @@ def main() -> None:
         cols[2].markdown(mod_badge, unsafe_allow_html=True)
         cols[3].write(row["dataset_name"])
         cols[4].write(row["method"])
-        cols[5].write(items_str)
-        cols[6].markdown(ev_cell, unsafe_allow_html=True)
-        cols[7].write(last_re)
+        cols[5].write(str(row["dir_count"]))
+        cols[6].write(items_str)
+        cols[7].write(prompt_cell)
+        cols[8].markdown(ev_cell, unsafe_allow_html=True)
+        cols[9].write(last_re)
 
     n_sel = len(selected_dirs)
-    st.caption(f"{n_sel} of {len(dirs)} directories selected")
+    n_selected_groups = sum(1 for i in range(len(dirs)) if st.session_state.get(f"reeval_row_{i}", False))
+    st.caption(f"{n_selected_groups} of {len(dirs)} groups selected ({n_sel} directories)")
 
     # ── Re-evaluate / Stop ────────────────────────────────────────────────────
     st.divider()
@@ -334,8 +453,13 @@ def main() -> None:
                     sys.executable, "-u", str(_REEVAL_SCRIPT),
                     "--model", model,
                     "--workers", str(workers),
+                    "--dir-workers", str(dir_workers),
                     "--dir",
                 ] + selected_dirs
+                if prompt_mode == "prompt2":
+                    cmd.append("--prompt2")
+                elif prompt_mode == "prompt3":
+                    cmd.append("--prompt3")
                 if verbose:  cmd.append("--verbose")
                 if dry_run:  cmd.append("--dry-run")
                 rs.update({"running": True, "log": [f"$ {' '.join(cmd)}", ""],

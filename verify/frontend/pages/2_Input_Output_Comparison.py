@@ -21,13 +21,12 @@ if str(LANTERN_ROOT) not in sys.path:
     sys.path.insert(0, str(LANTERN_ROOT))
 
 import streamlit as st
-
-st.set_page_config(
-    page_title="Input-Output Comparison — Verify",
-    page_icon="🔬",
-    layout="wide",
-    initial_sidebar_state="expanded",
+from verify.backend.evaluation_method.evaluator import (
+    get_aggregate_eval_entry,
+    get_channel_eval_entries,
+    is_channelwise_eval_entry,
 )
+
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -36,6 +35,9 @@ KNOWN_APPS = [
     "deeptutor", "llm-vtuber", "skin-disease-detection", "google-ai-edge-gallery",
     "tool-neuron",
     "chat-driven-expense-tracker",
+    "photomath",
+    "replika",
+    "expensify",
 ]
 
 STAGE_INPUT = "Input"
@@ -48,6 +50,23 @@ STAGE_COLORS = {
     STAGE_OUTPUT: "#d9534f",
     STAGE_EXT: "#f0ad4e",
 }
+CHANNEL_STAGE_ORDER = ["AGGREGATE", "UI", "NETWORK", "STORAGE", "LOGGING"]
+CHANNEL_STAGE_LABELS = {
+    "AGGREGATE": "Aggregate Ext",
+    "UI": "UI",
+    "NETWORK": "Network",
+    "STORAGE": "Storage",
+    "LOGGING": "Logging",
+}
+CHANNEL_STAGE_COLORS = {
+    "AGGREGATE": "#f0ad4e",
+    "UI": "#7f8c8d",
+    "NETWORK": "#5b8def",
+    "STORAGE": "#27ae60",
+    "LOGGING": "#f39c12",
+}
+
+DISPLAY_PREVIEW_CHARS = 4000
 
 
 # ─── Config loaders ───────────────────────────────────────────────────────────
@@ -83,6 +102,32 @@ def _build_ext_text(externalizations: Dict[str, str]) -> str:
         f"[{channel.upper()}] {content}"
         for channel, content in externalizations.items()
     )
+
+
+def _display_preview_text(text: str, area_key: str, *, empty_text: str, height: int = 200) -> None:
+    """Show a truncated preview in the UI while preserving the full stored text."""
+    show_full = st.session_state.get("show_full_externalizations", False)
+    if not text.strip():
+        value = empty_text
+    elif show_full or len(text) <= DISPLAY_PREVIEW_CHARS:
+        value = text
+    else:
+        value = text[:DISPLAY_PREVIEW_CHARS] + "\n\n[truncated for display]"
+
+    st.text_area(
+        area_key,
+        value=value,
+        height=height,
+        disabled=True,
+        label_visibility="collapsed",
+        key=area_key,
+    )
+
+    if text.strip() and not show_full and len(text) > DISPLAY_PREVIEW_CHARS:
+        st.caption(
+            f"Display preview limited to {DISPLAY_PREVIEW_CHARS:,} chars. "
+            "Enable `Show full externalizations` in the sidebar to inspect the full captured text."
+        )
 
 
 def _ioc_cache_dir(app_name: str, dataset_name: str, modality: str) -> "Path":
@@ -296,9 +341,9 @@ def _display_image(b64_str: str | None, data=None):
     try:
         if b64_str:
             import base64
-            st.image(base64.b64decode(b64_str), width="stretch")
+            st.image(base64.b64decode(b64_str), use_container_width=True)
         elif data is not None:
-            st.image(data, width="stretch")
+            st.image(data, use_container_width=True)
         else:
             st.warning("No image available.")
     except Exception as e:
@@ -337,8 +382,8 @@ def _stage_table(
         in_val = input_labels.get(attr, 0) == 1
         out_entry = output_eval.get(attr, {})
         out_val = isinstance(out_entry, dict) and bool(out_entry.get("inferable"))
-        ext_entry = ext_eval.get(attr, {})
-        ext_val = isinstance(ext_entry, dict) and bool(ext_entry.get("inferable"))
+        ext_entry = get_aggregate_eval_entry(ext_eval.get(attr))
+        ext_val = bool(ext_entry.get("inferable"))
 
         def cell(flag: bool) -> str:
             bg = _BG_YES if flag else _BG_NO
@@ -370,13 +415,313 @@ def _stage_table(
     st.markdown(table_html, unsafe_allow_html=True)
 
 
-def _reasoning_expander(
+def _has_prompt3_channel_data(ext_eval: Dict[str, Any]) -> bool:
+    return any(is_channelwise_eval_entry(entry) for entry in ext_eval.values())
+
+
+def _render_attribute_heatmap(
+    input_labels: Dict[str, int],
     output_eval: Dict[str, Any],
     ext_eval: Dict[str, Any],
     unified_attrs: List[str],
 ):
+    import pandas as pd
+    import altair as alt
+
+    rows = [
+        {"Stage": STAGE_INPUT, "Attribute": attr, "state": "yes" if input_labels.get(attr, 0) == 1 else "no"}
+        for attr in unified_attrs
+    ]
+    rows += [
+        {
+            "Stage": STAGE_OUTPUT,
+            "Attribute": attr,
+            "state": "yes" if bool(output_eval.get(attr, {}).get("inferable")) else "no",
+        }
+        for attr in unified_attrs
+    ]
+
+    if _has_prompt3_channel_data(ext_eval):
+        stage_keys = CHANNEL_STAGE_ORDER
+    else:
+        stage_keys = ["AGGREGATE"]
+
+    for stage_key in stage_keys:
+        label = CHANNEL_STAGE_LABELS[stage_key]
+        for attr in unified_attrs:
+            entry = ext_eval.get(attr)
+            if stage_key == "AGGREGATE":
+                inferable = bool(get_aggregate_eval_entry(entry).get("inferable"))
+                state = "yes" if inferable else "no"
+            else:
+                channels = get_channel_eval_entries(entry)
+                if stage_key in channels:
+                    state = "yes" if bool(channels[stage_key].get("inferable")) else "no"
+                else:
+                    state = "na"
+            rows.append({"Stage": label, "Attribute": attr, "state": state})
+
+    df = pd.DataFrame(rows)
+    stage_order = [STAGE_INPUT, STAGE_OUTPUT] + [CHANNEL_STAGE_LABELS[k] for k in stage_keys]
+
+    rect = (
+        alt.Chart(df)
+        .mark_rect(stroke="#ffffff", strokeWidth=1)
+        .encode(
+            x=alt.X("Attribute:N", sort=unified_attrs, axis=alt.Axis(labelAngle=-40, labelFontSize=10)),
+            y=alt.Y("Stage:N", sort=stage_order, title=None),
+            color=alt.Color(
+                "state:N",
+                scale=alt.Scale(
+                    domain=["yes", "no", "na"],
+                    range=["#c62828", "#ffffff", "#e6e6e6"],
+                ),
+                legend=None,
+            ),
+            tooltip=["Stage", "Attribute", alt.Tooltip("state:N", title="Status")],
+        )
+    )
+    text = (
+        alt.Chart(df[df["state"] == "yes"])
+        .mark_text(text="✓", fontSize=12, fontWeight="bold", color="#2f4f2f")
+        .encode(
+            x=alt.X("Attribute:N", sort=unified_attrs),
+            y=alt.Y("Stage:N", sort=stage_order),
+        )
+    )
+    chart = (rect + text).properties(width=alt.Step(44), height=alt.Step(44))
+    st.altair_chart(chart, use_container_width=True)
+    st.caption("Red = inferable/present, white = not inferable, grey = channel not captured or not evaluated.")
+
+
+def _render_channel_aggregated(all_results: List[Dict[str, Any]], unified_attrs: List[str]):
+    import pandas as pd
+    import altair as alt
+
+    success = [r for r in all_results if r.get("status") == "success"]
+    if not success:
+        st.info("No successful items to aggregate.")
+        return
+
+    include_channelwise = any(_has_prompt3_channel_data(r.get("ext_eval", {})) for r in success)
+    stage_keys = ["INPUT", "OUTPUT", "AGGREGATE"] + (CHANNEL_STAGE_ORDER[1:] if include_channelwise else [])
+    stage_labels = {
+        "INPUT": STAGE_INPUT,
+        "OUTPUT": STAGE_OUTPUT,
+        "AGGREGATE": CHANNEL_STAGE_LABELS["AGGREGATE"],
+        "UI": CHANNEL_STAGE_LABELS["UI"],
+        "NETWORK": CHANNEL_STAGE_LABELS["NETWORK"],
+        "STORAGE": CHANNEL_STAGE_LABELS["STORAGE"],
+        "LOGGING": CHANNEL_STAGE_LABELS["LOGGING"],
+    }
+    stage_colors = {
+        "INPUT": STAGE_COLORS[STAGE_INPUT],
+        "OUTPUT": STAGE_COLORS[STAGE_OUTPUT],
+        "AGGREGATE": CHANNEL_STAGE_COLORS["AGGREGATE"],
+        "UI": CHANNEL_STAGE_COLORS["UI"],
+        "NETWORK": CHANNEL_STAGE_COLORS["NETWORK"],
+        "STORAGE": CHANNEL_STAGE_COLORS["STORAGE"],
+        "LOGGING": CHANNEL_STAGE_COLORS["LOGGING"],
+    }
+
+    rows = []
+    for attr in unified_attrs:
+        for stage_key in stage_keys:
+            if stage_key == "INPUT":
+                support = len(success)
+                positive = sum(r.get("input_labels", {}).get(attr, 0) for r in success)
+            elif stage_key == "OUTPUT":
+                support = len(success)
+                positive = sum(
+                    1
+                    for r in success
+                    if isinstance(r.get("output_eval", {}).get(attr), dict)
+                    and r["output_eval"][attr].get("inferable")
+                )
+            elif stage_key == "AGGREGATE":
+                support = len(success)
+                positive = sum(
+                    1
+                    for r in success
+                    if bool(get_aggregate_eval_entry(r.get("ext_eval", {}).get(attr)).get("inferable"))
+                )
+            else:
+                support = 0
+                positive = 0
+                for r in success:
+                    channels = get_channel_eval_entries(r.get("ext_eval", {}).get(attr))
+                    if stage_key in channels:
+                        support += 1
+                        if channels[stage_key].get("inferable"):
+                            positive += 1
+            if support == 0 and stage_key not in ("INPUT", "OUTPUT", "AGGREGATE"):
+                continue
+            rows.append(
+                {
+                    "Attribute": attr,
+                    "Stage": stage_labels[stage_key],
+                    "Positive Rate": (positive / support) if support else 0.0,
+                    "Support": support,
+                }
+            )
+
+    df = pd.DataFrame(rows)
+    stage_order = [stage_labels[s] for s in stage_keys if stage_labels[s] in set(df["Stage"])]
+    chart = (
+        alt.Chart(df)
+        .mark_bar()
+        .encode(
+            x=alt.X("Attribute:N", sort=unified_attrs, axis=alt.Axis(labelAngle=-40, labelFontSize=10)),
+            xOffset=alt.XOffset("Stage:N", sort=stage_order),
+            y=alt.Y("Positive Rate:Q", scale=alt.Scale(domain=[0, 1]), title="Positive rate"),
+            color=alt.Color(
+                "Stage:N",
+                sort=stage_order,
+                scale=alt.Scale(domain=stage_order, range=[stage_colors[k] for k in stage_keys if stage_labels[k] in stage_order]),
+            ),
+            tooltip=["Attribute", "Stage", alt.Tooltip("Positive Rate:Q", format=".2f"), "Support"],
+        )
+        .properties(height=320, title=f"Attribute-wise positive rate across {len(success)} item(s)")
+    )
+    st.altair_chart(chart, use_container_width=True)
+    st.caption(
+        "Input/Raw Output/Aggregate use all successful items. Channel bars use only items where that channel was captured and evaluated."
+    )
+
+
+def _render_channel_aggregated_heatmap(all_results: List[Dict[str, Any]], unified_attrs: List[str]):
+    import pandas as pd
+    import altair as alt
+
+    success = [r for r in all_results if r.get("status") == "success"]
+    if not success:
+        st.info("No successful items to aggregate.")
+        return
+
+    include_channelwise = any(_has_prompt3_channel_data(r.get("ext_eval", {})) for r in success)
+    stage_keys = ["INPUT", "OUTPUT", "AGGREGATE"] + (CHANNEL_STAGE_ORDER[1:] if include_channelwise else [])
+    stage_labels = {
+        "INPUT": STAGE_INPUT,
+        "OUTPUT": STAGE_OUTPUT,
+        "AGGREGATE": CHANNEL_STAGE_LABELS["AGGREGATE"],
+        "UI": CHANNEL_STAGE_LABELS["UI"],
+        "NETWORK": CHANNEL_STAGE_LABELS["NETWORK"],
+        "STORAGE": CHANNEL_STAGE_LABELS["STORAGE"],
+        "LOGGING": CHANNEL_STAGE_LABELS["LOGGING"],
+    }
+
+    rows = []
+    for attr in unified_attrs:
+        for stage_key in stage_keys:
+            if stage_key == "INPUT":
+                support = len(success)
+                positive = sum(r.get("input_labels", {}).get(attr, 0) for r in success)
+            elif stage_key == "OUTPUT":
+                support = len(success)
+                positive = sum(
+                    1
+                    for r in success
+                    if isinstance(r.get("output_eval", {}).get(attr), dict)
+                    and r["output_eval"][attr].get("inferable")
+                )
+            elif stage_key == "AGGREGATE":
+                support = len(success)
+                positive = sum(
+                    1
+                    for r in success
+                    if bool(get_aggregate_eval_entry(r.get("ext_eval", {}).get(attr)).get("inferable"))
+                )
+            else:
+                support = 0
+                positive = 0
+                for r in success:
+                    channels = get_channel_eval_entries(r.get("ext_eval", {}).get(attr))
+                    if stage_key in channels:
+                        support += 1
+                        if channels[stage_key].get("inferable"):
+                            positive += 1
+
+            rows.append(
+                {
+                    "Attribute": attr,
+                    "Stage": stage_labels[stage_key],
+                    "Exposure Score": round((positive / support), 3) if support else None,
+                    "Support": support,
+                }
+            )
+
+    df = pd.DataFrame(rows)
+    stage_order = [stage_labels[s] for s in stage_keys]
+
+    df_valid = df[df["Exposure Score"].notna()]
+    df_na = df[df["Exposure Score"].isna()]
+
+    layers = []
+    if not df_na.empty:
+        layers.append(
+            alt.Chart(df_na)
+            .mark_rect(stroke="#ffffff", strokeWidth=1, color="#e6e6e6")
+            .encode(
+                x=alt.X("Attribute:N", sort=unified_attrs, axis=alt.Axis(labelAngle=-40, labelFontSize=10)),
+                y=alt.Y("Stage:N", sort=stage_order, title=None),
+                tooltip=[
+                    alt.Tooltip("Stage:N"),
+                    alt.Tooltip("Attribute:N"),
+                    alt.Tooltip("Support:Q"),
+                ],
+            )
+        )
+
+    if not df_valid.empty:
+        layers.append(
+            alt.Chart(df_valid)
+            .mark_rect(stroke="#ffffff", strokeWidth=1)
+            .encode(
+                x=alt.X("Attribute:N", sort=unified_attrs, axis=alt.Axis(labelAngle=-40, labelFontSize=10)),
+                y=alt.Y("Stage:N", sort=stage_order, title=None),
+                color=alt.Color(
+                    "Exposure Score:Q",
+                    scale=alt.Scale(domain=[0, 1], range=["#ffffff", "#c62828"]),
+                    legend=alt.Legend(title="Exposure score"),
+                ),
+                tooltip=[
+                    alt.Tooltip("Stage:N"),
+                    alt.Tooltip("Attribute:N"),
+                    alt.Tooltip("Exposure Score:Q", format=".2f"),
+                    alt.Tooltip("Support:Q"),
+                ],
+            )
+            .properties(width=alt.Step(44), height=alt.Step(44))
+        )
+        layers.append(
+            alt.Chart(df_valid)
+            .mark_text(fontSize=11, color="#1f1f1f")
+            .encode(
+                x=alt.X("Attribute:N", sort=unified_attrs),
+                y=alt.Y("Stage:N", sort=stage_order),
+                text=alt.Text("Exposure Score:Q", format=".1f"),
+            )
+        )
+
+    if layers:
+        chart = layers[0]
+        for layer in layers[1:]:
+            chart = chart + layer
+        st.altair_chart(chart, use_container_width=True)
+    st.caption(
+        "Heatmap cells show attribute-inferred accuracy / exposure rate by stage or channel. "
+        "Absent channels remain blank light gray for layout consistency."
+    )
+
+
+def _reasoning_expander(
+    output_eval: Dict[str, Any],
+    ext_eval: Dict[str, Any],
+    unified_attrs: List[str],
+    idx: int = 0,
+):
     """Collapsible reasoning panel: one row per attribute, side-by-side output vs ext."""
-    with st.expander("Reasoning details", expanded=False):
+    if st.checkbox("Show reasoning details", value=False, key=f"reasoning_{idx}"):
         col_out, col_ext = st.columns(2)
         with col_out:
             st.markdown(f"**{STAGE_OUTPUT}**")
@@ -400,13 +745,24 @@ def _reasoning_expander(
                     entry = ext_eval.get(attr)
                     if not isinstance(entry, dict):
                         continue
-                    icon = "🔴" if entry.get("inferable") else "🟢"
-                    reason = entry.get("reasoning", "—")
+                    agg = get_aggregate_eval_entry(entry)
+                    icon = "🔴" if agg.get("inferable") else "🟢"
+                    reason = agg.get("reasoning", "—")
                     st.markdown(
                         f'{icon} <span style="font-size:0.9em"><b>{attr}</b></span>',
                         unsafe_allow_html=True,
                     )
-                    st.caption(reason)
+                    if is_channelwise_eval_entry(entry):
+                        st.caption(f"Aggregate: {reason}")
+                        channels = get_channel_eval_entries(entry)
+                        for channel, channel_entry in channels.items():
+                            st.caption(
+                                f"[{channel}] "
+                                f'{"inferable" if channel_entry.get("inferable") else "not inferable"}: '
+                                f'{channel_entry.get("reasoning", "—")}'
+                            )
+                    else:
+                        st.caption(reason)
 
 
 def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
@@ -432,6 +788,19 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
             st.error(f"Error: {result.get('error', 'Unknown error')}")
             return
 
+        detail_key = f"ioc_render_details_{idx}"
+        show_details = bool(st.session_state.get(detail_key, False))
+        if not show_details:
+            if st.button("Load details", key=f"ioc_load_details_{idx}", use_container_width=True):
+                st.session_state[detail_key] = True
+                st.rerun()
+            st.caption("Details are not rendered until requested. Click `Load details` to render this item.")
+            return
+
+        if st.button("Hide details", key=f"ioc_hide_details_{idx}", type="secondary"):
+            st.session_state[detail_key] = False
+            st.rerun()
+
         # ── Top row: Input (left) | Outputs (right) ──────────────────────
         col_in, col_out = st.columns([1, 2])
 
@@ -456,7 +825,7 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
                     cols = st.columns(min(len(frames), 2))
                     for c, f in zip(cols, frames[:2]):
                         with c:
-                            st.image(f, width="stretch")
+                            st.image(f, use_container_width=True)
                 else:
                     st.info("No media available.")
 
@@ -480,18 +849,12 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
             with ext_col:
                 st.markdown(f"**{STAGE_EXT}**")
                 ext_text = result.get("ext_text", "")
-                if ext_text.strip():
-                    st.text_area(
-                        "externalized_text", value=ext_text, height=200, disabled=True,
-                        label_visibility="collapsed",
-                        key=f"ioc_ext_{idx}",
-                    )
-                else:
-                    st.text_area(
-                        "externalized_text_empty", value="No externalizations captured.", height=200,
-                        disabled=True, label_visibility="collapsed",
-                        key=f"ioc_ext_{idx}",
-                    )
+                _display_preview_text(
+                    ext_text,
+                    f"ioc_ext_{idx}",
+                    empty_text="No externalizations captured.",
+                    height=200,
+                )
 
         st.divider()
 
@@ -503,96 +866,35 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
         if result.get("ext_eval_error"):
             st.warning(f"Externalization evaluation error: {result['ext_eval_error']}")
 
-        _stage_table(
-            result.get("input_labels", {}),
-            result.get("output_eval", {}),
-            result.get("ext_eval", {}),
-            unified_attrs,
-        )
+        if _has_prompt3_channel_data(result.get("ext_eval", {})):
+            _render_attribute_heatmap(
+                result.get("input_labels", {}),
+                result.get("output_eval", {}),
+                result.get("ext_eval", {}),
+                unified_attrs,
+            )
+        else:
+            _stage_table(
+                result.get("input_labels", {}),
+                result.get("output_eval", {}),
+                result.get("ext_eval", {}),
+                unified_attrs,
+            )
 
         # ── Reasoning ─────────────────────────────────────────────────────
         _reasoning_expander(
             result.get("output_eval", {}),
             result.get("ext_eval", {}),
             unified_attrs,
+            idx,
         )
 
 
 def _render_aggregated(all_results: List[Dict[str, Any]], unified_attrs: List[str]):
-    """
-    Attribute-wise positive rate across all items for the three stages.
-    Positive rate = fraction of items where the attribute was marked 1 / inferable.
-    """
-    import pandas as pd
-    import altair as alt
-
-    success = [r for r in all_results if r.get("status") == "success"]
-    if not success:
-        st.info("No successful items to aggregate.")
-        return
-
-    n = len(success)
-    rows = []
-    for attr in unified_attrs:
-        input_rate = sum(
-            r.get("input_labels", {}).get(attr, 0) for r in success
-        ) / n
-
-        out_rate = sum(
-            1 if (
-                isinstance(r.get("output_eval", {}).get(attr), dict)
-                and r["output_eval"][attr].get("inferable")
-            ) else 0
-            for r in success
-        ) / n
-
-        ext_rate = sum(
-            1 if (
-                isinstance(r.get("ext_eval", {}).get(attr), dict)
-                and r["ext_eval"][attr].get("inferable")
-            ) else 0
-            for r in success
-        ) / n
-
-        rows += [
-            {"Attribute": attr, "Stage": STAGE_INPUT, "Positive Rate": input_rate},
-            {"Attribute": attr, "Stage": STAGE_OUTPUT, "Positive Rate": out_rate},
-            {"Attribute": attr, "Stage": STAGE_EXT, "Positive Rate": ext_rate},
-        ]
-
-    df = pd.DataFrame(rows)
-
-    chart = (
-        alt.Chart(df)
-        .mark_bar()
-        .encode(
-            x=alt.X("Attribute:N", sort=unified_attrs,
-                    axis=alt.Axis(labelAngle=-40, labelFontSize=10)),
-            xOffset=alt.XOffset("Stage:N", sort=STAGES),
-            y=alt.Y("Positive Rate:Q", scale=alt.Scale(domain=[0, 1]),
-                    title="Positive rate"),
-            color=alt.Color(
-                "Stage:N",
-                sort=STAGES,
-                scale=alt.Scale(
-                    domain=STAGES,
-                    range=[STAGE_COLORS[s] for s in STAGES],
-                ),
-            ),
-            tooltip=["Attribute", "Stage", alt.Tooltip("Positive Rate:Q", format=".2f")],
-        )
-        .properties(
-            height=280,
-            title=f"Attribute-wise positive rate across {n} item(s)",
-        )
-    )
-    st.altair_chart(chart, width="stretch")
-    st.caption(
-        f"Blue = Input annotation positive rate · "
-        f"Red = Raw output inferability rate · "
-        f"Amber = Externalized result inferability rate"
-    )
-
+    st.markdown("**Exposure Heatmap**")
+    _render_channel_aggregated_heatmap(all_results, unified_attrs)
+    st.markdown("**Grouped Bar Chart**")
+    _render_channel_aggregated(all_results, unified_attrs)
 
 # ─── Main UI ──────────────────────────────────────────────────────────────────
 
@@ -624,6 +926,13 @@ def main():
     # ── Sidebar ───────────────────────────────────────────────────────────────
     with st.sidebar:
         st.header("Configuration")
+        st.toggle(
+            "Show full externalizations",
+            key="show_full_externalizations",
+            value=False,
+            help="Display the full captured externalization text instead of a shortened preview.",
+        )
+        st.divider()
 
         # App
         st.subheader("Target App")
@@ -707,7 +1016,7 @@ def main():
             "▶ Run Comparison",
             type="primary",
             disabled=not (app_available and unified_attrs),
-            width="stretch",
+            use_container_width=True,
         )
         if not app_available:
             st.caption(f"App '{selected_app}' is not available.")
