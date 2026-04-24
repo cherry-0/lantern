@@ -34,6 +34,11 @@ from pathlib import Path
 from typing import List
 
 from verify.backend.drivers.emulator_manager import EmulatorManager
+from verify.backend.drivers.pinning import (
+    patch_apk_with_apk_mitm,
+    patch_apkm_base_with_apk_mitm,
+    resign_apk_set,
+)
 
 
 def _adb(serial: str, *args: str) -> subprocess.CompletedProcess:
@@ -85,14 +90,36 @@ def install_mitm_ca(serial: str) -> bool:
     return True
 
 
-def install_apks(em: EmulatorManager, apks: List[Path], apkms: List[Path]) -> bool:
+def install_apks(
+    em: EmulatorManager,
+    apks: List[Path],
+    apkms: List[Path],
+    *,
+    apk_mitm: bool = False,
+) -> bool:
     ok = True
     for apk in apks:
-        success, msg = em.install_apk(apk)
+        install_path = apk
+        if apk_mitm:
+            patched, patch_msg = patch_apk_with_apk_mitm(apk, apk.parent / "_patched")
+            print(f"[provision] {patch_msg}")
+            install_path = patched
+        success, msg = em.install_apk(install_path)
         print(f"[provision] {msg}")
         ok = ok and success
     for apkm in apkms:
-        success, msg = em.install_apkm(apkm)
+        if apk_mitm:
+            splits, patch_msg = patch_apkm_base_with_apk_mitm(
+                em,
+                apkm,
+                extract_dir=apkm.parent / "_split",
+                output_dir=apkm.parent / "_patched",
+            )
+            print(f"[provision] {patch_msg}")
+            signed_splits = resign_apk_set(splits, output_dir=apkm.parent / "_patched_signed")
+            success, msg = em.install_split_apks(signed_splits, label=f"{apkm.name} (apk-mitm)")
+        else:
+            success, msg = em.install_apkm(apkm)
         print(f"[provision] {msg}")
         ok = ok and success
     return ok
@@ -132,6 +159,8 @@ def main(argv=None) -> int:
                    help="Path to a .apkm bundle to install (repeatable)")
     p.add_argument("--no-ca", action="store_true",
                    help="Skip the mitmproxy CA install (use if device is unrooted)")
+    p.add_argument("--apk-mitm", action="store_true",
+                   help="Patch APK/APKM base.apk with apk-mitm before install")
     p.add_argument("--headless", action="store_true",
                    help="Boot without a UI (only useful if onboarding is already done)")
     args = p.parse_args(argv)
@@ -155,7 +184,7 @@ def main(argv=None) -> int:
         install_mitm_ca(em.serial)
 
     if args.apk or args.apkm:
-        if not install_apks(em, args.apk, args.apkm):
+        if not install_apks(em, args.apk, args.apkm, apk_mitm=args.apk_mitm):
             print("[provision] One or more installs failed; aborting before snapshot.", file=sys.stderr)
             return 4
 

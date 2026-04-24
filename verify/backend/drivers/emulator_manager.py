@@ -152,20 +152,16 @@ class EmulatorManager:
             return False, f"adb install failed: {res.stderr.strip() or res.stdout.strip()}"
         return True, f"Installed {p.name}."
 
-    def install_apkm(
+    def _select_apkm_splits(
         self,
         apkm_path: Path | str,
         extract_dir: Optional[Path | str] = None,
         locales: Tuple[str, ...] = ("en",),
-    ) -> Tuple[bool, str]:
-        """
-        Extract an APKMirror .apkm bundle and install only the splits matching
-        this AVD's ABI and density, plus the requested locales and any dynamic
-        feature splits.
-        """
+    ) -> Tuple[Optional[Path], List[Path], str]:
+        """Return (extract_dir, selected_split_paths, message) for an APKM bundle."""
         p = Path(apkm_path)
         if not p.exists():
-            return False, f"APKM not found: {p}"
+            return None, [], f"APKM not found: {p}"
 
         extract = Path(extract_dir) if extract_dir else p.parent / "_split"
         extract.mkdir(parents=True, exist_ok=True)
@@ -191,16 +187,50 @@ class EmulatorManager:
                 keep.append(f)
 
         if not keep or not any(k.name == "base.apk" for k in keep):
-            return False, f"Could not find base.apk + matching splits in {extract}."
+            return None, [], f"Could not find base.apk + matching splits in {extract}."
 
-        res = self._adb_capture("install-multiple", "-r", "-t", *[str(k) for k in keep])
+        return extract, keep, f"Selected splits from {p.name}."
+
+    def install_split_apks(
+        self,
+        apks: List[Path | str],
+        *,
+        label: str = "split APK set",
+    ) -> Tuple[bool, str]:
+        """Install a pre-selected set of split APKs with `adb install-multiple`."""
+        paths = [Path(p) for p in apks]
+        if not paths:
+            return False, f"No APKs provided for {label}."
+        if not any(p.name == "base.apk" for p in paths):
+            return False, f"{label} is missing base.apk."
+        missing = [str(p) for p in paths if not p.exists()]
+        if missing:
+            return False, f"Missing APK(s) for {label}: {missing}"
+
+        res = self._adb_capture("install-multiple", "-r", "-t", *[str(p) for p in paths])
         if res.returncode != 0 or "Success" not in (res.stdout + res.stderr):
             return False, (
                 f"adb install-multiple failed: "
                 f"{res.stderr.strip() or res.stdout.strip()}"
             )
-        names = ", ".join(k.name for k in keep)
-        return True, f"Installed {p.name} (splits: {names})."
+        names = ", ".join(p.name for p in paths)
+        return True, f"Installed {label} (splits: {names})."
+
+    def install_apkm(
+        self,
+        apkm_path: Path | str,
+        extract_dir: Optional[Path | str] = None,
+        locales: Tuple[str, ...] = ("en",),
+    ) -> Tuple[bool, str]:
+        """
+        Extract an APKMirror .apkm bundle and install only the splits matching
+        this AVD's ABI and density, plus the requested locales and any dynamic
+        feature splits.
+        """
+        _, keep, msg = self._select_apkm_splits(apkm_path, extract_dir=extract_dir, locales=locales)
+        if not keep:
+            return False, msg
+        return self.install_split_apks(keep, label=Path(apkm_path).name)
 
     def uninstall(self, package: str) -> None:
         self._adb_capture("uninstall", package)

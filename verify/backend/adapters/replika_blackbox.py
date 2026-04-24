@@ -43,6 +43,7 @@ class ReplikaAdapter(BlackBoxAdapter):
         llm_hosts=_REPLIKA_HOSTS,
         primary_backend_host="*.replika.ai",
         runtime_permissions=[],
+        pinning_bypass="apk_mitm",
         timeout_s=120,
     )
 

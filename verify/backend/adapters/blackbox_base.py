@@ -33,11 +33,14 @@ class BlackBoxConfig:
     main_activity: str = ""
     apk_filename: str = ""                 # single .apk, under target-apps/<name>/
     apkm_filename: str = ""                # .apkm bundle; one of apk/apkm required
+    patched_apk_filename: str = ""         # optional locally patched .apk
+    patched_apkm_base_filename: str = ""   # optional patched base.apk for split installs
     avd_name: str = "verify_pixel7"
     snapshot_name: str = "clean"
     llm_hosts: Tuple[str, ...] = DEFAULT_LLM_HOSTS
     primary_backend_host: Optional[str] = None
     runtime_permissions: List[str] = field(default_factory=list)
+    pinning_bypass: str = "none"           # "none" | "apk_mitm" | "frida"
     timeout_s: int = 120
 
 

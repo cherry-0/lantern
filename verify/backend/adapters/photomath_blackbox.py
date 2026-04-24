@@ -12,6 +12,8 @@ across Photomath updates are tracked per adapter rather than in the base class.
 """
 from __future__ import annotations
 
+import shutil
+import subprocess
 from typing import Any, Dict
 
 from verify.backend.adapters.blackbox_base import BlackBoxAdapter, BlackBoxConfig
@@ -47,9 +49,48 @@ class PhotomathAdapter(BlackBoxAdapter):
         timeout_s=90,
     )
 
-    def _drive_app(self, driver, input_item: Dict[str, Any]) -> str:
-        import time
+    @staticmethod
+    def _set_proxy(serial: str, host_port: str) -> None:
+        adb = shutil.which("adb") or "adb"
+        subprocess.run(
+            [adb, "-s", serial, "shell", "settings", "put", "global", "http_proxy", host_port],
+            check=False,
+            timeout=10,
+        )
 
+    @staticmethod
+    def _get_proxy(serial: str) -> str:
+        adb = shutil.which("adb") or "adb"
+        res = subprocess.run(
+            [adb, "-s", serial, "shell", "settings", "get", "global", "http_proxy"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return (res.stdout or "").strip()
+
+    @staticmethod
+    def _clear_proxy(serial: str) -> None:
+        adb = shutil.which("adb") or "adb"
+        for args in (
+            ["shell", "settings", "put", "global", "http_proxy", ":0"],
+            ["shell", "settings", "delete", "global", "http_proxy"],
+        ):
+            subprocess.run([adb, "-s", serial, *args], check=False, timeout=10)
+
+    @staticmethod
+    def _tap_bounds_center(serial: str, bounds: Dict[str, int]) -> None:
+        adb = shutil.which("adb") or "adb"
+        x = (bounds["left"] + bounds["right"]) // 2
+        y = (bounds["top"] + bounds["bottom"]) // 2
+        subprocess.run(
+            [adb, "-s", serial, "shell", "input", "tap", str(x), str(y)],
+            check=False,
+            timeout=10,
+        )
+
+    def _drive_app(self, driver, input_item: Dict[str, Any]) -> str:
         src = input_item.get("path") or ""
         if not src:
             raise RuntimeError("photomath adapter requires input_item['path']")
@@ -76,8 +117,9 @@ class PhotomathAdapter(BlackBoxAdapter):
             driver.d(resourceId="com.microblink.photomath:id/gallery_fragment_container")
             .child(className="android.widget.ImageButton")
         )
+        picker_locator: Dict[str, Any] | None = None
         if gallery.wait(timeout=5):
-            gallery.click()
+            picker_locator = None
         else:
             # Fallbacks for older/newer builds where the button is labeled or
             # lives outside that container.
@@ -87,23 +129,46 @@ class PhotomathAdapter(BlackBoxAdapter):
                 {"resourceIdMatches": r".*:id/gallery.*"},
             ):
                 if driver.exists(locator):
-                    driver.tap(locator)
+                    picker_locator = locator
                     break
             else:
                 raise RuntimeError("Could not find Photomath's gallery import button.")
 
-        # STALLED: Android 14 scoped photo-picker auto-dismisses within ~1s when
-        # mitmproxy is active (proxy intercepts picker's Google Photos TLS request
-        # → failure → auto-close). The thumbnail IS visible (confirmed via screencap)
-        # but gone by the time the tap fires. Pending fix: clear proxy before gallery
-        # open, or use VIEW intent to bypass picker, or save a post-picker snapshot.
-        # See analysis/verify_report_blackbox.md §15.2 for options.
-        import subprocess as _sp, shutil as _sh
-        time.sleep(1)
-        _adb = _sh.which("adb") or "adb"
-        _sp.run([_adb, "-s", driver.serial, "shell", "input", "tap", "177", "825"],
-                check=True, timeout=5)
-        time.sleep(1)
+        # Android 14's system photo picker closes itself under the global MITM
+        # proxy. Drop the proxy just for the picker, then restore it once
+        # Photomath returns to its own crop/solve screen.
+        current_proxy = self._get_proxy(driver.serial)
+        self._clear_proxy(driver.serial)
+        try:
+            if picker_locator is None:
+                gallery.click()
+            else:
+                driver.tap(picker_locator)
+            if driver.wait_for({"descriptionContains": "Photo taken on"}, timeout=12):
+                thumb = driver.d(descriptionContains="Photo taken on")
+                thumb.wait(timeout=5)
+                self._tap_bounds_center(driver.serial, thumb.info["bounds"])
+            elif driver.wait_for(
+                {"resourceId": "com.google.android.providers.media.module:id/icon_thumbnail"},
+                timeout=5,
+            ):
+                thumb = driver.d(
+                    resourceId="com.google.android.providers.media.module:id/icon_thumbnail",
+                    instance=0,
+                )
+                thumb.wait(timeout=5)
+                self._tap_bounds_center(driver.serial, thumb.info["bounds"])
+            else:
+                raise RuntimeError("Photomath picker opened, but no thumbnail appeared.")
+        finally:
+            if (
+                current_proxy
+                and current_proxy not in ("null", ":0")
+                and driver.wait_for(
+                    {"resourceId": "com.microblink.photomath:id/button_solve"}, timeout=10
+                )
+            ):
+                self._set_proxy(driver.serial, current_proxy)
 
         # After thumbnail selection Photomath shows a crop-adjustment screen.
         # Tap "Solve" to submit the image to the OCR+solver pipeline.

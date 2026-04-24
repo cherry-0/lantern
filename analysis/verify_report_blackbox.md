@@ -703,7 +703,7 @@ Locator dicts are best-effort for Photomath 8.47.1 and will need verification ag
 | Component | Phase | Status |
 |---|---|---|
 | Photomath photo-picker + solver locators (second-half of `_drive_app`) | 2 | Gallery button done; picker-thumbnail + `problem/solution` locators pending (§15.9–15.10) |
-| Pinning bypass helpers (`apk-mitm`, Frida) | 3 | Not started — Photomath didn't need either; Replika/Expensify likely will |
+| Pinning bypass helpers (`apk-mitm`, Frida) | 3 | Partial — `drivers/pinning.py` landed with `apk-mitm` patching for single APKs and APKM base.apk + split re-signing support; `provision.py --apk-mitm` now installs consistently re-signed split bundles. Replika is marked `pinning_bypass="apk_mitm"`. Runtime stability is still unresolved (§15.3). |
 | Frontend wiring (`KNOWN_APPS` entries, device-required badge, emulator status indicator) | 3 | Not started |
 | Replika / Expensify `_drive_app` implementations | 4 | Stubs raise `NotImplementedError` |
 
@@ -716,7 +716,7 @@ Originally five APKs were staged; three are now in scope and two are dropped.
 | App | Adapter | Status |
 |---|---|---|
 | Photomath | `PhotomathAdapter` | First run succeeded 2026-04-19 with UI+LOGGING events; gallery button locator patched. Photo-picker + solver locators pending (§15.9–15.10). |
-| Replika | `ReplikaAdapter` | Config populated; `_drive_app` raises `NotImplementedError` until locators verified. |
+| Replika | `ReplikaAdapter` | Config populated and now marked `pinning_bypass="apk_mitm"`. Patched split install succeeds, but the patched app still hangs/ANRs on startup before reaching a usable chat UI (§15.3). `_drive_app` still raises `NotImplementedError`. |
 | Expensify | `ExpensifyAdapter` | Config populated; `_drive_app` raises `NotImplementedError` until locators verified. Will likely need `apk-mitm` for TLS pinning. |
 
 **Dropped (not registered, binaries remain staged under `target-apps/` in case we revisit):**
@@ -761,11 +761,41 @@ Hierarchy dump with image present revealed the full flow:
 
 **Root cause (confirmed via `adb screencap`):** the Android 14 scoped photo-picker closes itself within ~1 second of opening when mitmproxy is active. The picker makes a network request (Google Photos load) that goes through the proxy; the TLS intercept causes an error and the picker auto-dismisses. The thumbnail IS visible at t=1s but gone by t=2s.
 
+**What was validated on 2026-04-24:**
+
+- The home-screen gallery button locator is correct: `gallery_fragment_container → ImageButton`.
+- With proxy **off**, the picker stays open and exposes both:
+  - `descriptionContains="Photo taken on"` on the first thumbnail tile
+  - `resourceId="com.google.android.providers.media.module:id/icon_thumbnail"` on the thumbnail image
+- With proxy **off**, a manual thumbnail tap returns to the crop screen reliably; the crop screen shows `button_solve`.
+- With proxy re-enabled **after** the crop screen appears, tapping **Solve** reaches Photomath's own network-dependent path and produces the in-app "can't connect" / "try again" error rather than dismissing the picker. So the picker and solver failures are distinct.
+
+**Adapter changes landed on 2026-04-24 (`adapters/photomath_blackbox.py`):**
+
+- Removed the old hard-coded thumbnail coordinate tap (`input tap 177 825`).
+- Added proxy helpers (`_get_proxy`, `_clear_proxy`, `_set_proxy`) so the adapter can temporarily drop the global MITM proxy only for the picker.
+- Switched picker selection to real thumbnail locators (`descriptionContains="Photo taken on"` with a fallback to `com.google.android.providers.media.module:id/icon_thumbnail`) plus bounds-center tapping.
+
+**Current status after those changes:**
+
+- The picker branch is narrower than before but still flaky under the full `run_pipeline()` path after `restore_snapshot("clean")`.
+- Successful direct-device repros do **not** yet translate into a stable end-to-end adapter run. Some runs still return from the picker without selecting the image; one run reached the picker and then falsely read picker-sheet text as `output_text`.
+- The current stable claim is therefore: *proxy-clearing around the picker is necessary, but not yet sufficient for a reproducible Photomath artifact run.*
+
+**Intent-bypass experiments (2026-04-24):**
+
+- `am start -a android.intent.action.VIEW -d content://media/external/images/media/<id> -t image/jpeg com.microblink.photomath`
+  does **not** resolve on this build. `cmd package resolve-activity` reports `No activity found`.
+- `dumpsys package com.microblink.photomath` shows that the APK registers `android.intent.action.SEND` for `image/*` on `.main.activity.LauncherActivity`, not `VIEW` for `content://...` media URIs.
+- Forcing `SEND image/jpeg` with `android.intent.extra.STREAM=content://media/.../<id>` launches Photomath, but the app immediately shows:
+  `Oops! Something went wrong! Please try again.`
+- Conclusion: the previously suggested `VIEW`-intent bypass is not a valid fallback for this APK version, and the `SEND`-intent path is presently not usable either.
+
 **Pending fix options (pick one when returning to Photomath):**
 
 - **A. Clear proxy around picker** — call `em.clear_runtime_proxy()` before `gallery.click()`, then re-set after thumbnail is selected. Cleaner; loses a small window of NETWORK capture.
-- **B. VIEW intent** — after `content insert`, query the `_id` and send `am start -a android.intent.action.VIEW -d content://media/external/images/media/<id> -t image/jpeg com.microblink.photomath`. Bypasses picker entirely; goes straight to crop screen.
-- **C. Post-picker snapshot** — manually navigate to the crop screen once, save a `post_picker` snapshot. Batch restores it instead of `clean`. Loses gallery-flow NETWORK events.
+- **B. Post-picker snapshot** — manually navigate to the crop screen once, save a `post_picker` snapshot. Batch restores it instead of `clean`. Loses gallery-flow NETWORK events.
+- **C. Rooted physical-device variant** — revisit on a rooted real phone if the emulator's system picker remains unstable under instrumentation. This is a separate execution mode, not a drop-in replacement for the AVD path.
 
 **Moving on to Replika first.**
 
@@ -773,10 +803,26 @@ Hierarchy dump with image present revealed the full flow:
 
 Deferred until §15.1–15.2 produce non-trivial NETWORK + solver output.
 
-- [ ] `apk-mitm` wrapper — Replika/Expensify expected to need pinning bypass; Photomath did not.
+- [x] `apk-mitm` wrapper — landed on 2026-04-24. `drivers/pinning.py` can patch a single APK or patch `base.apk` from an APKM bundle, then re-sign all selected splits with the local Android debug keystore so `adb install-multiple` accepts the bundle.
 - [ ] Frida fallback for hard-pinned apps.
 - [ ] Implement `_drive_app` for `replika_blackbox.py` (text chat flow) and `expensify_blackbox.py` (receipt image flow) — currently both raise `NotImplementedError`.
 - [ ] `ObserverPipeline` wrapper to replace the inline `with net, fs, log, ui:` in `blackbox_base.py`.
+
+**Replika hardening status (2026-04-24):**
+
+- Vanilla Replika was not installed in the current `clean` snapshot; it had to be installed explicitly onto the running AVD.
+- The current launcher/onboarding surface is reachable, but the snapshot is not yet in the saved-session chat state assumed by `replika_blackbox.py`.
+- Applying `apk-mitm` to Replika's `base.apk` succeeds and reports a concrete pinning-related patch:
+  `ai/replika/app/ev9: Applied HostnameVerifier#verify (javax) patch`
+- Replacing only `base.apk` is insufficient for split bundles: `adb install-multiple` rejects mixed-signature installs with
+  `INSTALL_FAILED_INVALID_APK ... signatures are inconsistent`.
+- Re-signing the entire selected split set with the Android debug key fixes the install problem; the patched split bundle installs successfully on the emulator.
+- The patched Replika build then launches into `ai.replika.app/.home.ui.MainActivity`, but runtime stability is still poor:
+  - the app can stall on the black splash / onboarding surface
+  - Android may surface a "Replika isn't responding" dialog
+  - `logcat` shows repeated warnings from `ai.replika.app` of the form
+    `No such thread for suspend: ... :main`
+- Current conclusion: **install-layer hardening for Replika is working; runtime hardening is not yet sufficient.** The next escalation, if Replika remains a priority, is a Frida-based bypass rather than more APKM install work.
 
 ### 15.4 Unblocking failures
 
