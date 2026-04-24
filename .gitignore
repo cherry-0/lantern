@@ -61,4 +61,8 @@ verify/backend/tests/**
 # .omc
 .omc/
 
+# logs/
+logs/
+
+
 verify/_batch_config_ui_temp.csv
