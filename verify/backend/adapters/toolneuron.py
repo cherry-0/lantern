@@ -289,7 +289,7 @@ class ToolNeuronAdapter(BaseAdapter):
         externalizations = result.get("externalizations", {})
         structured = {
             "generation_task": "text",
-            "user_prompt": prompt[:500],
+            "user_prompt": prompt,
             "response": response,
             "tokens_predicted": result.get("tokens_predicted", 0),
             "model_path": self._gguf_model_path,
@@ -327,12 +327,12 @@ class ToolNeuronAdapter(BaseAdapter):
 
         structured = {
             "generation_task": "text",
-            "user_prompt": prompt[:500],
+            "user_prompt": prompt,
             "response": response,
         }
         externalizations = self._build_serverless_externalizations(
             realistic_fallback={
-                "UI": f"ToolNeuron Chat: rendering LLM response — {response[:100]}...",
+                "UI": f"ToolNeuron Chat: rendering LLM response — {response}",
                 "STORAGE": "[UMS] Writing assistant message to messages.ums",
             }
         )
@@ -387,7 +387,7 @@ class ToolNeuronAdapter(BaseAdapter):
         }
         externalizations = self._build_serverless_externalizations(
             realistic_fallback={
-                "UI": f"ToolNeuron Image: rendering SD generation progress for — {prompt[:80]}...",
+                "UI": f"ToolNeuron Image: rendering SD generation progress for — {prompt}",
                 "STORAGE": "[UMS] Writing image message to messages.ums (ImageContent)",
             }
         )

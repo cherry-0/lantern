@@ -258,8 +258,8 @@ class BaseAdapter(ABC):
             "model": used_model,
             "has_image": bool(image_b64),
             "status": resp.status_code,
-            "prompt_preview": prompt[:200],
-            "response_preview": response_text[:200],
+            "prompt": prompt,
+            "response": response_text,
         })
 
         return response_text
@@ -291,8 +291,8 @@ class BaseAdapter(ABC):
                     f"[POST] https://openrouter.ai/api/v1/chat/completions"
                     f" ({c['model']}, {kind}) → {c['status']}"
                 )
-                lines.append(f"  ↳ Prompt: {c['prompt_preview']}")
-                lines.append(f"  ↳ Response: {c['response_preview']}")
+                lines.append(f"  ↳ Prompt: {c['prompt']}")
+                lines.append(f"  ↳ Response: {c['response']}")
             return {"NETWORK": "\n".join(lines)}
 
         if is_debug():

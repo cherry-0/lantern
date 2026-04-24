@@ -18,18 +18,16 @@ from mitmproxy import http
 
 
 _LOG_PATH = os.environ.get("MITM_FLOW_LOG", "/tmp/verify_mitm_flows.jsonl")
-_MAX_BODY = 4 * 1024        # truncate bodies at 4 KB
 _KEEP_JSON_ONLY = True      # only retain response body for application/json content-types
 
 
-def _truncate(b: bytes) -> str:
+def _decode_body(b: bytes) -> str:
     if not b:
         return ""
     try:
-        text = b.decode("utf-8", errors="replace")
+        return b.decode("utf-8", errors="replace")
     except Exception:
         return f"<{len(b)} bytes binary>"
-    return text[:_MAX_BODY] + ("...<truncated>" if len(text) > _MAX_BODY else "")
 
 
 def response(flow: http.HTTPFlow) -> None:
@@ -54,8 +52,8 @@ def response(flow: http.HTTPFlow) -> None:
         "req_bytes": len(req.raw_content or b""),
         "res_content_type": content_type,
         "res_bytes": len(res.raw_content or b""),
-        "req_body": _truncate(req.raw_content or b""),
-        "res_body": _truncate(res.raw_content or b"") if keep_body else "",
+        "req_body": _decode_body(req.raw_content or b""),
+        "res_body": _decode_body(res.raw_content or b"") if keep_body else "",
     }
 
     try:

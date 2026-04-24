@@ -681,7 +681,10 @@ def _get_cache_dir_for_run(run_config: dict) -> Path | None:
             "dataset": run_config.get("dataset_name", ""),
             "modality": run_config.get("modality", ""),
             "attributes": sorted(run_config.get("attributes", [])),
-            "perturbation": run_config.get("perturbation_method", ""),
+            "perturbation": run_config.get(
+                "cache_perturbation_method",
+                run_config.get("perturbation_method", ""),
+            ),
             "evaluation": run_config.get("evaluation_method", "openrouter"),
         }
         payload = json.dumps(parts, sort_keys=True)

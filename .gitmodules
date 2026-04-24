@@ -31,3 +31,6 @@
 [submodule "target-apps/chat-driven-expense-tracker"]
 	path = target-apps/chat-driven-expense-tracker
 	url = https://github.com/pr0ximaCent/Langchain-Chat-Driven-Expense-Tracker-.git
+[submodule "target-apps/oxproxion"]
+	path = target-apps/oxproxion
+	url = https://github.com/stardomains3/oxproxion.git

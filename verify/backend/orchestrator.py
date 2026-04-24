@@ -76,6 +76,7 @@ class Orchestrator:
         perturbation_method: Optional[str] = None,
         perturbation_kwargs: Optional[Dict[str, Any]] = None,
         item_workers: int = 1,
+        adapter_kwargs: Optional[Dict[str, Any]] = None,
     ):
         self.app_name = app_name
         self.dataset_name = dataset_name
@@ -85,6 +86,7 @@ class Orchestrator:
         self.max_items = max_items
         self.perturbation_kwargs = perturbation_kwargs or {}
         self.item_workers = item_workers
+        self.adapter_kwargs = adapter_kwargs or {}
 
         # Resolve perturbation method: use explicit override or fall back to config
         if perturbation_method:
@@ -97,6 +99,18 @@ class Orchestrator:
         self._cache_dir: Optional[Path] = None
         self._run_dir: Optional[Path] = None
 
+    def _prepare_adapter_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        if not self.adapter_kwargs:
+            return item
+        return {**item, **self.adapter_kwargs}
+
+    def _cache_perturbation_method(self) -> str:
+        generation_task = self.adapter_kwargs.get("generation_task", "text")
+        if self.app_name == "tool-neuron" and generation_task != "text":
+            suffix = f"task={generation_task}"
+            return f"{self.perturbation_method}::{suffix}" if self.perturbation_method else suffix
+        return self.perturbation_method
+
     def _setup_dirs(self) -> None:
         """Prepare cache and output directories for this run."""
         outputs_dir = ensure_outputs_dir()
@@ -104,7 +118,9 @@ class Orchestrator:
         # Unique run directory with timestamp
         attr_slug = "_".join(sorted(self.attributes)) or "none"
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        run_name = f"{self.app_name}_{self.modality}_{attr_slug}_{ts}"
+        generation_task = self.adapter_kwargs.get("generation_task", "text")
+        task_slug = f"_{generation_task}" if self.app_name == "tool-neuron" and generation_task != "text" else ""
+        run_name = f"{self.app_name}_{self.modality}{task_slug}_{attr_slug}_{ts}"
         self._run_dir = outputs_dir / run_name
         self._run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -114,7 +130,7 @@ class Orchestrator:
                 self.dataset_name,
                 self.modality,
                 self.attributes,
-                self.perturbation_method,
+                self._cache_perturbation_method(),
             )
 
     def _save_item_result(self, filename: str, result: Dict[str, Any]) -> None:
@@ -167,8 +183,10 @@ class Orchestrator:
             "app_name": self.app_name,
             "dataset_name": self.dataset_name,
             "modality": self.modality,
+            "generation_task": self.adapter_kwargs.get("generation_task", "text"),
             "attributes": self.attributes,
             "perturbation_method": self.perturbation_method,
+            "cache_perturbation_method": self._cache_perturbation_method(),
             "evaluation_method": "openrouter",
             "use_cache": self.use_cache,
             "run_dir": str(self._run_dir),
@@ -197,8 +215,10 @@ class Orchestrator:
                 "app_name": self.app_name,
                 "dataset_name": self.dataset_name,
                 "modality": self.modality,
+                "generation_task": self.adapter_kwargs.get("generation_task", "text"),
                 "attributes": self.attributes,
                 "perturbation_method": self.perturbation_method,
+                "cache_perturbation_method": self._cache_perturbation_method(),
             },
             "items": all_results,
             "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -281,7 +301,7 @@ class Orchestrator:
             set_current_app_context(self.app_name)
             if hasattr(self._adapter, "_reset_openrouter_calls"):
                 self._adapter._reset_openrouter_calls()
-            orig_result = self._adapter.run_pipeline(item)
+            orig_result = self._adapter.run_pipeline(self._prepare_adapter_item(item))
         except Exception as e:
             orig_result = None
             orig_error = str(e)
@@ -369,7 +389,7 @@ class Orchestrator:
             set_current_app_context(self.app_name)
             if hasattr(self._adapter, "_reset_openrouter_calls"):
                 self._adapter._reset_openrouter_calls()
-            pert_pipeline_result = self._adapter.run_pipeline(perturbed_item)
+            pert_pipeline_result = self._adapter.run_pipeline(self._prepare_adapter_item(perturbed_item))
         except Exception as e:
             pert_pipeline_result = None
             pert_pipeline_error = str(e)

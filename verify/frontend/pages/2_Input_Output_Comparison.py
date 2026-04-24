@@ -130,13 +130,19 @@ def _display_preview_text(text: str, area_key: str, *, empty_text: str, height: 
         )
 
 
-def _ioc_cache_dir(app_name: str, dataset_name: str, modality: str) -> "Path":
+def _ioc_cache_dir(
+    app_name: str,
+    dataset_name: str,
+    modality: str,
+    generation_task: str = "text",
+) -> "Path":
     """Return the IOC-specific cache directory (distinct from perturb-input caches)."""
     from verify.backend.utils import cache as cache_module
+    eval_method = "openrouter" if generation_task == "text" else f"openrouter:task={generation_task}"
     # Use "ioc_comparison" as perturbation_method so the SHA256 key never
     # collides with any perturb-input cache (which always has a real method name).
     return cache_module.get_cache_dir(
-        app_name, dataset_name, modality, [], "ioc_comparison"
+        app_name, dataset_name, modality, [], "ioc_comparison", eval_method
     )
 
 
@@ -155,6 +161,7 @@ def run_comparison_pipeline(
     unified_attrs: List[str],
     max_items: Optional[int] = None,
     use_cache: bool = True,
+    generation_task: str = "text",
 ) -> Generator[Dict[str, Any], None, None]:
     """
     Generator that yields one result dict per dataset item.
@@ -188,7 +195,7 @@ def run_comparison_pipeline(
         yield {"type": "error", "error": f"No adapter registered for '{app_name}'."}
         return
 
-    cache_dir = _ioc_cache_dir(app_name, dataset_name, modality) if use_cache else None
+    cache_dir = _ioc_cache_dir(app_name, dataset_name, modality, generation_task) if use_cache else None
 
     # Save run config on first use so the View IOC Results page can discover this cache
     if cache_dir is not None:
@@ -198,12 +205,18 @@ def run_comparison_pipeline(
                 "app_name": app_name,
                 "dataset_name": dataset_name,
                 "modality": modality,
+                "generation_task": generation_task,
                 "unified_attrs": unified_attrs,
                 "perturbation_method": "ioc_comparison",
-                "evaluation_method": "openrouter",
+                "evaluation_method": "openrouter" if generation_task == "text" else f"openrouter:task={generation_task}",
             })
 
     for ok, item, err in iter_dataset(dataset_name, modality, max_items=max_items):
+        item = (
+            {**item, "generation_task": generation_task}
+            if app_name == "tool-neuron"
+            else item
+        )
         filename = item.get("filename", "unknown")
 
         # ── Cache check ───────────────────────────────────────────────────────
@@ -983,6 +996,16 @@ def main():
         selected_modality = st.selectbox(
             "Modality", ["image", "text", "video"], key="ioc_modality"
         )
+        generation_task = "text"
+        if selected_app == "tool-neuron" and selected_modality == "text":
+            st.divider()
+            st.subheader("ToolNeuron Task")
+            generation_task = st.radio(
+                "Generation task",
+                ["text", "image"],
+                key="ioc_toolneuron_generation_task",
+                help="ToolNeuron can run either text generation or text-to-image generation from text inputs.",
+            )
 
         st.divider()
 
@@ -1048,6 +1071,7 @@ def main():
             "app": selected_app,
             "dataset": selected_dataset,
             "modality": selected_modality,
+            "generation_task": generation_task,
             "max_items": max_items,
         }
         st.session_state.ioc_run_config = run_cfg
@@ -1066,6 +1090,7 @@ def main():
             unified_attrs=unified_attrs,
             max_items=max_items,
             use_cache=use_cache,
+            generation_task=generation_task,
         )
         st.rerun()
 
@@ -1084,6 +1109,11 @@ def main():
 
         st.markdown(
             f"**{rc.get('app')}** · {rc.get('dataset')} · {rc.get('modality')}"
+            + (
+                f" · task=`{rc.get('generation_task')}`"
+                if rc.get("app") == "tool-neuron" and rc.get("modality") == "text"
+                else ""
+            )
         )
         if total > 0:
             st.progress(
