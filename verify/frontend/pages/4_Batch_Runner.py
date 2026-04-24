@@ -11,6 +11,7 @@ import csv
 import html as _html
 import re
 import signal
+import io
 import subprocess
 import sys
 import threading
@@ -36,6 +37,14 @@ st.set_page_config(
 _BATCH_SCRIPT = VERIFY_ROOT / "run_batch.py"
 _BATCH_CONFIG = VERIFY_ROOT / "batch_config.csv"
 _TEMP_CONFIG  = VERIFY_ROOT / "_batch_config_ui_temp.csv"
+_CSV_FIELDNAMES = [
+    "enabled",
+    "app_name",
+    "modality",
+    "dataset_name",
+    "perturbation_method",
+    "max_items",
+]
 
 
 # ── CSV helpers ───────────────────────────────────────────────────────────────
@@ -57,13 +66,100 @@ def _load_csv_rows(path: Path) -> List[Dict[str, str]]:
 
 
 def _write_temp_csv(rows: List[Dict[str, str]], path: Path) -> None:
-    fieldnames = ["enabled", "app_name", "modality", "dataset_name",
-                  "perturbation_method", "max_items"]
     with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        writer = csv.DictWriter(f, fieldnames=_CSV_FIELDNAMES, extrasaction="ignore")
         writer.writeheader()
         for row in rows:
             writer.writerow(row)
+
+
+def _row_identity(row: Dict[str, str]) -> Tuple[str, str, str, str]:
+    return (
+        row.get("app_name", "").strip(),
+        row.get("modality", "").strip(),
+        row.get("dataset_name", "").strip(),
+        row.get("perturbation_method", "").strip(),
+    )
+
+
+def _render_csv_row(row: Dict[str, str]) -> str:
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=_CSV_FIELDNAMES, extrasaction="ignore", lineterminator="\n")
+    writer.writerow({name: row.get(name, "") for name in _CSV_FIELDNAMES})
+    return buf.getvalue()
+
+
+def _merge_temp_into_batch_config(temp_path: Path, batch_path: Path) -> None:
+    """Merge edited temp rows back into the persistent batch config."""
+    updated_rows = _load_csv_rows(temp_path)
+    if not updated_rows or not batch_path.exists():
+        return
+
+    updated_by_key = {_row_identity(row): row for row in updated_rows}
+    original_lines = batch_path.read_text().splitlines(keepends=True)
+    merged_lines: List[str] = []
+    seen_keys = set()
+    header_seen = False
+
+    for line in original_lines:
+        stripped = line.strip()
+        if not header_seen:
+            merged_lines.append(line if line.endswith("\n") else line + "\n")
+            header_seen = True
+            continue
+        if not stripped or line.lstrip().startswith("#"):
+            merged_lines.append(line if line.endswith("\n") else line + "\n")
+            continue
+
+        try:
+            values = next(csv.reader([line]))
+        except Exception:
+            merged_lines.append(line if line.endswith("\n") else line + "\n")
+            continue
+
+        row = {
+            name: (values[idx].strip() if idx < len(values) else "")
+            for idx, name in enumerate(_CSV_FIELDNAMES)
+        }
+        key = _row_identity(row)
+        replacement = updated_by_key.get(key)
+        if replacement is not None:
+            merged_lines.append(_render_csv_row(replacement))
+            seen_keys.add(key)
+        else:
+            merged_lines.append(line if line.endswith("\n") else line + "\n")
+
+    missing_rows = [row for key, row in updated_by_key.items() if key not in seen_keys]
+    if missing_rows:
+        if merged_lines and not merged_lines[-1].endswith("\n"):
+            merged_lines[-1] += "\n"
+        for row in missing_rows:
+            merged_lines.append(_render_csv_row(row))
+
+    batch_path.write_text("".join(merged_lines))
+
+
+def _stable_unique(values: List[str]) -> List[str]:
+    """Return unique values preserving first-seen order."""
+    seen = set()
+    result: List[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def _group_rows_by_cell(rows: List[Dict[str, str]]) -> Tuple[List[str], List[str], Dict[Tuple[str, str], List[Tuple[int, Dict[str, str]]]]]:
+    """Group CSV rows by (app, dataset) for matrix rendering."""
+    apps = _stable_unique([row.get("app_name", "") for row in rows])
+    datasets = _stable_unique([row.get("dataset_name", "") for row in rows])
+    grouped: Dict[Tuple[str, str], List[Tuple[int, Dict[str, str]]]] = {}
+    for i, row in enumerate(rows):
+        key = (row.get("app_name", ""), row.get("dataset_name", ""))
+        grouped.setdefault(key, []).append((i, row))
+    return apps, datasets, grouped
 
 
 # ── Log parsing for per-task progress ────────────────────────────────────────
@@ -106,7 +202,7 @@ def _parse_progress_line(line: str, progress: Dict) -> None:
 
 # ── Background subprocess ─────────────────────────────────────────────────────
 
-def _run_subprocess(cmd: List[str], temp_csv: Path, state: Dict) -> None:
+def _run_subprocess(cmd: List[str], temp_csv: Path, batch_csv: Path, state: Dict) -> None:
     """Daemon thread: execute cmd and stream stdout into the shared state dict.
 
     Writes only to `state` (a plain dict held in session_state) — never
@@ -134,6 +230,10 @@ def _run_subprocess(cmd: List[str], temp_csv: Path, state: Dict) -> None:
     finally:
         state["running"]        = False
         state["just_finished"]  = True   # triggers one extra rerun to flush final log
+        try:
+            _merge_temp_into_batch_config(temp_csv, batch_csv)
+        except Exception as exc:
+            state["log"].append(f"[RUNNER WARN] Failed to sync {temp_csv.name} into {batch_csv.name}: {exc}")
         try:
             temp_csv.unlink(missing_ok=True)
         except Exception:
@@ -176,11 +276,26 @@ def main() -> None:
         workers = st.slider(
             "Parallel workers", min_value=1, max_value=8, value=4,
             disabled=running,
+            help=(
+                "Global cap across the whole batch. "
+                "`4` means at most four total tasks run at once across all selected configs, "
+                "not four workers per config."
+            ),
         )
         max_items_val = st.number_input(
             "Max items per run (0 = all)", min_value=0, value=0, step=1,
             disabled=running,
             help="Global item cap. Row-level `max_items` in the CSV overrides this.",
+        )
+        eval_prompt = st.radio(
+            "IOC Eval Prompt",
+            ["prompt1", "prompt2", "prompt3"],
+            index=0,
+            disabled=running,
+            help=(
+                "Applies to IOC externalization evaluation only. "
+                "Raw output stays on prompt1 so existing stage views remain stable."
+            ),
         )
         use_cache = st.toggle("Use cache", value=True, disabled=running)
         dry_run   = st.toggle(
@@ -291,6 +406,8 @@ def main() -> None:
             "--config", str(_TEMP_CONFIG),
             "--mode", mode,
             "--workers", str(workers),
+            "--item-workers", "1",
+            "--eval-prompt", eval_prompt,
         ]
         if max_items_val > 0:
             cmd += ["--max-items", str(int(max_items_val))]
@@ -346,7 +463,7 @@ def main() -> None:
 
         threading.Thread(
             target=_run_subprocess,
-            args=(cmd, _TEMP_CONFIG, bs),
+            args=(cmd, _TEMP_CONFIG, _BATCH_CONFIG, bs),
             daemon=True,
         ).start()
         st.rerun()

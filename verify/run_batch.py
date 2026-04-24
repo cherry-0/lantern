@@ -52,6 +52,7 @@ _CONFIG_DIR = _VERIFY_ROOT / "config"
 
 # Cache so each file is only read once
 _ATTR_CACHE: Dict[str, List[str]] = {}
+_EVAL_PROMPT_CHOICES = ("prompt1", "prompt2", "prompt3")
 
 
 def _load_attrs_for_modality(modality: str) -> List[str]:
@@ -124,6 +125,8 @@ _CHART_SEP = "─" * 74
 
 
 def _print_ioc_chart(result: Dict[str, Any]) -> None:
+    from verify.backend.evaluation_method.evaluator import get_aggregate_eval_entry
+
     """
     Print an attribute-wise terminal bar chart for an IOC result.
     Three bars per attribute — Input (annotation rate), Raw Output (inferability),
@@ -162,8 +165,7 @@ def _print_ioc_chart(result: Dict[str, Any]) -> None:
         )
         ext_cnt = sum(
             1 for r in items
-            if isinstance(r.get("ext_eval", {}).get(attr), dict)
-            and r["ext_eval"][attr].get("inferable")
+            if bool(get_aggregate_eval_entry(r.get("ext_eval", {}).get(attr)).get("inferable"))
         )
         in_bar  = _colorize(_bar(in_cnt  / n), _ANSI_BLUE)
         out_bar = _colorize(_bar(out_cnt / n), _ANSI_RED)
@@ -311,6 +313,24 @@ def _row_tag(row: Dict[str, str], mode: str) -> str:
     return f"{mode}/{row['app_name']}/{row['dataset_name']}"
 
 
+def _ioc_cache_eval_method(eval_prompt: str) -> str:
+    return "openrouter" if eval_prompt == "prompt1" else f"openrouter:{eval_prompt}"
+
+
+def _select_ioc_ext_eval_fn(eval_prompt: str):
+    from verify.backend.evaluation_method.evaluator import (
+        evaluate_inferability,
+        evaluate_inferability_v2,
+        evaluate_inferability_v3,
+    )
+
+    if eval_prompt == "prompt3":
+        return evaluate_inferability_v3
+    if eval_prompt == "prompt2":
+        return evaluate_inferability_v2
+    return evaluate_inferability
+
+
 # ── IOC (Input-Output Comparison) pipeline ───────────────────────────────────
 
 def _run_ioc(
@@ -319,6 +339,7 @@ def _run_ioc(
     max_items: Optional[int],
     use_cache: bool,
     item_workers: int = 1,
+    eval_prompt: str = "prompt1",
 ) -> Dict[str, Any]:
     """
     Headless IOC pipeline matching run_comparison_pipeline() in
@@ -364,6 +385,7 @@ def _run_ioc(
             "output_eval_error": None,
             "ext_eval_error": None,
             "prompt_text": "",
+            "eval_prompt": eval_prompt,
             "from_cache": False,
         }
 
@@ -372,10 +394,18 @@ def _run_ioc(
         _log(tag, f"No adapter registered for '{app_name}'", "ERROR")
         return {"mode": "ioc", "tag": tag, "error": f"No adapter for '{app_name}'",
                 "n_success": 0, "n_failed": 0, "n_cached": 0, "items": [],
-                "app": app_name, "dataset": dataset_name, "modality": modality}
+                "app": app_name, "dataset": dataset_name, "modality": modality,
+                "eval_prompt": eval_prompt}
 
     cache_dir = (
-        cache_module.get_cache_dir(app_name, dataset_name, modality, [], "ioc_comparison")
+        cache_module.get_cache_dir(
+            app_name,
+            dataset_name,
+            modality,
+            [],
+            "ioc_comparison",
+            _ioc_cache_eval_method(eval_prompt),
+        )
         if use_cache else None
     )
 
@@ -389,12 +419,14 @@ def _run_ioc(
                 "unified_attrs": unified_attrs,
                 "perturbation_method": "ioc_comparison",
                 "evaluation_method": "openrouter",
+                "eval_prompt": eval_prompt,
             })
 
     n_success = n_failed = n_cached = 0
     item_results: List[Dict] = []
 
     _log(tag, f"Starting IOC ({dataset_name}, {modality})")
+    ext_eval_fn = _select_ioc_ext_eval_fn(eval_prompt)
 
     def _process_one(ok: bool, item: Dict, err: Optional[str]) -> Dict:
         """Process a single non-cached dataset item (runs in a worker thread)."""
@@ -432,7 +464,7 @@ def _run_ioc(
 
         out_ok, output_eval, out_err = evaluate_inferability(output_text, unified_attrs)
         if ext_text.strip():
-            ext_ok, ext_eval, ext_err = evaluate_inferability(ext_text, unified_attrs)
+            ext_ok, ext_eval, ext_err = ext_eval_fn(ext_text, unified_attrs)
         else:
             ext_ok, ext_eval, ext_err = True, {}, None
 
@@ -453,6 +485,7 @@ def _run_ioc(
             "output_eval_error": out_err,
             "ext_eval_error": ext_err,
             "prompt_text": (pipeline_result.metadata or {}).get("prompt_text", ""),
+            "eval_prompt": eval_prompt,
             "from_cache": False,
         }
 
@@ -477,6 +510,7 @@ def _run_ioc(
             cached = cache_module.load_item_cache(cache_dir, filename)
             if cached is not None:
                 cached.setdefault("input_item", _strip_pil(item))
+                cached.setdefault("eval_prompt", eval_prompt)
                 cached["from_cache"] = True
                 n_cached += 1
                 item_results.append(cached)
@@ -516,6 +550,7 @@ def _run_ioc(
         "n_cached": n_cached,
         "items": item_results,
         "error": None,
+        "eval_prompt": eval_prompt,
     }
     _print_ioc_chart(result)
     return result
@@ -529,6 +564,7 @@ def _run_perturb(
     max_items: Optional[int],
     use_cache: bool,
     item_workers: int = 1,
+    eval_prompt: str = "prompt1",
 ) -> Dict[str, Any]:
     """
     Perturbation analysis: original pipeline → perturb → perturbed pipeline → evaluate.
@@ -618,6 +654,8 @@ def _avg(vals: List[float]) -> Optional[float]:
 
 
 def _print_summary(results: List[Dict[str, Any]]) -> None:
+    from verify.backend.evaluation_method.evaluator import get_aggregate_eval_entry
+
     print("\n" + "=" * 72)
     print("BATCH SUMMARY")
     print("=" * 72)
@@ -646,9 +684,16 @@ def _print_summary(results: List[Dict[str, Any]]) -> None:
                 for attr, ev in item.get("output_eval", {}).items():
                     out_scores.setdefault(attr, []).append(int(ev.get("score", 0)))
                 for attr, ev in item.get("ext_eval", {}).items():
-                    ext_scores.setdefault(attr, []).append(int(ev.get("score", 0)))
+                    ext_scores.setdefault(attr, []).append(
+                        int(get_aggregate_eval_entry(ev).get("score", 0))
+                    )
 
             if out_scores:
+                print("    eval prompt:")
+                print(
+                    f"      externalized = {r.get('eval_prompt', 'prompt1')}  "
+                    f"raw_output = prompt1"
+                )
                 print("    avg output_inferable:")
                 for attr in sorted(out_scores):
                     avg = _avg(out_scores[attr])
@@ -732,6 +777,15 @@ def main() -> None:
         action="store_true",
         help="Print the execution plan and exit without running",
     )
+    parser.add_argument(
+        "--eval-prompt",
+        choices=_EVAL_PROMPT_CHOICES,
+        default="prompt1",
+        help=(
+            "IOC externalization evaluation prompt "
+            "(prompt1=binary, prompt2=prediction, prompt3=channel-wise aggregate)"
+        ),
+    )
     args = parser.parse_args()
 
     config_path = Path(args.config)
@@ -771,6 +825,8 @@ def main() -> None:
             row_max = row.get("max_items") or args.max_items or "all"
             print(f"  {mode_label}  {row['app_name']:<30s}  {row['dataset_name']:<12s}"
                   f"  {row['modality']:<6s}  method={method}  items={row_max}")
+            if fn is _run_ioc:
+                print(f"            ext_eval_prompt: {args.eval_prompt}  (raw_output=prompt1)")
             if fn is _run_perturb:
                 print(f"            attrs: {', '.join(attrs) or '(none — row will be skipped)'}")
         print()
@@ -791,7 +847,8 @@ def main() -> None:
     print(f"\nRunning {len(tasks)} tasks across {len(rows)} config rows  "
           f"(workers={args.workers}, item_workers={args.item_workers}, "
           f"cache={'on' if use_cache else 'off'}, "
-          f"max_items={args.max_items or 'all'})\n")
+          f"max_items={args.max_items or 'all'}, "
+          f"ioc_ext_eval={args.eval_prompt})\n")
 
     results: List[Dict[str, Any]] = []
     futures_map: Dict[Any, Tuple[Any, Dict]] = {}
@@ -799,7 +856,7 @@ def main() -> None:
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         for fn, row in tasks:
             fut = pool.submit(fn, row, unified_attrs, args.max_items, use_cache,
-                              args.item_workers)
+                              args.item_workers, args.eval_prompt)
             futures_map[fut] = (fn, row)
 
         for fut in as_completed(futures_map):

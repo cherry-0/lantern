@@ -39,9 +39,17 @@ def get_cache_dir(
     modality: str,
     attributes: List[str],
     perturbation_method: str = "",
+    evaluation_method: str = "openrouter",
 ) -> Path:
     """Return the cache directory for the given run config (creates it if needed)."""
-    key = _make_cache_key(app_name, dataset_name, modality, attributes, perturbation_method)
+    key = _make_cache_key(
+        app_name,
+        dataset_name,
+        modality,
+        attributes,
+        perturbation_method,
+        evaluation_method,
+    )
     cache_dir = OUTPUTS_DIR / f"cache_{key}"
     cache_dir.mkdir(parents=True, exist_ok=True)
     return cache_dir
