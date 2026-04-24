@@ -15,7 +15,10 @@ verify/backend/datasets/SynthPAI/
 
 # perturbation method sources
 verify/backend/perturbation_method/Imago_Obscura/src/
- 
+
+# apps
+target-apps/
+
 # all DS_Store files
 **/.DS_Store
 .DS_Store
@@ -41,6 +44,18 @@ paper/
 paper/**/build/
 paper/**/*.pdf
 
+# .omc
+.omc/
+
+# logs
+logs/
 
 # pycache
 **/__pycache__
+
+# temp files
+verify/_batch_config_ui_temp.csv
+
+# test files
+verify/backend/tests/
+
