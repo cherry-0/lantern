@@ -21,15 +21,11 @@ if str(LANTERN_ROOT) not in sys.path:
     sys.path.insert(0, str(LANTERN_ROOT))
 
 import streamlit as st
-<<<<<<< HEAD
-
-=======
 from verify.backend.evaluation_method.evaluator import (
     get_aggregate_eval_entry,
     get_channel_eval_entries,
     is_channelwise_eval_entry,
 )
->>>>>>> origin/add_validator
 
 
 # ─── Constants ────────────────────────────────────────────────────────────────
@@ -895,87 +891,10 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
 
 
 def _render_aggregated(all_results: List[Dict[str, Any]], unified_attrs: List[str]):
-<<<<<<< HEAD
-    """
-    Attribute-wise positive rate across all items for the three stages.
-    Positive rate = fraction of items where the attribute was marked 1 / inferable.
-    """
-    import pandas as pd
-    import altair as alt
-
-    success = [r for r in all_results if r.get("status") == "success"]
-    if not success:
-        st.info("No successful items to aggregate.")
-        return
-
-    n = len(success)
-    rows = []
-    for attr in unified_attrs:
-        input_rate = sum(
-            r.get("input_labels", {}).get(attr, 0) for r in success
-        ) / n
-
-        out_rate = sum(
-            1 if (
-                isinstance(r.get("output_eval", {}).get(attr), dict)
-                and r["output_eval"][attr].get("inferable")
-            ) else 0
-            for r in success
-        ) / n
-
-        ext_rate = sum(
-            1 if (
-                isinstance(r.get("ext_eval", {}).get(attr), dict)
-                and r["ext_eval"][attr].get("inferable")
-            ) else 0
-            for r in success
-        ) / n
-
-        rows += [
-            {"Attribute": attr, "Stage": STAGE_INPUT, "Positive Rate": input_rate},
-            {"Attribute": attr, "Stage": STAGE_OUTPUT, "Positive Rate": out_rate},
-            {"Attribute": attr, "Stage": STAGE_EXT, "Positive Rate": ext_rate},
-        ]
-
-    df = pd.DataFrame(rows)
-
-    chart = (
-        alt.Chart(df)
-        .mark_bar()
-        .encode(
-            x=alt.X("Attribute:N", sort=unified_attrs,
-                    axis=alt.Axis(labelAngle=-40, labelFontSize=10)),
-            xOffset=alt.XOffset("Stage:N", sort=STAGES),
-            y=alt.Y("Positive Rate:Q", scale=alt.Scale(domain=[0, 1]),
-                    title="Positive rate"),
-            color=alt.Color(
-                "Stage:N",
-                sort=STAGES,
-                scale=alt.Scale(
-                    domain=STAGES,
-                    range=[STAGE_COLORS[s] for s in STAGES],
-                ),
-            ),
-            tooltip=["Attribute", "Stage", alt.Tooltip("Positive Rate:Q", format=".2f")],
-        )
-        .properties(
-            height=280,
-            title=f"Attribute-wise positive rate across {n} item(s)",
-        )
-    )
-    st.altair_chart(chart, use_container_width=True)
-    st.caption(
-        f"Blue = Input annotation positive rate · "
-        f"Red = Raw output inferability rate · "
-        f"Amber = Externalized result inferability rate"
-    )
-=======
     st.markdown("**Exposure Heatmap**")
     _render_channel_aggregated_heatmap(all_results, unified_attrs)
     st.markdown("**Grouped Bar Chart**")
     _render_channel_aggregated(all_results, unified_attrs)
->>>>>>> origin/add_validator
-
 
 # ─── Main UI ──────────────────────────────────────────────────────────────────
 
