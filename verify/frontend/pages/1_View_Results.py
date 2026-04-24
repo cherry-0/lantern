@@ -20,8 +20,28 @@ if str(LANTERN_ROOT) not in sys.path:
     sys.path.insert(0, str(LANTERN_ROOT))
 
 import streamlit as st
+from verify.backend.evaluation_method.evaluator import (
+    get_aggregate_eval_entry,
+    get_channel_eval_entries,
+    is_channelwise_eval_entry,
+)
 
 DISPLAY_PREVIEW_CHARS = 4000
+CHANNEL_STAGE_ORDER = ["AGGREGATE", "UI", "NETWORK", "STORAGE", "LOGGING"]
+CHANNEL_STAGE_LABELS = {
+    "AGGREGATE": "Aggregate",
+    "UI": "UI",
+    "NETWORK": "Network",
+    "STORAGE": "Storage",
+    "LOGGING": "Logging",
+}
+CHANNEL_STAGE_COLORS = {
+    "Aggregate": "#f0ad4e",
+    "UI": "#7f8c8d",
+    "Network": "#5b8def",
+    "Storage": "#27ae60",
+    "Logging": "#f39c12",
+}
 
 
 # ─── Helpers (mirrors app.py) ─────────────────────────────────────────────────
@@ -119,6 +139,114 @@ def _eval_chart(eval_results: dict, stage_label: str, key_suffix: str = ""):
         .properties(height=200)
     )
     st.altair_chart(chart, use_container_width=True)
+
+
+def _has_channelwise_eval(eval_results: dict) -> bool:
+    return any(is_channelwise_eval_entry(entry) for entry in eval_results.values())
+
+
+def _render_eval_heatmap(eval_results: dict, stage_label: str, key_suffix: str = ""):
+    import pandas as pd
+    import altair as alt
+
+    attrs = list(eval_results.keys())
+    rows = []
+    for attr in attrs:
+        entry = eval_results.get(attr)
+        agg = get_aggregate_eval_entry(entry)
+        rows.append({"Stage": f"{stage_label} Aggregate", "Attribute": attr, "state": "yes" if agg.get("inferable") else "no"})
+        channels = get_channel_eval_entries(entry)
+        for channel in CHANNEL_STAGE_ORDER[1:]:
+            state = "na"
+            if channel in channels:
+                state = "yes" if channels[channel].get("inferable") else "no"
+            rows.append({"Stage": f"{stage_label} {CHANNEL_STAGE_LABELS[channel]}", "Attribute": attr, "state": state})
+    if not rows:
+        return
+    df = pd.DataFrame(rows)
+    stage_order = [f"{stage_label} Aggregate"] + [f"{stage_label} {CHANNEL_STAGE_LABELS[c]}" for c in CHANNEL_STAGE_ORDER[1:]]
+    rect = (
+        alt.Chart(df)
+        .mark_rect(stroke="#ffffff", strokeWidth=1)
+        .encode(
+            x=alt.X("Attribute:N", sort=attrs, axis=alt.Axis(labelAngle=-40, labelFontSize=10)),
+            y=alt.Y("Stage:N", sort=stage_order, title=None),
+            color=alt.Color("state:N", scale=alt.Scale(domain=["yes", "no", "na"], range=["#d4f5d4", "#fafafa", "#e6e6e6"]), legend=None),
+            tooltip=["Stage", "Attribute", alt.Tooltip("state:N", title="Status")],
+        )
+    )
+    text = (
+        alt.Chart(df[df["state"] == "yes"])
+        .mark_text(text="✓", fontSize=12, fontWeight="bold", color="#2f4f2f")
+        .encode(x=alt.X("Attribute:N", sort=attrs), y=alt.Y("Stage:N", sort=stage_order))
+    )
+    st.altair_chart((rect + text).properties(height=max(180, 34 * len(stage_order))), use_container_width=True)
+    st.caption("Green = inferable, white = not inferable, grey = channel not available in this evaluation.")
+
+
+def _render_channel_aggregated_chart(all_results: list[dict], attributes: list[str]):
+    import pandas as pd
+    import altair as alt
+
+    success = [r for r in all_results if r.get("status") == "success"]
+    if not success or not attributes:
+        st.info("No successful items to aggregate.")
+        return
+
+    include_channelwise = any(
+        _has_channelwise_eval((r.get("evaluation", {}) or {}).get(stage, {}))
+        for r in success
+        for stage in ("original", "perturbed")
+    )
+    rows = []
+    for attr in attributes:
+        for stage_name, key in [("Original", "original"), ("Perturbed", "perturbed")]:
+            stage_eval_list = [(r.get("evaluation", {}) or {}).get(key, {}) for r in success]
+            support = len(success)
+            positive = sum(1 for ev in stage_eval_list if bool(get_aggregate_eval_entry(ev.get(attr)).get("inferable")))
+            rows.append({"Attribute": attr, "Stage": f"{stage_name} Aggregate", "Positive Rate": positive / support, "Support": support})
+            if include_channelwise:
+                for channel in CHANNEL_STAGE_ORDER[1:]:
+                    ch_support = 0
+                    ch_positive = 0
+                    for ev in stage_eval_list:
+                        channels = get_channel_eval_entries(ev.get(attr))
+                        if channel in channels:
+                            ch_support += 1
+                            if channels[channel].get("inferable"):
+                                ch_positive += 1
+                    if ch_support > 0:
+                        rows.append({"Attribute": attr, "Stage": f"{stage_name} {CHANNEL_STAGE_LABELS[channel]}", "Positive Rate": ch_positive / ch_support, "Support": ch_support})
+    df = pd.DataFrame(rows)
+    stage_order = list(dict.fromkeys(df["Stage"].tolist()))
+    color_range = []
+    for label in stage_order:
+        if label.endswith("Aggregate"):
+            color_range.append(CHANNEL_STAGE_COLORS["Aggregate"] if label.startswith("Original") else "#b9770e")
+        elif label.endswith("UI"):
+            color_range.append(CHANNEL_STAGE_COLORS["UI"])
+        elif label.endswith("Network"):
+            color_range.append(CHANNEL_STAGE_COLORS["Network"])
+        elif label.endswith("Storage"):
+            color_range.append(CHANNEL_STAGE_COLORS["Storage"])
+        elif label.endswith("Logging"):
+            color_range.append(CHANNEL_STAGE_COLORS["Logging"])
+        else:
+            color_range.append("#999999")
+    chart = (
+        alt.Chart(df)
+        .mark_bar()
+        .encode(
+            x=alt.X("Attribute:N", sort=attributes, axis=alt.Axis(labelAngle=-40, labelFontSize=10)),
+            xOffset=alt.XOffset("Stage:N", sort=stage_order),
+            y=alt.Y("Positive Rate:Q", scale=alt.Scale(domain=[0, 1]), title="Positive rate"),
+            color=alt.Color("Stage:N", sort=stage_order, scale=alt.Scale(domain=stage_order, range=color_range)),
+            tooltip=["Attribute", "Stage", alt.Tooltip("Positive Rate:Q", format=".2f"), "Support"],
+        )
+        .properties(height=320, title=f"Attribute-wise positive rate across {len(success)} item(s)")
+    )
+    st.altair_chart(chart, use_container_width=True)
+    st.caption("Aggregate bars use all successful items. Channel bars use only items where that channel exists in the saved evaluation.")
 
 
 def _find_image_path(filename: str, dataset_name: str) -> Path | None:
@@ -508,7 +636,10 @@ def _render_item_result(
         with col_eval_orig:
             st.markdown("**From original output:**")
             if orig_eval_ok and orig_eval:
-                _eval_chart(orig_eval, "Original", key_suffix=f"orig_{filename}")
+                if _has_channelwise_eval(orig_eval):
+                    _render_eval_heatmap(orig_eval, "Original", key_suffix=f"orig_{filename}")
+                else:
+                    _eval_chart(orig_eval, "Original", key_suffix=f"orig_{filename}")
             elif evaluation.get("original_error"):
                 st.error(f"Evaluation error: {evaluation['original_error']}")
             else:
@@ -517,7 +648,10 @@ def _render_item_result(
         with col_eval_pert:
             st.markdown("**From perturbed output:**")
             if pert_eval_ok and pert_eval:
-                _eval_chart(pert_eval, "Perturbed", key_suffix=f"pert_{filename}")
+                if _has_channelwise_eval(pert_eval):
+                    _render_eval_heatmap(pert_eval, "Perturbed", key_suffix=f"pert_{filename}")
+                else:
+                    _eval_chart(pert_eval, "Perturbed", key_suffix=f"pert_{filename}")
             elif evaluation.get("perturbed_error"):
                 st.error(f"Evaluation error: {evaluation['perturbed_error']}")
             else:
@@ -530,52 +664,7 @@ def _render_item_result(
 
 
 def _render_aggregated_chart(items: list, attributes: list):
-    import pandas as pd
-    import altair as alt
-
-    if not items or not attributes:
-        return
-
-    data = []
-    for attr in attributes:
-        orig_scores, pert_scores = [], []
-        for r in items:
-            eval_r = r.get("evaluation", {})
-            if eval_r:
-                o = eval_r.get("original", {}).get(attr, {})
-                p = eval_r.get("perturbed", {}).get(attr, {})
-                if isinstance(o, dict) and "score" in o:
-                    orig_scores.append(o["score"])
-                if isinstance(p, dict) and "score" in p:
-                    pert_scores.append(p["score"])
-        data.append({
-            "Attribute": attr,
-            "Original (avg score)": sum(orig_scores) / len(orig_scores) if orig_scores else 0.0,
-            "Perturbed (avg score)": sum(pert_scores) / len(pert_scores) if pert_scores else 0.0,
-        })
-
-    if not data:
-        st.info("No aggregated data to display.")
-        return
-
-    df = pd.DataFrame(data)
-    df_melted = df.melt("Attribute", var_name="Stage", value_name="Avg Inferability Score")
-    chart = (
-        alt.Chart(df_melted)
-        .mark_bar()
-        .encode(
-            x=alt.X("Attribute:N", sort=None),
-            y=alt.Y("Avg Inferability Score:Q", scale=alt.Scale(domain=[0, 1])),
-            color=alt.Color("Stage:N", scale=alt.Scale(
-                domain=["Original (avg score)", "Perturbed (avg score)"],
-                range=["#d9534f", "#5bc0de"],
-            )),
-            xOffset="Stage:N",
-        )
-        .properties(height=250)
-    )
-    st.altair_chart(chart, use_container_width=True)
-    st.caption("Average inferability score across all items (lower is better after perturbation).")
+    _render_channel_aggregated_chart(items, attributes)
 
 
 def _get_cache_dir_for_run(run_config: dict) -> Path | None:
