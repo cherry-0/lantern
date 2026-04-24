@@ -94,13 +94,6 @@ def _resolve_dir_arg(raw: str) -> Optional[Path]:
         return candidate
 
     return None
-    try:
-        cfg = json.loads(p.read_text())
-        if not cfg.get("app_name", "").strip() or not cfg.get("dataset_name", "").strip():
-            return None
-        return cfg
-    except Exception:
-        return None
 
 
 def _item_files(d: Path) -> List[Path]:
@@ -340,6 +333,40 @@ def _process_dir_reeval(
     }
 
 
+def _process_dir(
+    d: Path,
+    *,
+    init_mode: bool,
+    dry_run: bool,
+    verbose: bool,
+    show_progress: bool,
+    model: Optional[str] = None,
+    workers: int = 1,
+    prompt_v2: bool = False,
+    prompt_v3: bool = False,
+) -> Optional[Dict]:
+    """Dispatch one directory through init or re-eval mode."""
+    if init_mode:
+        return _process_dir_init(
+            d,
+            dry_run=dry_run,
+            verbose=verbose,
+            show_progress=show_progress,
+        )
+
+    assert model is not None
+    return _process_dir_reeval(
+        d,
+        model,
+        workers=workers,
+        dry_run=dry_run,
+        verbose=verbose,
+        show_progress=show_progress,
+        prompt_v2=prompt_v2,
+        prompt_v3=prompt_v3,
+    )
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -393,6 +420,10 @@ def main() -> None:
     parser.add_argument(
         "--workers", type=int, default=4,
         help="Parallel API calls per directory for --model (default: 4)",
+    )
+    parser.add_argument(
+        "--dir-workers", type=int, default=1,
+        help="Directories to process concurrently (default: 1)",
     )
     parser.add_argument(
         "--dry-run", action="store_true",
@@ -460,30 +491,54 @@ def main() -> None:
     print(f"\n[reeval]  mode={mode_label}  dirs={len(dirs)}{filter_str}\n")
 
     # ── Process ───────────────────────────────────────────────────────────────
-    show_progress = not args.verbose
+    show_progress = not args.verbose and int(args.dir_workers) <= 1
     results: List[Dict] = []
+    dir_workers = max(1, int(args.dir_workers))
 
-    dir_iter = _tqdm(dirs, desc="Dirs", unit="dir", disable=args.verbose)
-    for d in dir_iter:
-        if args.init:
-            r = _process_dir_init(
+    if dir_workers <= 1 or len(dirs) <= 1:
+        dir_iter = _tqdm(dirs, desc="Dirs", unit="dir", disable=args.verbose)
+        for d in dir_iter:
+            r = _process_dir(
                 d,
+                init_mode=args.init,
                 dry_run=args.dry_run,
                 verbose=args.verbose,
                 show_progress=show_progress,
-            )
-        else:
-            r = _process_dir_reeval(
-                d, args.model,
+                model=args.model,
                 workers=args.workers,
-                dry_run=args.dry_run,
-                verbose=args.verbose,
-                show_progress=show_progress,
                 prompt_v2=prompt_v2,
                 prompt_v3=prompt_v3,
             )
-        if r is not None:
-            results.append(r)
+            if r is not None:
+                results.append(r)
+    else:
+        with ThreadPoolExecutor(max_workers=dir_workers) as pool:
+            futs = {
+                pool.submit(
+                    _process_dir,
+                    d,
+                    init_mode=args.init,
+                    dry_run=args.dry_run,
+                    verbose=args.verbose,
+                    show_progress=False,
+                    model=args.model,
+                    workers=args.workers,
+                    prompt_v2=prompt_v2,
+                    prompt_v3=prompt_v3,
+                ): d
+                for d in dirs
+            }
+            dir_iter = _tqdm(
+                as_completed(futs),
+                total=len(futs),
+                desc="Dirs",
+                unit="dir",
+                disable=args.verbose,
+            )
+            for fut in dir_iter:
+                r = fut.result()
+                if r is not None:
+                    results.append(r)
 
     # ── Aggregate summary ─────────────────────────────────────────────────────
     print(f"\n{'─' * 60}")

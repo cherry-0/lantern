@@ -182,6 +182,14 @@ def main() -> None:
         st.divider()
         workers = st.slider("Parallel workers", 1, 8, 4, disabled=running,
                             help="Concurrent API calls per directory")
+        dir_workers = st.slider(
+            "Directory workers",
+            1,
+            8,
+            1,
+            disabled=running,
+            help="Number of output directories to process concurrently",
+        )
         verbose = st.toggle("Verbose output", value=False, disabled=running)
         dry_run = st.toggle("Dry run (no writes)", value=False, disabled=running)
         st.divider()
@@ -344,6 +352,7 @@ def main() -> None:
                     sys.executable, "-u", str(_REEVAL_SCRIPT),
                     "--model", model,
                     "--workers", str(workers),
+                    "--dir-workers", str(dir_workers),
                     "--dir",
                 ] + selected_dirs
                 if prompt_mode == "prompt2":
