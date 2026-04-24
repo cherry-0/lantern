@@ -35,6 +35,7 @@ pg = st.navigation(
         st.Page("pages/4_Batch_Runner.py",            title="Batch Runner",                         icon="⚡"),
         st.Page("pages/5_Experiment_Progress.py",     title="Experiment Progress",                  icon="📋"),
         st.Page("pages/6_Reeval.py",                  title="Re-evaluate",                          icon="🔄"),
+        st.Page("pages/7_Eval_Validation.py",         title="Evaluation Validation",                icon="🎯"),
     ],
     # default=_init_page,
 )

@@ -50,5 +50,15 @@ paper/**/*.pdf
 # pycache
 **/__pycache__
 
+
+
+# apps
+target-apps/**
+
 # tests
-verify/backend/tests/
+verify/backend/tests/**
+
+# .omc
+.omc/
+
+verify/_batch_config_ui_temp.csv

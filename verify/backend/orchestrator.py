@@ -301,6 +301,14 @@ class Orchestrator:
             result = _make_item_result(
                 filename=filename,
                 status=STATUS_FAILED,
+                original_input={
+                    "modality": self.modality,
+                    "text_content": item.get("text_content", ""),
+                    "image_base64": item.get("image_base64", ""),
+                    "privacy_labels": item.get("privacy_labels", []),
+                    "data_type": item.get("data_type", ""),
+                    "data_type_attributes": item.get("data_type_attributes", []),
+                },
                 error=f"Original pipeline failed: {orig_error}",
                 type="item_result",
             )
@@ -312,6 +320,14 @@ class Orchestrator:
             result = _make_item_result(
                 filename=filename,
                 status=STATUS_SKIPPED,
+                original_input={
+                    "modality": self.modality,
+                    "text_content": item.get("text_content", ""),
+                    "image_base64": item.get("image_base64", ""),
+                    "privacy_labels": item.get("privacy_labels", []),
+                    "data_type": item.get("data_type", ""),
+                    "data_type_attributes": item.get("data_type_attributes", []),
+                },
                 original_output=orig_result.to_dict(),
                 perturbed_output=None,
                 evaluation=None,
@@ -330,6 +346,14 @@ class Orchestrator:
             result = _make_item_result(
                 filename=filename,
                 status=STATUS_SKIPPED,
+                original_input={
+                    "modality": self.modality,
+                    "text_content": item.get("text_content", ""),
+                    "image_base64": item.get("image_base64", ""),
+                    "privacy_labels": item.get("privacy_labels", []),
+                    "data_type": item.get("data_type", ""),
+                    "data_type_attributes": item.get("data_type_attributes", []),
+                },
                 original_output=orig_result.to_dict(),
                 perturbed_output=None,
                 evaluation=None,
@@ -369,9 +393,20 @@ class Orchestrator:
             result = _make_item_result(
                 filename=filename,
                 status=STATUS_FAILED,
+                original_input={
+                    "modality": self.modality,
+                    "text_content": item.get("text_content", ""),
+                    "image_base64": item.get("image_base64", ""),
+                    "privacy_labels": item.get("privacy_labels", []),
+                    "data_type": item.get("data_type", ""),
+                    "data_type_attributes": item.get("data_type_attributes", []),
+                },
                 original_output=orig_result.to_dict(),
-                perturbed_item_info={
-                    "perturbation_applied": perturbed_item.get("perturbation_applied", {})
+                perturbed_input={
+                    "modality": self.modality,
+                    "text_content": perturbed_item.get("text_content", ""),
+                    "image_base64": perturbed_item.get("image_base64", ""),
+                    "perturbation_applied": perturbed_item.get("perturbation_applied", {}),
                 },
                 perturbed_output=None,
                 evaluation=None,
@@ -389,13 +424,17 @@ class Orchestrator:
         )
 
         # --- Build complete item result ---
+        original_image_b64 = item.get("image_base64", "")
+        perturbed_image_b64 = perturbed_item.get("image_base64", "")
+
         result = _make_item_result(
             filename=filename,
             status=STATUS_SUCCESS,
             original_input={
                 "modality": self.modality,
                 "text_content": item.get("text_content", ""),
-                "has_image": "image_base64" in item,
+                "has_image": bool(original_image_b64),
+                "image_base64": original_image_b64,  # Persist for cache viewing
                 "has_frames": "frames" in item,
                 "frame_count": len(item.get("frames", [])),
                 "privacy_labels": item.get("privacy_labels", []),
@@ -406,7 +445,8 @@ class Orchestrator:
             perturbed_input={
                 "modality": self.modality,
                 "text_content": perturbed_item.get("text_content", ""),
-                "has_image": "image_base64" in perturbed_item,
+                "has_image": bool(perturbed_image_b64),
+                "image_base64": perturbed_image_b64,  # Persist for cache viewing
                 "has_frames": "frames" in perturbed_item,
                 "perturbation_applied": perturbed_item.get("perturbation_applied", {}),
             },

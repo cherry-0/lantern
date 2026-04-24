@@ -59,27 +59,42 @@ def _scan_outputs() -> List[Dict]:
     """
     Scan ALL verify/outputs/ directories (both cache_* and timestamped run dirs).
 
-    Fast path: reads dir_summary.json written by patch_ext_ui.py — O(1) per dir.
-    Slow path: reads every item JSON to extract status / ext_eval_stale — used
-               for dirs that have not been processed by patch_ext_ui.py yet.
-
     Returns a list of dicts:
       app_name, dataset_name, modality, method,
       success_count, failed_count, stale_count,
       has_summary, dirs (list of directory paths for this key)
+
+    Counts are aggregated across all directories for the same
+    (app_name, dataset_name, perturbation_method) key by deduplicating item
+    filenames. This avoids dropping coverage when a run was split across
+    multiple output directories.
     """
     if not _OUTPUTS_DIR.exists():
         return []
 
-    # Per-key state.  key = (app, dataset, method)
-    key_modality: Dict[tuple, str]        = {}
-    key_dirs:     Dict[tuple, List[str]]  = defaultdict(list)
-    # Best summary seen for this key (highest success_count wins)
-    key_summary:  Dict[tuple, Dict]       = {}
-    # Fallback: per-filename (status, stale) dict — deduplicated across dirs
-    key_items:    Dict[tuple, Dict[str, Tuple[str, bool]]] = defaultdict(dict)
-    # Keys that have at least one dir without a summary (need slow-path merge)
-    needs_slow: set = set()
+    def _merge_item_state(
+        existing: Optional[Tuple[str, bool]],
+        incoming_status: str,
+        incoming_stale: bool,
+    ) -> Tuple[str, bool]:
+        if existing is None:
+            return incoming_status, incoming_stale
+
+        status_rank = {"success": 3, "failed": 2, "error": 1}
+        existing_status, existing_stale = existing
+        if status_rank.get(incoming_status, 0) > status_rank.get(existing_status, 0):
+            return incoming_status, incoming_stale
+        if incoming_status == existing_status == "success":
+            return "success", existing_stale or incoming_stale
+        return existing_status, existing_stale
+
+    # Per-key state. key = (app, dataset, method)
+    key_modality: Dict[tuple, str] = {}
+    key_dirs: Dict[tuple, List[str]] = defaultdict(list)
+    key_items: Dict[tuple, Dict[str, Tuple[str, bool]]] = defaultdict(dict)
+    key_summary_fallback: Dict[tuple, Dict[str, int]] = defaultdict(
+        lambda: {"success": 0, "failed": 0, "stale": 0, "total": 0}
+    )
 
     for d in _OUTPUTS_DIR.iterdir():
         if not d.is_dir():
@@ -99,91 +114,79 @@ def _scan_outputs() -> List[Dict]:
             key_modality[key] = modality
             key_dirs[key].append(str(d))
 
-            # Fast path — dir_summary.json exists
             summary_path = d / _DIR_SUMMARY
+            summary = None
             if summary_path.exists():
                 try:
-                    s = json.loads(summary_path.read_text())
-                    existing = key_summary.get(key, {})
-                    if s.get("success", 0) >= existing.get("success", 0):
-                        key_summary[key] = s
-                    continue   # skip item enumeration for this dir
+                    summary = json.loads(summary_path.read_text())
                 except Exception:
-                    pass  # fall through to slow path
+                    summary = None
 
-            # Slow path — read individual item files
-            needs_slow.add(key)
+            saw_item_json = False
             for f in d.iterdir():
                 if f.suffix != ".json" or f.name in ("run_config.json", _DIR_SUMMARY):
                     continue
+                saw_item_json = True
                 try:
                     data = json.loads(f.read_text())
-                    key_items[key][f.name] = (
-                        data.get("status", ""),
+                    item_name = str(data.get("filename") or f.stem)
+                    merged = _merge_item_state(
+                        key_items[key].get(item_name),
+                        str(data.get("status", "")),
                         bool(data.get("ext_eval_stale", False)),
                     )
+                    key_items[key][item_name] = merged
                 except Exception:
-                    key_items[key][f.name] = ("error", False)
+                    item_name = f.stem
+                    key_items[key][item_name] = _merge_item_state(
+                        key_items[key].get(item_name),
+                        "error",
+                        False,
+                    )
+
+            if not saw_item_json and summary is not None:
+                fb = key_summary_fallback[key]
+                fb["success"] += int(summary.get("success", 0) or 0)
+                fb["failed"] += int(summary.get("failed", 0) or 0)
+                fb["stale"] += int(summary.get("stale", 0) or 0)
+                fb["total"] += int(summary.get("total", 0) or 0)
 
         except Exception:
             pass
 
     # Build result list
-    all_keys = set(key_summary.keys()) | set(key_items.keys())
+    all_keys = set(key_dirs.keys()) | set(key_items.keys()) | set(key_summary_fallback.keys())
     result: List[Dict] = []
 
     for key in all_keys:
         app, dataset, method = key
         modality = key_modality.get(key, "")
-        dirs     = key_dirs.get(key, [])
+        dirs = key_dirs.get(key, [])
+        items = key_items.get(key, {})
 
-        if key in key_summary and key not in needs_slow:
-            # All dirs for this key had summaries — use the best one
-            s = key_summary[key]
-            result.append({
-                "app_name":      app,
-                "dataset_name":  dataset,
-                "modality":      modality,
-                "method":        method,
-                "success_count": s.get("success", 0),
-                "failed_count":  s.get("failed",  0),
-                "stale_count":   s.get("stale",   0),
-                "has_summary":   True,
-                "dirs":          dirs,
-            })
+        if items:
+            success_count = sum(1 for st, _ in items.values() if st == "success")
+            failed_count = sum(1 for st, _ in items.values() if st == "failed")
+            stale_count = sum(1 for st, stl in items.values() if st == "success" and stl)
+            has_summary = False
         else:
-            # At least one dir lacked a summary; use slow-path item data
-            items = key_items.get(key, {})
-            # If we also have a summary for some dirs, take whichever gives more successes
-            slow_success = sum(1 for st, _ in items.values() if st == "success")
-            slow_failed  = sum(1 for st, _ in items.values() if st == "failed")
-            slow_stale   = sum(1 for st, stl in items.values() if st == "success" and stl)
+            fb = key_summary_fallback.get(key, {})
+            success_count = int(fb.get("success", 0) or 0)
+            failed_count = int(fb.get("failed", 0) or 0)
+            stale_count = int(fb.get("stale", 0) or 0)
+            has_summary = True
 
-            if key in key_summary and key_summary[key].get("success", 0) > slow_success:
-                s = key_summary[key]
-                result.append({
-                    "app_name":      app,
-                    "dataset_name":  dataset,
-                    "modality":      modality,
-                    "method":        method,
-                    "success_count": s.get("success", 0),
-                    "failed_count":  s.get("failed",  0),
-                    "stale_count":   s.get("stale",   0),
-                    "has_summary":   True,
-                    "dirs":          dirs,
-                })
-            else:
-                result.append({
-                    "app_name":      app,
-                    "dataset_name":  dataset,
-                    "modality":      modality,
-                    "method":        method,
-                    "success_count": slow_success,
-                    "failed_count":  slow_failed,
-                    "stale_count":   slow_stale,
-                    "has_summary":   False,
-                    "dirs":          dirs,
-                })
+        result.append({
+            "app_name": app,
+            "dataset_name": dataset,
+            "modality": modality,
+            "method": method,
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "stale_count": stale_count,
+            "has_summary": has_summary,
+            "dirs": dirs,
+        })
 
     return result
 
@@ -220,10 +223,10 @@ def _build_table(
         for r in batch_rows
     }
 
-    # (app, dataset) → (success_count, stale_count) for the best run
-    cache_lookup: Dict[Tuple[str, str], Tuple[int, int]] = {}
+    # (app, dataset, modality) → (success_count, stale_count) for the best run
+    cache_lookup: Dict[Tuple[str, str, str], Tuple[int, int]] = {}
     for c in caches:
-        key    = (c["app_name"], c["dataset_name"])
+        key = (c["app_name"], c["dataset_name"], c.get("modality", ""))
         is_ioc = c["method"] == "ioc_comparison"
         if (mode == "ioc" and is_ioc) or (mode == "perturb" and not is_ioc):
             success = c.get("success_count", 0)
@@ -242,7 +245,7 @@ def _build_table(
             else:
                 modality = combo_modality[combo]
                 n = _dataset_size(dataset, modality)
-                m, stale = cache_lookup.get(combo, (0, 0))
+                m, stale = cache_lookup.get((app, dataset, modality), (0, 0))
                 cell = f"{m} / {n}" if n > 0 else f"{m} / ?"
                 if stale > 0:
                     cell += f" ({stale} stale)"
@@ -342,6 +345,14 @@ def main() -> None:
         )
 
     caches = _scan_outputs()
+    batch_combo_keys = {
+        (r["app_name"], r["dataset_name"], r["modality"])
+        for r in batch_rows
+    }
+    unmapped_caches = [
+        c for c in caches
+        if (c["app_name"], c["dataset_name"], c.get("modality", "")) not in batch_combo_keys
+    ]
 
     # ── Stats row ─────────────────────────────────────────────────────────────
     enabled_rows = [
@@ -414,6 +425,27 @@ def main() -> None:
                     f"**{c['app_name']}** / `{c['dataset_name']}` &nbsp; "
                     f"`[{mode_label}]` &nbsp; "
                     f"— {c.get('failed_count', '?')} failed items",
+                    unsafe_allow_html=True,
+                )
+                for d in c.get("dirs", []):
+                    st.code(d, language=None)
+
+    if unmapped_caches:
+        st.divider()
+        with st.expander(
+            f"🧭 Unmapped Output Groups ({len(unmapped_caches)}) — on disk but not in batch_config.csv",
+            expanded=False,
+        ):
+            st.caption(
+                "These output groups were found under `verify/outputs/`, but their "
+                "(app, dataset, modality) combination is not present in `verify/batch_config.csv`, "
+                "so they are not represented in the matrix."
+            )
+            for c in sorted(unmapped_caches, key=lambda x: (x["app_name"], x["dataset_name"], x.get("modality", ""), x["method"])):
+                st.markdown(
+                    f"**{c['app_name']}** / `{c['dataset_name']}` / `{c.get('modality', '?')}` "
+                    f"&nbsp; `[{c['method'] or 'unknown'}]` &nbsp; "
+                    f"— {c.get('success_count', 0)} success, {c.get('failed_count', 0)} failed",
                     unsafe_allow_html=True,
                 )
                 for d in c.get("dirs", []):

@@ -217,7 +217,7 @@ Installs a `logging.Handler` at the root logger. Keeps all WARNING+ records; kee
 
 DURING-phase events (the LLM inference API calls themselves) are intentionally excluded — they are expected internals of the app's inference process, not privacy-relevant externalizations. Only POST-phase events reflect what the app does with the data *after* inference: persisting to databases, pushing to frontends, sending emails, dispatching background tasks, etc.
 
-Empty channels are omitted from the returned dict. Each channel is deduplicated and capped (NETWORK: 15 events, STORAGE/IPC: 10, LOGGING/UI: 8).
+Empty channels are omitted from the returned dict. Each channel is deduplicated while preserving first-seen order. Externalization capture is no longer capped or truncated at finalize-time: the full captured POST-phase response is kept so downstream re-evaluation can score the complete externalized result.
 
 ### 5.2 `_openrouter_calls` tracking (adapter-side, serverless only)
 
@@ -906,8 +906,8 @@ perturbation methods.
 
 | Mode | Flag | API calls | What it does |
 |---|---|---|---|
-| Init | `--init` | none | Stamps `eval_model = EVAL_MODEL` on items that have `ext_eval` but no provenance label |
-| Re-eval | `--model MODEL` | yes — one per item | Re-scores every successful item with MODEL; writes back `ext_eval`, `eval_model`, sets `ext_eval_stale = False` |
+| Init | `--init` | none | Stamps provenance on items that have `ext_eval` but no labels (`eval_model`, `eval_prompt`) |
+| Re-eval | `--model MODEL` | yes — one per item | Re-scores every successful item with MODEL; writes back `ext_eval`, `eval_model`, `eval_prompt`, sets `ext_eval_stale = False` |
 
 #### Data written per item
 
@@ -917,11 +917,22 @@ perturbation methods.
   "ext_eval_ok":    true,
   "ext_eval_error": null,
   "eval_model":     "google/gemini-2.5-pro",
+  "eval_prompt":    "prompt1",
   "ext_eval_stale": false
 }
 ```
 
-`dir_summary.json` is updated with `eval_model` and `last_reeval` timestamp.
+`dir_summary.json` is updated with `eval_model`, `eval_prompt`, and `last_reeval` timestamp.
+
+#### Prompt variants
+
+| Prompt | Flag | Result shape | Purpose |
+|---|---|---|---|
+| `prompt1` | default | flat `{inferable, score, reasoning}` per attribute | baseline binary inferability |
+| `prompt2` | `--prompt2` | flat result + `prediction` | MCQ / value prediction, used by SynthPAI validation |
+| `prompt3` | `--prompt3` | nested `{aggregate, channels}` per attribute | evaluates full aggregate externalized result and each labeled channel separately |
+
+`prompt3` evaluates the aggregate externalized result directly from the full combined `ext_text`; it is **not** computed by aggregating the per-channel evaluator outputs.
 
 #### Typical workflow
 
@@ -935,18 +946,28 @@ python verify/reeval.py --model google/gemini-2.5-pro
 # 3. Re-evaluate a subset
 python verify/reeval.py --model google/gemini-2.5-pro --app deeptutor xend
 python verify/reeval.py --model google/gemini-2.5-pro --dataset PrivacyLens
+python verify/reeval.py --model google/gemini-2.5-pro --dir cache_d2fbdc5307a7c57b
 
-# 4. Preview without writing
+# 4. Use alternative prompt variants
+python verify/reeval.py --model google/gemini-2.5-pro --prompt2 --dataset SynthPAI
+python verify/reeval.py --model google/gemini-2.5-pro --prompt3 --dir cache_d2fbdc5307a7c57b
+
+# 5. Preview without writing
 python verify/reeval.py --dry-run --model google/gemini-2.5-pro
+
+# 6. Parallelize both within and across output directories
+python verify/reeval.py --model google/gemini-2.5-pro --workers 4 --dir-workers 2
 ```
 
-Filters `--app`, `--dataset`, `--dir PATH [PATH…]` and `--workers N` (parallel API calls) are all supported.
+Filters `--app`, `--dataset`, `--dir PATH [PATH…]`, `--workers N` (parallel API calls within one directory), and `--dir-workers N` (directories processed concurrently) are all supported. `--dir` accepts absolute paths, relative paths, and bare output-directory names such as `cache_d2fbdc5307a7c57b`.
 
 ### 9.4 Streamlit UI — page 6 "Re-evaluate"
 
 `verify/frontend/pages/6_Reeval.py` wraps `reeval.py` with a point-and-click interface:
 
-- **Table** — one row per output directory; shows App, Modality, Dataset, Method, item counts, current Eval Model, Last Re-eval date.  Eval Model cell is colour-coded: green (✓) = matches active model, amber = different model, grey = not yet labeled.
+- **Table** — one row per output directory; shows App, Modality, Dataset, Method, item counts, Prompt, current Eval Model, Last Re-eval date.  Eval Model cell is colour-coded: green (✓) = matches active model, amber = different model, grey = not yet labeled.
 - **Initialize labels** button — runs `--init` across all unlabeled dirs; disabled once all are labeled.
 - **Re-evaluate selected** — runs `--model MODEL --dir dir1 dir2 …` for checked rows only, enabling instance-wise model comparison.
-- **Stop** button, live auto-scrolling log, model dropdown + custom-model text input, workers slider, dry-run toggle.
+- **Prompt selector** — `prompt1`, `prompt2`, `prompt3`.
+- **Parallelism controls** — item workers (`--workers`) plus directory workers (`--dir-workers`).
+- **Stop** button, live auto-scrolling log, model dropdown + custom-model text input, dry-run toggle.
