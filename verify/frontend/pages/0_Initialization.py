@@ -23,6 +23,10 @@ import streamlit as st
 
 _MODE_OPTIONS = ["native", "serverless"]
 _MODE_LABELS  = ["Native", "Serverless"]
+_APP_DEFAULT_MODES = {
+    "chat-driven-expense-tracker": "serverless",
+    "oxproxion": "serverless",
+}
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -39,6 +43,11 @@ def _sync_app_modes() -> None:
     from verify.backend.utils.config import set_app_mode_override
     for app_name, mode in st.session_state.get("app_modes", {}).items():
         set_app_mode_override(app_name, mode)
+
+
+def _default_mode_for_app(app_name: str, global_mode: str) -> str:
+    """Return the default execution mode for an app."""
+    return _APP_DEFAULT_MODES.get(app_name, global_mode)
 
 
 def _get_adapters() -> dict:
@@ -108,10 +117,12 @@ def main():
     from verify.backend.utils.config import set_app_mode_override
     mode_changed = False
     for app_name in sorted(adapters):
-        # Default to whatever .env says
-        current_mode = st.session_state.app_modes.get(app_name, global_mode)
+        current_mode = st.session_state.app_modes.get(
+            app_name,
+            _default_mode_for_app(app_name, global_mode),
+        )
         if current_mode not in _MODE_OPTIONS:
-            current_mode = global_mode
+            current_mode = _default_mode_for_app(app_name, global_mode)
         current_idx = _MODE_OPTIONS.index(current_mode)
 
         col_name, col_radio = st.columns([2, 5])
