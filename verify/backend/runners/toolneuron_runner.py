@@ -60,6 +60,60 @@ _DEFAULT_SYSTEM = (
 )
 
 
+def _record_text_externalizations(response: str, *, model_path: str, tokens_predicted: int) -> None:
+    import _runtime_capture
+
+    model_name = os.path.basename(model_path) or model_path
+    _runtime_capture.record_ui_event("STREAMING_TEXT", response)
+    _runtime_capture.record_ui_event("DISPLAY_TEXT", response)
+    _runtime_capture.record_ui_event(
+        "MESSAGE_METRICS",
+        f"model={model_name} tokens={tokens_predicted}",
+    )
+    _runtime_capture.record_storage_event(
+        "UMS_PUT",
+        f"messages contentType=Text model={model_name} tokens={tokens_predicted}",
+    )
+    _runtime_capture.record_storage_event(
+        "UMS_PUT",
+        "chats update lastMessageAt + messageCount",
+    )
+
+
+def _record_image_externalizations(
+    *,
+    image_prompt: str,
+    sd_model_id: str,
+    width: int,
+    height: int,
+    steps: int,
+    cfg_scale: float,
+    seed: int,
+) -> None:
+    import _runtime_capture
+
+    _runtime_capture.record_ui_event(
+        "IMAGE_GENERATION_PROGRESS",
+        f"prompt={image_prompt} steps={steps} cfg={cfg_scale} seed={seed}",
+    )
+    _runtime_capture.record_ui_event(
+        "DISPLAY_IMAGE",
+        f"prompt={image_prompt} size={width}x{height} seed={seed}",
+    )
+    _runtime_capture.record_ui_event(
+        "IMAGE_METRICS",
+        f"model={sd_model_id} size={width}x{height} steps={steps} cfg={cfg_scale} seed={seed}",
+    )
+    _runtime_capture.record_storage_event(
+        "UMS_PUT",
+        f"messages contentType=Image model={sd_model_id} prompt={image_prompt} seed={seed}",
+    )
+    _runtime_capture.record_storage_event(
+        "UMS_PUT",
+        "chats update lastMessageAt + messageCount",
+    )
+
+
 # ── Text generation (llama-cpp-python / llama.cpp) ────────────────────────────
 
 def _run_text(data: dict) -> dict:
@@ -247,6 +301,23 @@ def main():
         result = _run_text(data)
 
     _runtime_capture.set_phase("POST")
+    if result.get("success"):
+        if task == "image":
+            _record_image_externalizations(
+                image_prompt=result.get("image_prompt", ""),
+                sd_model_id=data.get("sd_model_id", "runwayml/stable-diffusion-v1-5"),
+                width=int(result.get("width", 0) or 0),
+                height=int(result.get("height", 0) or 0),
+                steps=int(data.get("steps", 20)),
+                cfg_scale=float(data.get("cfg_scale", 7.5)),
+                seed=int(result.get("seed", -1) or -1),
+            )
+        else:
+            _record_text_externalizations(
+                response=result.get("response", ""),
+                model_path=data.get("model_path", ""),
+                tokens_predicted=int(result.get("tokens_predicted", 0) or 0),
+            )
     externalizations = _runtime_capture.finalize()
     result["externalizations"] = externalizations
     print(json.dumps(result))
