@@ -135,10 +135,19 @@ def _ioc_cache_dir(
     dataset_name: str,
     modality: str,
     generation_task: str = "text",
+    eval_prompt: str = "prompt1",
 ) -> "Path":
     """Return the IOC-specific cache directory (distinct from perturb-input caches)."""
     from verify.backend.utils import cache as cache_module
-    eval_method = "openrouter" if generation_task == "text" else f"openrouter:task={generation_task}"
+    normalized_prompt = cache_module.normalize_eval_prompt(eval_prompt)
+    if generation_task == "text":
+        eval_method = "openrouter" if normalized_prompt == "prompt1" else f"openrouter:{normalized_prompt}"
+    else:
+        eval_method = (
+            f"openrouter:task={generation_task}"
+            if normalized_prompt == "prompt1"
+            else f"openrouter:{normalized_prompt}:task={generation_task}"
+        )
     # Use "ioc_comparison" as perturbation_method so the SHA256 key never
     # collides with any perturb-input cache (which always has a real method name).
     return cache_module.get_cache_dir(
@@ -189,13 +198,20 @@ def run_comparison_pipeline(
     from verify.backend.datasets.label_mapper import get_input_labels
     from verify.backend.evaluation_method.evaluator import evaluate_inferability
     from verify.backend.utils import cache as cache_module
+    eval_prompt = "prompt1"
 
     adapter = get_adapter(app_name)
     if adapter is None:
         yield {"type": "error", "error": f"No adapter registered for '{app_name}'."}
         return
 
-    cache_dir = _ioc_cache_dir(app_name, dataset_name, modality, generation_task) if use_cache else None
+    cache_dir = _ioc_cache_dir(
+        app_name,
+        dataset_name,
+        modality,
+        generation_task,
+        eval_prompt,
+    ) if use_cache else None
 
     # Save run config on first use so the View IOC Results page can discover this cache
     if cache_dir is not None:
@@ -208,7 +224,12 @@ def run_comparison_pipeline(
                 "generation_task": generation_task,
                 "unified_attrs": unified_attrs,
                 "perturbation_method": "ioc_comparison",
-                "evaluation_method": "openrouter" if generation_task == "text" else f"openrouter:task={generation_task}",
+                "evaluation_method": (
+                    "openrouter"
+                    if generation_task == "text"
+                    else f"openrouter:task={generation_task}"
+                ),
+                "eval_prompt": eval_prompt,
             })
 
     for ok, item, err in iter_dataset(dataset_name, modality, max_items=max_items):
@@ -221,10 +242,15 @@ def run_comparison_pipeline(
 
         # ── Cache check ───────────────────────────────────────────────────────
         if cache_dir is not None:
-            cached = cache_module.load_item_cache(cache_dir, filename)
+            cached = cache_module.load_item_cache(
+                cache_dir,
+                filename,
+                expected_eval_prompt=eval_prompt,
+            )
             if cached is not None:
                 # Restore PIL-less input_item if it was stripped before saving
                 cached.setdefault("input_item", item)
+                cached["eval_prompt"] = cache_module.normalize_eval_prompt(cached.get("eval_prompt"))
                 cached["from_cache"] = True
                 yield cached
                 continue
@@ -246,6 +272,7 @@ def run_comparison_pipeline(
                 "ext_eval_ok": False,
                 "output_eval_error": None,
                 "ext_eval_error": None,
+                "eval_prompt": eval_prompt,
                 "from_cache": False,
             }
             yield result
@@ -277,6 +304,7 @@ def run_comparison_pipeline(
                 "ext_eval_ok": False,
                 "output_eval_error": None,
                 "ext_eval_error": None,
+                "eval_prompt": eval_prompt,
                 "from_cache": False,
             }
             yield result
@@ -299,6 +327,7 @@ def run_comparison_pipeline(
                 "ext_eval_ok": False,
                 "output_eval_error": None,
                 "ext_eval_error": None,
+                "eval_prompt": eval_prompt,
                 "from_cache": False,
             }
             yield result
@@ -333,6 +362,7 @@ def run_comparison_pipeline(
             "ext_eval_ok": ext_ok,
             "output_eval_error": out_err,
             "ext_eval_error": ext_err,
+            "eval_prompt": eval_prompt,
             "from_cache": False,
             "prompt_text": pipeline_result.metadata.get("prompt_text", ""),
         }
@@ -957,26 +987,23 @@ def main():
         selected_app = selected_app_display.split(" (")[0]
 
         # Check adapter availability
-        if selected_app in KNOWN_APPS:
-            try:
-                from verify.backend.adapters import get_adapter
-                from verify.backend.utils.config import set_current_app_context
-                adapter = get_adapter(selected_app)
-                if adapter:
-                    set_current_app_context(selected_app)
-                    avail, msg = adapter.check_availability()
-                    if avail:
-                        st.success(f"Available: {msg}")
-                    else:
-                        st.error(f"Unavailable: {msg}")
-                    app_available = avail
+        try:
+            from verify.backend.adapters import get_adapter
+            from verify.backend.utils.config import set_current_app_context
+            adapter = get_adapter(selected_app)
+            if adapter:
+                set_current_app_context(selected_app)
+                avail, msg = adapter.check_availability()
+                if avail:
+                    st.success(f"Available: {msg}")
                 else:
-                    st.error("No adapter registered.")
-                    app_available = False
-            except Exception as e:
-                st.error(f"Adapter check error: {e}")
+                    st.error(f"Unavailable: {msg}")
+                app_available = avail
+            else:
+                st.error("No adapter registered.")
                 app_available = False
-        else:
+        except Exception as e:
+            st.error(f"Adapter check error: {e}")
             app_available = False
             st.warning("Unrecognized app — no adapter available.")
 

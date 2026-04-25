@@ -301,20 +301,28 @@ def _load_csv(path: Path) -> List[Dict[str, str]]:
         )
         for row in reader:
             # Skip rows where all values are blank
-            if not any(v.strip() for v in row.values()):
+            cleaned = {(k or "").strip(): (v or "").strip() for k, v in row.items()}
+            if not any(v for v in cleaned.values()):
                 continue
-            rows.append({k.strip(): v.strip() for k, v in row.items()})
+            cleaned.setdefault("generation_task", "")
+            rows.append(cleaned)
     return rows
 
 
 
 
 def _row_tag(row: Dict[str, str], mode: str) -> str:
+    generation_task = row.get("generation_task", "") or "text"
+    if row.get("app_name") == "tool-neuron" and row.get("modality") == "text":
+        return f"{mode}/{row['app_name']}/{row['dataset_name']}/{generation_task}"
     return f"{mode}/{row['app_name']}/{row['dataset_name']}"
 
 
-def _ioc_cache_eval_method(eval_prompt: str) -> str:
-    return "openrouter" if eval_prompt == "prompt1" else f"openrouter:{eval_prompt}"
+def _ioc_cache_eval_method(eval_prompt: str, generation_task: str = "text") -> str:
+    method = "openrouter" if eval_prompt == "prompt1" else f"openrouter:{eval_prompt}"
+    if generation_task != "text":
+        method = f"{method}:task={generation_task}"
+    return method
 
 
 def _select_ioc_ext_eval_fn(eval_prompt: str):
@@ -344,7 +352,7 @@ def _run_ioc(
     """
     Headless IOC pipeline matching run_comparison_pipeline() in
     2_Input_Output_Comparison.py exactly:
-      - same cache key (ioc_comparison, no attrs)
+      - same cache key (ioc_comparison, no attrs, eval_prompt-specific)
       - same result schema (input_item, prompt_text, error field on all rows)
       - failed items saved to item_results with full schema
       - PIL stripped from input_item before writing to cache
@@ -352,6 +360,7 @@ def _run_ioc(
     app_name = row["app_name"]
     dataset_name = row["dataset_name"]
     modality = row["modality"]
+    generation_task = row.get("generation_task", "") or "text"
     tag = _row_tag(row, "ioc")
     row_max = int(row["max_items"]) if row.get("max_items") else max_items
 
@@ -404,7 +413,7 @@ def _run_ioc(
             modality,
             [],
             "ioc_comparison",
-            _ioc_cache_eval_method(eval_prompt),
+            _ioc_cache_eval_method(eval_prompt, generation_task),
         )
         if use_cache else None
     )
@@ -416,21 +425,24 @@ def _run_ioc(
                 "app_name": app_name,
                 "dataset_name": dataset_name,
                 "modality": modality,
+                "generation_task": generation_task,
                 "unified_attrs": unified_attrs,
                 "perturbation_method": "ioc_comparison",
-                "evaluation_method": "openrouter",
+                "evaluation_method": _ioc_cache_eval_method(eval_prompt, generation_task),
                 "eval_prompt": eval_prompt,
             })
 
     n_success = n_failed = n_cached = 0
     item_results: List[Dict] = []
 
-    _log(tag, f"Starting IOC ({dataset_name}, {modality})")
+    _log(tag, f"Starting IOC ({dataset_name}, {modality}, task={generation_task})")
     ext_eval_fn = _select_ioc_ext_eval_fn(eval_prompt)
 
     def _process_one(ok: bool, item: Dict, err: Optional[str]) -> Dict:
         """Process a single non-cached dataset item (runs in a worker thread)."""
         filename = item.get("filename", "unknown")
+        if app_name == "tool-neuron":
+            item = {**item, "generation_task": generation_task}
 
         if not ok:
             _log(tag, f"  load error {filename}: {err}", "WARN")
@@ -505,17 +517,28 @@ def _run_ioc(
     # Separate cached from non-cached in the main thread
     pending: List[Tuple[bool, Dict, Optional[str]]] = []
     for ok, item, err in all_items:
+        if app_name == "tool-neuron":
+            item = {**item, "generation_task": generation_task}
         filename = item.get("filename", "unknown")
         if cache_dir is not None:
-            cached = cache_module.load_item_cache(cache_dir, filename)
+            cached = cache_module.load_item_cache(
+                cache_dir,
+                filename,
+                expected_eval_prompt=eval_prompt,
+            )
             if cached is not None:
                 cached.setdefault("input_item", _strip_pil(item))
-                cached.setdefault("eval_prompt", eval_prompt)
+                cached["eval_prompt"] = cache_module.normalize_eval_prompt(cached.get("eval_prompt"))
                 cached["from_cache"] = True
                 n_cached += 1
                 item_results.append(cached)
                 continue
         pending.append((ok, item, err))
+
+    _log(
+        tag,
+        f"Cache scan — cached={n_cached} pending={len(pending)} total={len(all_items)}",
+    )
 
     # Process non-cached items — parallel when item_workers > 1
     if item_workers > 1 and pending:
@@ -545,6 +568,7 @@ def _run_ioc(
         "app": app_name,
         "dataset": dataset_name,
         "modality": modality,
+        "generation_task": generation_task,
         "n_success": n_success,
         "n_failed": n_failed,
         "n_cached": n_cached,
@@ -573,7 +597,12 @@ def _run_perturb(
     app_name = row["app_name"]
     dataset_name = row["dataset_name"]
     modality = row["modality"]
+    generation_task = row.get("generation_task", "") or "text"
     perturbation_method = row.get("perturbation_method") or None
+    cache_method = perturbation_method
+    if app_name == "tool-neuron" and generation_task != "text":
+        suffix = f"task={generation_task}"
+        cache_method = f"{perturbation_method}::{suffix}" if perturbation_method else suffix
     attributes = _load_attrs_for_modality(modality)
     tag = _row_tag(row, "perturb")
     row_max = int(row["max_items"]) if row.get("max_items") else max_items
@@ -585,7 +614,7 @@ def _run_perturb(
 
     from verify.backend.orchestrator import Orchestrator
 
-    _log(tag, f"Starting perturb ({dataset_name}, {modality}, attrs={attributes}, method={perturbation_method})")
+    _log(tag, f"Starting perturb ({dataset_name}, {modality}, task={generation_task}, attrs={attributes}, method={perturbation_method})")
 
     orch = Orchestrator(
         app_name=app_name,
@@ -594,8 +623,9 @@ def _run_perturb(
         attributes=attributes,
         use_cache=use_cache,
         max_items=row_max,
-        perturbation_method=perturbation_method,
+        perturbation_method=cache_method,
         item_workers=item_workers,
+        adapter_kwargs={"generation_task": generation_task} if app_name == "tool-neuron" else None,
     )
 
     summary: Optional[Dict] = None
@@ -634,6 +664,7 @@ def _run_perturb(
         "app": app_name,
         "dataset": dataset_name,
         "modality": modality,
+        "generation_task": generation_task,
         "attributes": attributes,
         "perturbation_method": perturbation_method,
         "n_success": n_success,
@@ -823,8 +854,9 @@ def main() -> None:
             attrs = _load_attrs_for_modality(row.get("modality", ""))
             method = row.get("perturbation_method") or "(config default)"
             row_max = row.get("max_items") or args.max_items or "all"
+            generation_task = row.get("generation_task", "") or "text"
             print(f"  {mode_label}  {row['app_name']:<30s}  {row['dataset_name']:<12s}"
-                  f"  {row['modality']:<6s}  method={method}  items={row_max}")
+                  f"  {row['modality']:<6s}  task={generation_task:<5s}  method={method}  items={row_max}")
             if fn is _run_ioc:
                 print(f"            ext_eval_prompt: {args.eval_prompt}  (raw_output=prompt1)")
             if fn is _run_perturb:

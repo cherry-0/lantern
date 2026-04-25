@@ -64,7 +64,7 @@ def _display_image(b64_str: str | None, caption: str = ""):
     try:
         if b64_str:
             import base64
-            st.image(base64.b64decode(b64_str), caption=caption, use_container_width=True)
+            st.image(base64.b64decode(b64_str), caption=caption, width="stretch")
         else:
             st.info("Image not available in cache.")
     except Exception as e:
@@ -249,7 +249,7 @@ def _render_attribute_heatmap(
         )
     )
     chart = (rect + text).properties(width=alt.Step(44), height=alt.Step(44))
-    st.altair_chart(chart, use_container_width=True)
+    st.altair_chart(chart, width="stretch")
     st.caption("Red = inferable/present, white = not inferable, grey = channel not captured or not evaluated.")
 
 
@@ -342,7 +342,7 @@ def _render_channel_aggregated(all_results: List[Dict[str, Any]], unified_attrs:
         )
         .properties(height=320, title=f"Attribute-wise positive rate across {len(success)} item(s)")
     )
-    st.altair_chart(chart, use_container_width=True)
+    st.altair_chart(chart, width="stretch")
     st.caption(
         "Input/Raw Output/Aggregate use all successful items. Channel bars use only items where that channel was captured and evaluated."
     )
@@ -466,7 +466,7 @@ def _render_channel_aggregated_heatmap(all_results: List[Dict[str, Any]], unifie
         chart = layers[0]
         for layer in layers[1:]:
             chart = chart + layer
-        st.altair_chart(chart, use_container_width=True)
+        st.altair_chart(chart, width="stretch")
     st.caption(
         "Heatmap cells show attribute-inferred accuracy / exposure rate by stage or channel. "
         "Absent channels remain blank light gray for layout consistency."
@@ -569,7 +569,7 @@ def _render_item(
         detail_key = f"vioc_render_details_{idx}"
         show_details = bool(st.session_state.get(detail_key, False))
         if not show_details:
-            if st.button("Load details", key=f"vioc_load_details_{idx}", use_container_width=True):
+            if st.button("Load details", key=f"vioc_load_details_{idx}", width="stretch"):
                 st.session_state[detail_key] = True
                 st.rerun()
             st.caption("Details are not rendered until requested. Click `Load details` to render this item.")
@@ -731,6 +731,7 @@ def _reconstruct_config(cache_dir: Path, sample_item: dict) -> dict:
         "unified_attrs":     unified_attrs,
         "perturbation_method": "ioc_comparison",
         "evaluation_method": "openrouter",
+        "eval_prompt":       sample_item.get("eval_prompt", "prompt1"),
     }
     # Persist so we don't have to sniff again next time
     try:
@@ -779,13 +780,19 @@ def _list_ioc_cache_dirs() -> list[tuple[Path, dict]]:
     return sorted(result, key=lambda x: x[0].stat().st_mtime, reverse=True)
 
 
-def _load_items_from_cache(cache_dir: Path) -> list[dict]:
-    """Load all item JSON files from an IOC cache directory, newest first."""
+def _load_items_from_cache(cache_dir: Path, expected_eval_prompt: str) -> list[dict]:
+    """Load IOC cache items from disk, filtering out mismatched prompt versions."""
     items = []
+    normalized_expected = expected_eval_prompt.strip() or "prompt1"
     for f in cache_dir.iterdir():
         if f.suffix == ".json" and f.name != "run_config.json":
             try:
-                items.append(json.loads(f.read_text()))
+                item = json.loads(f.read_text())
+                item_prompt = str(item.get("eval_prompt") or "").strip() or "prompt1"
+                if item_prompt != normalized_expected:
+                    continue
+                item["eval_prompt"] = item_prompt
+                items.append(item)
             except Exception:
                 pass
     return sorted(items, key=lambda r: r.get("filename", ""))
@@ -836,7 +843,8 @@ def main():
                 app      = cfg.get("app_name", "?")
                 dataset  = cfg.get("dataset_name", "?")
                 modality = cfg.get("modality", "?")
-                return f"{app} / {dataset} / {modality}  [{cache_dir.name}]"
+                eval_prompt = cfg.get("eval_prompt", "prompt1")
+                return f"{app} / {dataset} / {modality} / {eval_prompt}  [{cache_dir.name}]"
 
             options = {_label(d, c): (d, c) for d, c in available}
             selected_label = st.selectbox(
@@ -850,12 +858,15 @@ def main():
             selected_dir = None
             selected_cfg = {}
 
-        load_clicked = st.button("📂 Load", type="primary", use_container_width=True,
+        load_clicked = st.button("📂 Load", type="primary", width="stretch",
                                  disabled=selected_dir is None)
 
     # ── Load ──────────────────────────────────────────────────────────────────
     if load_clicked and selected_dir is not None:
-        items = _load_items_from_cache(selected_dir)
+        items = _load_items_from_cache(
+            selected_dir,
+            str(selected_cfg.get("eval_prompt") or "prompt1"),
+        )
         st.session_state["vioc_items"]     = items
         st.session_state["vioc_config"]    = selected_cfg
         st.session_state["vioc_cache_dir"] = str(selected_dir)
@@ -872,6 +883,7 @@ def main():
     app_name      = run_config.get("app_name", "unknown")
     dataset_name  = run_config.get("dataset_name", "unknown")
     modality      = run_config.get("modality", "image")
+    eval_prompt   = run_config.get("eval_prompt", "prompt1")
     unified_attrs = run_config.get("unified_attrs", [])
 
     # Derive attrs from eval keys if not stored in config
@@ -885,11 +897,12 @@ def main():
 
     # ── Run info ──────────────────────────────────────────────────────────────
     st.subheader("Run Info")
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("App",      app_name)
     c2.metric("Dataset",  dataset_name)
     c3.metric("Modality", modality)
-    c4.metric("Items",    len(items))
+    c4.metric("Prompt",   eval_prompt)
+    c5.metric("Items",    len(items))
     if unified_attrs:
         st.caption(f"**Attributes:** {', '.join(unified_attrs)}")
     st.caption(f"Cache: `{Path(cache_dir_str).name if cache_dir_str else '—'}`")
@@ -913,7 +926,7 @@ def main():
     st.divider()
     n = len(items)
     st.subheader(
-        f"Results — {app_name} / {dataset_name} / {modality} "
+        f"Results — {app_name} / {dataset_name} / {modality} / {eval_prompt} "
         f"({n} item{'s' if n != 1 else ''})"
     )
     cache_dir_path = Path(cache_dir_str) if cache_dir_str else None

@@ -35,6 +35,7 @@ _CSV_FIELDNAMES = [
     "enabled",
     "app_name",
     "modality",
+    "generation_task",
     "dataset_name",
     "perturbation_method",
     "max_items",
@@ -53,9 +54,11 @@ def _load_csv_rows(path: Path) -> List[Dict[str, str]]:
             (line for line in f if not line.lstrip().startswith("#"))
         )
         for row in reader:
-            if not any(v.strip() for v in row.values()):
+            cleaned = {(k or "").strip(): (v or "").strip() for k, v in row.items()}
+            if not any(cleaned.values()):
                 continue
-            rows.append({k.strip(): v.strip() for k, v in row.items()})
+            cleaned.setdefault("generation_task", "")
+            rows.append(cleaned)
     return rows
 
 
@@ -67,10 +70,11 @@ def _write_temp_csv(rows: List[Dict[str, str]], path: Path) -> None:
             writer.writerow(row)
 
 
-def _row_identity(row: Dict[str, str]) -> Tuple[str, str, str, str]:
+def _row_identity(row: Dict[str, str]) -> Tuple[str, str, str, str, str]:
     return (
         row.get("app_name", "").strip(),
         row.get("modality", "").strip(),
+        row.get("generation_task", "").strip(),
         row.get("dataset_name", "").strip(),
         row.get("perturbation_method", "").strip(),
     )
@@ -175,6 +179,17 @@ def _parse_progress_line(line: str, progress: Dict) -> None:
 
     if msg.startswith("Starting"):
         p["status"] = "running"
+    elif msg.startswith("Cache scan"):
+        for key in ("cached", "pending", "total"):
+            m2 = re.search(rf"{key}=(\d+)", msg)
+            if not m2:
+                continue
+            value = int(m2.group(1))
+            if key == "cached":
+                p["cached"] = value
+            elif key == "total":
+                p["total"] = value
+        p["done"] = p["success"] + p["cached"] + p["failed"]
     elif msg.startswith("Done —"):
         # "Done — success=N cached=N failed=N"
         for key in ("success", "cached", "failed"):
@@ -183,14 +198,22 @@ def _parse_progress_line(line: str, progress: Dict) -> None:
                 p[key] = int(m2.group(1))
         p["done"]   = p["success"] + p["cached"] + p["failed"]
         p["status"] = "done"
+    elif msg.startswith("✓"):
+        p["success"] += 1
+        p["done"] += 1
+    elif "[success]" in msg:
+        if "(cached)" in msg:
+            p["cached"] += 1
+        else:
+            p["success"] += 1
+        p["done"] += 1
     elif (
-        msg.startswith("✓")           # IOC item success
-        or "[success]" in msg         # perturb item (live or cached)
-        or "[failed]"  in msg         # perturb item failed
+        "[failed]" in msg
         or msg.startswith("load error")
         or msg.startswith("pipeline error")
         or msg.startswith("pipeline failed")
     ):
+        p["failed"] += 1
         p["done"] += 1
 
 
@@ -387,13 +410,14 @@ def main() -> None:
                     modality = row.get("modality", "") or "?"
                     tag_color = "#4a90d9" if modality == "image" else "#e07b2a"
                     method = row.get("perturbation_method", "") or "—"
+                    generation_task = row.get("generation_task", "") or "text"
                     max_items = row.get("max_items", "") or "all"
                     st.markdown(
                         (
                             '<div class="batch-option-line">'
                             f'<span class="batch-pill" style="background:{tag_color}">{_html.escape(modality)}</span>'
                             f'<span class="batch-method">{_html.escape(method)}</span>'
-                            f'<span class="batch-meta">max={_html.escape(max_items)}</span>'
+                            f'<span class="batch-meta">task={_html.escape(generation_task)} · max={_html.escape(max_items)}</span>'
                             '</div>'
                         ),
                         unsafe_allow_html=True,
@@ -475,7 +499,11 @@ def main() -> None:
                         else [mode])
         for task_mode in modes_to_run:
             for row in selected_rows:
-                tag = f"{task_mode}/{row['app_name']}/{row['dataset_name']}"
+                generation_task = row.get("generation_task", "") or "text"
+                if row["app_name"] == "tool-neuron" and row["modality"] == "text":
+                    tag = f"{task_mode}/{row['app_name']}/{row['dataset_name']}/{generation_task}"
+                else:
+                    tag = f"{task_mode}/{row['app_name']}/{row['dataset_name']}"
                 row_max_str = row.get("max_items", "")
                 total: Optional[int] = (
                     int(row_max_str) if row_max_str
@@ -501,6 +529,7 @@ def main() -> None:
                     "app":      row["app_name"],
                     "dataset":  row["dataset_name"],
                     "modality": row["modality"],
+                    "generation_task": row.get("generation_task", "") or "text",
                     "mode":     task_mode,
                 }
 
@@ -529,6 +558,7 @@ def main() -> None:
             total   = p["total"]
             app     = p["app"]
             dataset = p["dataset"]
+            generation_task = p.get("generation_task", "text")
             mode_lbl = "IOC" if p["mode"] == "ioc" else "Perturb"
 
             if status == "pending":
@@ -543,6 +573,11 @@ def main() -> None:
             label_md = (
                 f"{status_icon} &nbsp; **[{mode_lbl}]** &nbsp; "
                 f"`{app}` / `{dataset}`"
+                + (
+                    f" &nbsp; <span style='color:#777'>task={_html.escape(generation_task)}</span>"
+                    if app == "tool-neuron" and p.get("modality") == "text"
+                    else ""
+                )
             )
 
             if status == "pending":
@@ -553,25 +588,19 @@ def main() -> None:
                 s = p["success"]
                 c = p["cached"]
                 f_cnt = p["failed"]
-                if status == "done":
-                    bar_text = (
-                        f"{done} / {total}  ·  "
-                        f"{s} new  {c} cached  {f_cnt} failed"
-                    )
-                else:
-                    bar_text = f"{done} / {total}"
+                bar_text = (
+                    f"{done} / {total}  ·  "
+                    f"{s} new  {c} cached  {f_cnt} failed"
+                )
             else:
                 fraction = 0.0 if status == "pending" else None
                 s = p["success"]
                 c = p["cached"]
                 f_cnt = p["failed"]
-                if status == "done":
-                    bar_text = (
-                        f"{done} processed  ·  "
-                        f"{s} new  {c} cached  {f_cnt} failed"
-                    )
-                else:
-                    bar_text = f"{done} processed" if done > 0 else "Starting…"
+                bar_text = (
+                    f"{done} processed  ·  "
+                    f"{s} new  {c} cached  {f_cnt} failed"
+                ) if done > 0 or status == "done" else "Starting…"
 
             st.markdown(label_md, unsafe_allow_html=True)
 

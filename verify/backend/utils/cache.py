@@ -12,6 +12,12 @@ from typing import Any, Dict, List, Optional
 from verify.backend.utils.config import OUTPUTS_DIR
 
 
+def normalize_eval_prompt(eval_prompt: Optional[str]) -> str:
+    """Normalize IOC eval prompt values, defaulting legacy/missing values to prompt1."""
+    value = str(eval_prompt or "").strip()
+    return value or "prompt1"
+
+
 def _make_cache_key(
     app_name: str,
     dataset_name: str,
@@ -55,12 +61,24 @@ def get_cache_dir(
     return cache_dir
 
 
-def load_item_cache(cache_dir: Path, filename: str) -> Optional[Dict[str, Any]]:
+def load_item_cache(
+    cache_dir: Path,
+    filename: str,
+    *,
+    expected_eval_prompt: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
     """Load cached result for a specific item file, or None if not cached."""
     cache_file = cache_dir / f"{filename}.json"
     if cache_file.exists():
         try:
-            return json.loads(cache_file.read_text())
+            data = json.loads(cache_file.read_text())
+            if expected_eval_prompt is not None:
+                actual = normalize_eval_prompt(data.get("eval_prompt"))
+                expected = normalize_eval_prompt(expected_eval_prompt)
+                if actual != expected:
+                    return None
+                data["eval_prompt"] = actual
+            return data
         except Exception:
             return None
     return None
@@ -75,12 +93,23 @@ def save_item_cache(cache_dir: Path, filename: str, data: Dict[str, Any]) -> Non
         pass  # Non-fatal; caching is best-effort
 
 
-def load_run_config(cache_dir: Path) -> Optional[Dict[str, Any]]:
+def load_run_config(
+    cache_dir: Path,
+    *,
+    expected_eval_prompt: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
     """Load the run config JSON from the cache dir, or None."""
     config_file = cache_dir / "run_config.json"
     if config_file.exists():
         try:
-            return json.loads(config_file.read_text())
+            config = json.loads(config_file.read_text())
+            if expected_eval_prompt is not None:
+                actual = normalize_eval_prompt(config.get("eval_prompt"))
+                expected = normalize_eval_prompt(expected_eval_prompt)
+                if actual != expected:
+                    return None
+                config["eval_prompt"] = actual
+            return config
         except Exception:
             return None
     return None

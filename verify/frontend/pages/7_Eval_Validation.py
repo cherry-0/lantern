@@ -26,6 +26,7 @@ if str(LANTERN_ROOT) not in sys.path:
     sys.path.insert(0, str(LANTERN_ROOT))
 
 import streamlit as st
+from verify.backend.utils.cache import normalize_eval_prompt
 from verify.backend.evaluation_method.evaluator import get_aggregate_eval_entry
 
 # st.set_page_config(
@@ -597,10 +598,17 @@ def _load_items(dir_path: str) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         pass
 
     items = []
+    expected_eval_prompt = normalize_eval_prompt(cfg.get("eval_prompt")) if cfg.get("perturbation_method") == "ioc_comparison" else None
     for f in sorted(d.iterdir()):
         if f.suffix == ".json" and f.name not in ("run_config.json", "dir_summary.json"):
             try:
-                items.append(json.loads(f.read_text()))
+                item = json.loads(f.read_text())
+                if expected_eval_prompt is not None:
+                    item_prompt = normalize_eval_prompt(item.get("eval_prompt"))
+                    if item_prompt != expected_eval_prompt:
+                        continue
+                    item["eval_prompt"] = item_prompt
+                items.append(item)
             except Exception:
                 pass
     return items, cfg

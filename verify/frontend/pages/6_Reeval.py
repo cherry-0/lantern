@@ -30,6 +30,7 @@ if str(LANTERN_ROOT) not in sys.path:
     sys.path.insert(0, str(LANTERN_ROOT))
 
 import streamlit as st
+from verify.backend.utils.cache import normalize_eval_prompt
 
 
 _REEVAL_SCRIPT = VERIFY_ROOT / "reeval.py"
@@ -93,6 +94,7 @@ def _scan_dirs() -> List[Dict]:
                 continue
             modality = cfg.get("modality", "").strip()
             method = cfg.get("perturbation_method", "") or "ioc"
+            expected_eval_prompt = normalize_eval_prompt(cfg.get("eval_prompt")) if method == "ioc_comparison" else None
         except Exception:
             continue
 
@@ -144,6 +146,10 @@ def _scan_dirs() -> List[Dict]:
             saw_item_json = True
             try:
                 data = json.loads(f.read_text())
+                if expected_eval_prompt is not None:
+                    item_prompt = normalize_eval_prompt(data.get("eval_prompt"))
+                    if item_prompt != expected_eval_prompt:
+                        continue
                 item_name = str(data.get("filename") or f.stem)
                 group["items"][item_name] = _merge_item_state(
                     group["items"].get(item_name),
@@ -308,7 +314,11 @@ def main() -> None:
     # ── Load directories ──────────────────────────────────────────────────────
     dirs = _scan_dirs()
 
-    if not dirs:
+    # Separate into IOC and Perturbation sections
+    ioc_dirs = [d for d in dirs if d["method"] == "ioc_comparison"]
+    perturb_dirs = [d for d in dirs if d["method"] != "ioc_comparison"]
+
+    if not ioc_dirs and not perturb_dirs:
         st.info("No output directories found. Run the batch pipeline first.")
         return
 
@@ -347,87 +357,96 @@ def main() -> None:
 
     st.divider()
 
-    # ── Directory table ───────────────────────────────────────────────────────
-    st.subheader("Output Groups")
-
-    sa_col, da_col, _, filt_col = st.columns([1, 1, 2, 3])
-    if sa_col.button("Select all",   disabled=running, use_container_width=True):
-        for i in range(len(dirs)):
-            st.session_state[f"reeval_row_{i}"] = True
-    if da_col.button("Deselect all", disabled=running, use_container_width=True):
-        for i in range(len(dirs)):
-            st.session_state[f"reeval_row_{i}"] = False
-
-    # Optional app/dataset filter
-    with filt_col:
-        search = st.text_input("Filter rows", placeholder="app or dataset substring",
-                               label_visibility="collapsed")
-
-    # Header
-    hdr_cols = st.columns([0.4, 2, 1.1, 2, 1, 0.8, 1, 1.2, 2.7, 1.6])
-    for col, label in zip(hdr_cols, ["", "App", "Modality", "Dataset", "Method",
-                                      "Dirs", "Items", "Prompt", "Eval Model", "Last Re-eval"]):
-        col.markdown(f"**{label}**")
-    st.divider()
-
     selected_dirs: List[str] = []
 
-    for i, row in enumerate(dirs):
-        # Text filter
-        if search:
-            haystack = f"{row['app_name']} {row['dataset_name']}".lower()
-            if search.lower() not in haystack:
-                continue
+    def _render_section(section_dirs: List[Dict], section_title: str) -> None:
+        """Render a section of directory groups."""
+        nonlocal selected_dirs
 
-        cols = st.columns([0.4, 2, 1.1, 2, 1, 0.8, 1, 1.2, 2.7, 1.6])
+        if not section_dirs:
+            return
 
-        checked = cols[0].checkbox(
-            "select",
-            value=st.session_state.get(f"reeval_row_{i}", False),
-            key=f"reeval_row_{i}",
-            label_visibility="collapsed",
-            disabled=running,
-        )
-        if checked:
-            selected_dirs.extend(row["dirs"])
+        st.subheader(section_title)
 
-        # Modality badge
-        mod_color = "#4a90d9" if row["modality"] == "image" else "#e07b2a"
-        mod_badge = (
-            f'<span style="background:{mod_color};color:#fff;'
-            f'padding:2px 8px;border-radius:10px;font-size:0.82em">'
-            f'{row["modality"]}</span>'
-        )
+        sa_col, da_col, _, filt_col = st.columns([1, 1, 2, 3])
+        section_key = section_title.lower().replace(" ", "_")
 
-        # Eval model cell
-        ev = row["eval_model"]
-        if not ev:
-            ev_cell = '<span style="color:#aaa;font-size:0.84em">not labeled</span>'
-        elif ev == model:
-            ev_cell = (
-                f'<span style="color:#155724;font-weight:600;font-size:0.84em">'
-                f'✓ {_html.escape(ev)}</span>'
+        if sa_col.button("Select all", key=f"sa_{section_key}", disabled=running, use_container_width=True):
+            for d in section_dirs:
+                st.session_state[f"reeval_row_{d['_orig_idx']}"] = True
+            st.rerun()
+        if da_col.button("Deselect all", key=f"da_{section_key}", disabled=running, use_container_width=True):
+            for d in section_dirs:
+                st.session_state[f"reeval_row_{d['_orig_idx']}"] = False
+            st.rerun()
+
+        # Optional app/dataset filter
+        with filt_col:
+            search = st.text_input("Filter rows", key=f"filt_{section_key}",
+                                   placeholder="app or dataset substring",
+                                   label_visibility="collapsed")
+
+        # Header
+        hdr_cols = st.columns([0.4, 2, 1.1, 2, 1, 0.8, 1, 1.2, 2.7, 1.6])
+        for col, label in zip(hdr_cols, ["", "App", "Modality", "Dataset", "Method",
+                                          "Dirs", "Items", "Prompt", "Eval Model", "Last Re-eval"]):
+            col.markdown(f"**{label}**")
+        st.divider()
+
+        for row in section_dirs:
+            orig_idx = row["_orig_idx"]
+
+            # Text filter
+            if search:
+                haystack = f"{row['app_name']} {row['dataset_name']}".lower()
+                if search.lower() not in haystack:
+                    continue
+
+            cols = st.columns([0.4, 2, 1.1, 2, 1, 0.8, 1, 1.2, 2.7, 1.6])
+
+            checked = cols[0].checkbox(
+                "select",
+                value=st.session_state.get(f"reeval_row_{orig_idx}", False),
+                key=f"reeval_row_{orig_idx}",
+                label_visibility="collapsed",
+                disabled=running,
             )
-        else:
-            ev_cell = (
-                f'<span style="color:#856404;font-size:0.84em">'
-                f'{_html.escape(ev)}</span>'
-            )
+            if checked:
+                selected_dirs.extend(row["dirs"])
 
-        prompt_cell = row["eval_prompt"] or "—"
+            # Display row data
+            cols[1].markdown(f"`{row['app_name']}`")
+            cols[2].markdown(f"`{row['modality']}`")
+            cols[3].markdown(row['dataset_name'])
+            cols[4].markdown(f"`{row['method']}`")
+            cols[5].markdown(str(row['dir_count']))
+            cols[6].markdown(f"{row['total']}")
+            cols[7].markdown(f"`{row['eval_prompt'] or '—'}`")
 
-        items_str  = f"{row['success']} / {row['total']}" if row["total"] else "—"
-        last_re    = row["last_reeval"][:10] if row["last_reeval"] else "—"
+            # Eval model with indicator
+            model = row['eval_model']
+            if not model:
+                cols[8].markdown("—")
+            elif model == model_choice or model == model:
+                cols[8].markdown(f"🟩 `{model}`")
+            else:
+                cols[8].markdown(f"🟨 `{model}`")
 
-        cols[1].write(row["app_name"])
-        cols[2].markdown(mod_badge, unsafe_allow_html=True)
-        cols[3].write(row["dataset_name"])
-        cols[4].write(row["method"])
-        cols[5].write(str(row["dir_count"]))
-        cols[6].write(items_str)
-        cols[7].write(prompt_cell)
-        cols[8].markdown(ev_cell, unsafe_allow_html=True)
-        cols[9].write(last_re)
+            cols[9].markdown(row['last_reeval'] or "—")
+
+        st.divider()
+
+    # Add original index to each row for state management
+    for i, d in enumerate(ioc_dirs):
+        d["_orig_idx"] = i
+    for i, d in enumerate(perturb_dirs):
+        d["_orig_idx"] = len(ioc_dirs) + i
+
+    # Render IOC section
+    _render_section(ioc_dirs, "Input-Output Comparison")
+
+    # Render Perturbation section
+    _render_section(perturb_dirs, "Perturbation Analysis")
 
     n_sel = len(selected_dirs)
     n_selected_groups = sum(1 for i in range(len(dirs)) if st.session_state.get(f"reeval_row_{i}", False))
