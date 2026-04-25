@@ -136,6 +136,18 @@ def record_ui_event(action: str, details: str = "") -> None:
     _record_event("UI", msg)
 
 
+def record_storage_event(action: str, details: str = "") -> None:
+    """Manually record a storage event (useful for headless runners)."""
+    msg = f"[{action.upper()}] {details}" if details else f"[{action.upper()}]"
+    _record_event("STORAGE", msg)
+
+
+def record_ipc_event(action: str, details: str = "") -> None:
+    """Manually record an IPC/inter-process event (useful for headless runners)."""
+    msg = f"[{action.upper()}] {details}" if details else f"[{action.upper()}]"
+    _record_event("IPC", msg)
+
+
 def _record_network(method: str, url: str, status: int, phase: str | None = None) -> None:
     """Append a network event if the URL is not filtered.
 
