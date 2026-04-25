@@ -30,6 +30,7 @@ if str(LANTERN_ROOT) not in sys.path:
 
 import pandas as pd
 import streamlit as st
+from verify.backend.utils.cache import normalize_eval_prompt
 
 
 _BATCH_CONFIG = VERIFY_ROOT / "batch_config.csv"
@@ -40,6 +41,29 @@ _DIR_SUMMARY  = "dir_summary.json"   # written by patch_ext_ui.py
 # ── Data loading ──────────────────────────────────────────────────────────────
 
 def _load_csv_rows(path: Path) -> List[Dict[str, str]]:
+    def _clean(value: object) -> str:
+        return str(value).strip() if value is not None else ""
+
+    def _normalize_legacy_row(row: Dict[str, str]) -> Dict[str, str]:
+        """
+        Support older 6-column batch_config rows that predate generation_task:
+          enabled,app_name,modality,dataset_name,perturbation_method,max_items
+
+        When parsed against the current 7-column header, those rows land as:
+          generation_task=<dataset>, dataset_name=<method>, perturbation_method=<max_items>, max_items=""
+        """
+        generation_task = row.get("generation_task", "")
+        if generation_task in ("", "text", "image"):
+            return row
+
+        return {
+            **row,
+            "generation_task": "",
+            "dataset_name": generation_task,
+            "perturbation_method": row.get("dataset_name", ""),
+            "max_items": row.get("perturbation_method", ""),
+        }
+
     rows = []
     if not path.exists():
         return rows
@@ -48,9 +72,10 @@ def _load_csv_rows(path: Path) -> List[Dict[str, str]]:
             (line for line in f if not line.lstrip().startswith("#"))
         )
         for row in reader:
-            if not any(v.strip() for v in row.values()):
+            cleaned = {_clean(k): _clean(v) for k, v in row.items() if k is not None}
+            if not any(cleaned.values()):
                 continue
-            rows.append({k.strip(): v.strip() for k, v in row.items()})
+            rows.append(_normalize_legacy_row(cleaned))
     return rows
 
 
@@ -60,14 +85,14 @@ def _scan_outputs() -> List[Dict]:
     Scan ALL verify/outputs/ directories (both cache_* and timestamped run dirs).
 
     Returns a list of dicts:
-      app_name, dataset_name, modality, method,
+      app_name, dataset_name, modality, method, eval_prompt,
       success_count, failed_count, stale_count,
-      has_summary, dirs (list of directory paths for this key)
+      prompt_success_counts, has_summary, dirs (list of directory paths for this key)
 
     Counts are aggregated across all directories for the same
-    (app_name, dataset_name, perturbation_method) key by deduplicating item
-    filenames. This avoids dropping coverage when a run was split across
-    multiple output directories.
+    (app_name, dataset_name, modality, perturbation_method, eval_prompt) key by
+    deduplicating item filenames. This avoids dropping coverage when a run was
+    split across multiple output directories.
     """
     if not _OUTPUTS_DIR.exists():
         return []
@@ -88,8 +113,9 @@ def _scan_outputs() -> List[Dict]:
             return "success", existing_stale or incoming_stale
         return existing_status, existing_stale
 
-    # Per-key state. key = (app, dataset, method)
+    # Per-key state. key = (app, dataset, modality, method, eval_prompt)
     key_modality: Dict[tuple, str] = {}
+    key_prompt: Dict[tuple, str] = {}
     key_dirs: Dict[tuple, List[str]] = defaultdict(list)
     key_items: Dict[tuple, Dict[str, Tuple[str, bool]]] = defaultdict(dict)
     key_summary_fallback: Dict[tuple, Dict[str, int]] = defaultdict(
@@ -108,10 +134,14 @@ def _scan_outputs() -> List[Dict]:
             dataset  = cfg.get("dataset_name", "").strip()
             modality = cfg.get("modality", "").strip()
             method   = cfg.get("perturbation_method", "").strip()
+            eval_prompt = str(cfg.get("eval_prompt") or "").strip()
+            if method == "ioc_comparison":
+                eval_prompt = normalize_eval_prompt(eval_prompt)
             if not app or not dataset:
                 continue
-            key = (app, dataset, method)
+            key = (app, dataset, modality, method, eval_prompt)
             key_modality[key] = modality
+            key_prompt[key] = eval_prompt
             key_dirs[key].append(str(d))
 
             summary_path = d / _DIR_SUMMARY
@@ -129,6 +159,10 @@ def _scan_outputs() -> List[Dict]:
                 saw_item_json = True
                 try:
                     data = json.loads(f.read_text())
+                    if method == "ioc_comparison":
+                        item_prompt = normalize_eval_prompt(data.get("eval_prompt"))
+                        if item_prompt != eval_prompt:
+                            continue
                     item_name = str(data.get("filename") or f.stem)
                     merged = _merge_item_state(
                         key_items[key].get(item_name),
@@ -159,8 +193,9 @@ def _scan_outputs() -> List[Dict]:
     result: List[Dict] = []
 
     for key in all_keys:
-        app, dataset, method = key
+        app, dataset, modality, method, eval_prompt = key
         modality = key_modality.get(key, "")
+        eval_prompt = key_prompt.get(key, eval_prompt)
         dirs = key_dirs.get(key, [])
         items = key_items.get(key, {})
 
@@ -181,9 +216,11 @@ def _scan_outputs() -> List[Dict]:
             "dataset_name": dataset,
             "modality": modality,
             "method": method,
+            "eval_prompt": eval_prompt,
             "success_count": success_count,
             "failed_count": failed_count,
             "stale_count": stale_count,
+            "prompt_success_counts": {eval_prompt: success_count} if eval_prompt else {},
             "has_summary": has_summary,
             "dirs": dirs,
         })
@@ -223,17 +260,23 @@ def _build_table(
         for r in batch_rows
     }
 
-    # (app, dataset, modality) → (success_count, stale_count) for the best run
-    cache_lookup: Dict[Tuple[str, str, str], Tuple[int, int]] = {}
+    # (app, dataset, modality) → (success_count, stale_count, prompt_success_counts)
+    cache_lookup: Dict[Tuple[str, str, str], Tuple[int, int, Dict[str, int]]] = {}
     for c in caches:
         key = (c["app_name"], c["dataset_name"], c.get("modality", ""))
         is_ioc = c["method"] == "ioc_comparison"
         if (mode == "ioc" and is_ioc) or (mode == "perturb" and not is_ioc):
             success = c.get("success_count", 0)
             stale   = c.get("stale_count",   0)
-            existing = cache_lookup.get(key, (-1, 0))
+            prompt_counts = dict(c.get("prompt_success_counts", {}) or {})
+            existing = cache_lookup.get(key, (-1, 0, {}))
             if success > existing[0]:
-                cache_lookup[key] = (success, stale)
+                cache_lookup[key] = (success, stale, prompt_counts)
+            elif success == existing[0]:
+                merged_counts = dict(existing[2])
+                for prompt, count in prompt_counts.items():
+                    merged_counts[prompt] = merged_counts.get(prompt, 0) + count
+                cache_lookup[key] = (success, max(stale, existing[1]), merged_counts)
 
     data: Dict[str, Dict[str, str]] = {}
     for app in apps:
@@ -245,10 +288,17 @@ def _build_table(
             else:
                 modality = combo_modality[combo]
                 n = _dataset_size(dataset, modality)
-                m, stale = cache_lookup.get((app, dataset, modality), (0, 0))
+                m, stale, prompt_counts = cache_lookup.get((app, dataset, modality), (0, 0, {}))
                 cell = f"{m} / {n}" if n > 0 else f"{m} / ?"
                 if stale > 0:
                     cell += f" ({stale} stale)"
+                version_parts = [
+                    f"{prompt}: {count}"
+                    for prompt, count in sorted(prompt_counts.items())
+                    if prompt and count > 0
+                ]
+                if version_parts:
+                    cell += " [" + ", ".join(version_parts) + "]"
                 row[dataset] = cell
         data[app] = row
 
@@ -266,10 +316,10 @@ def _style_table(df: pd.DataFrame) -> pd.DataFrame:
                     "background-color:#f5f5f5; color:#c0c0c0"
                 )
             elif "/" in val:
-                # Strip stale annotation: "340 / 347 (12 stale)" → "340 / 347"
-                base  = val.split("(")[0].strip()
+                # Strip annotations: "340 / 347 (12 stale) [prompt1: 340]" → "340 / 347"
+                base = val.split("(")[0].split("[")[0].strip()
                 parts = base.split("/")
-                stale = "(stale)" in val
+                stale = "stale" in val
                 try:
                     m     = int(parts[0].strip())
                     n_raw = parts[1].strip()
@@ -298,9 +348,9 @@ def _style_table(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _parse_m_n(val: str) -> Tuple[int, int]:
-    """Parse 'M / N' or 'M / N (S stale)' → (M, N).  Returns (-1, 0) on failure."""
+    """Parse 'M / N' with optional annotations → (M, N).  Returns (-1, 0) on failure."""
     try:
-        base  = val.split("(")[0].strip()
+        base  = val.split("(")[0].split("[")[0].strip()
         parts = base.split("/")
         m     = int(parts[0].strip())
         n_raw = parts[1].strip()
@@ -329,7 +379,7 @@ def main() -> None:
     # ── Sidebar ───────────────────────────────────────────────────────────────
     with st.sidebar:
         st.header("Options")
-        if st.button("🔄 Refresh", use_container_width=True):
+        if st.button("🔄 Refresh", width="stretch"):
             st.cache_data.clear()
             st.rerun()
 
@@ -402,7 +452,7 @@ def main() -> None:
                 )
 
             styled = df.style.apply(_style_table, axis=None)
-            st.dataframe(styled, use_container_width=True, height=40 * (len(df) + 1) + 36)
+            st.dataframe(styled, width="stretch", height=40 * (len(df) + 1) + 36)
 
     # ── Fully Failed Runs ─────────────────────────────────────────────────────
     fully_failed = [
@@ -421,9 +471,10 @@ def main() -> None:
             )
             for c in sorted(fully_failed, key=lambda x: (x["app_name"], x["dataset_name"])):
                 mode_label = "IOC" if c["method"] == "ioc_comparison" else (c["method"] or "IOC")
+                prompt_label = c.get("eval_prompt") or "—"
                 st.markdown(
-                    f"**{c['app_name']}** / `{c['dataset_name']}` &nbsp; "
-                    f"`[{mode_label}]` &nbsp; "
+                    f"**{c['app_name']}** / `{c['dataset_name']}` / `{c.get('modality', '?')}` &nbsp; "
+                    f"`[{mode_label}]` / `{prompt_label}` &nbsp; "
                     f"— {c.get('failed_count', '?')} failed items",
                     unsafe_allow_html=True,
                 )
@@ -442,9 +493,10 @@ def main() -> None:
                 "so they are not represented in the matrix."
             )
             for c in sorted(unmapped_caches, key=lambda x: (x["app_name"], x["dataset_name"], x.get("modality", ""), x["method"])):
+                prompt_label = c.get("eval_prompt") or "—"
                 st.markdown(
                     f"**{c['app_name']}** / `{c['dataset_name']}` / `{c.get('modality', '?')}` "
-                    f"&nbsp; `[{c['method'] or 'unknown'}]` &nbsp; "
+                    f"&nbsp; `[{c['method'] or 'unknown'}]` / `{prompt_label}` &nbsp; "
                     f"— {c.get('success_count', 0)} success, {c.get('failed_count', 0)} failed",
                     unsafe_allow_html=True,
                 )

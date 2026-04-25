@@ -633,7 +633,8 @@ def main():
     all_apps = config["apps"]
     perturbation_map = config["perturbation_map"]
 
-    # Filter to only known/recognized apps (others may still appear if in target-apps/)
+    # Keep a stable ordering for historically prominent apps, but still expose
+    # every adapter discovered from the backend registry.
     recognized_apps = [a for a in all_apps if a in KNOWN_APPS]
     other_apps = [a for a in all_apps if a not in KNOWN_APPS]
 
@@ -659,22 +660,18 @@ def main():
         selected_app = selected_app_display.split(" (")[0]  # strip " (unrecognized)"
 
         # Show adapter availability
-        if selected_app in KNOWN_APPS:
-            with st.spinner(f"Checking {selected_app} availability..."):
-                try:
-                    from verify.backend.utils.config import set_current_app_context
-                    set_current_app_context(selected_app)
-                    app_available, app_msg = get_adapter_status(selected_app)
-                    if app_available:
-                        st.success(f"Available: {app_msg}")
-                    else:
-                        st.error(f"Unavailable: {app_msg}")
-                except Exception as e:
-                    app_available = False
-                    st.error(f"Adapter error: {e}")
-        else:
-            app_available = False
-            st.warning("Unrecognized app — no adapter available.")
+        with st.spinner(f"Checking {selected_app} availability..."):
+            try:
+                from verify.backend.utils.config import set_current_app_context
+                set_current_app_context(selected_app)
+                app_available, app_msg = get_adapter_status(selected_app)
+                if app_available:
+                    st.success(f"Available: {app_msg}")
+                else:
+                    st.error(f"Unavailable: {app_msg}")
+            except Exception as e:
+                app_available = False
+                st.error(f"Adapter error: {e}")
 
         st.divider()
 
@@ -690,6 +687,16 @@ def main():
         # Modality dropdown
         st.subheader("Modality")
         selected_modality = st.selectbox("Select modality", MODALITIES)
+        generation_task = "text"
+        if selected_app == "tool-neuron" and selected_modality == "text":
+            st.divider()
+            st.subheader("ToolNeuron Task")
+            generation_task = st.radio(
+                "Generation task",
+                ["text", "image"],
+                key="perturb_toolneuron_generation_task",
+                help="ToolNeuron can run either text generation or text-to-image generation from text inputs.",
+            )
 
         # Load attributes for the selected modality
         all_attributes = _load_attributes(selected_modality)
@@ -795,6 +802,7 @@ def main():
             "app": selected_app,
             "dataset": selected_dataset,
             "modality": selected_modality,
+            "generation_task": generation_task,
             "attributes": selected_attributes,
             "pert_method": selected_pert_method,
             "max_items": max_items,
@@ -803,6 +811,7 @@ def main():
             "app": selected_app,
             "dataset": selected_dataset,
             "modality": selected_modality,
+            "generation_task": generation_task,
             "attributes": selected_attributes,
         }
         st.session_state.last_run_config = run_cfg   # mark as authoritative
@@ -821,6 +830,7 @@ def main():
             max_items=max_items,
             perturbation_method=selected_pert_method,
             perturbation_kwargs=perturbation_kwargs,
+            adapter_kwargs={"generation_task": generation_task} if selected_app == "tool-neuron" else None,
         )
         st.session_state._generator = orch.run()
         st.rerun()
@@ -837,7 +847,13 @@ def main():
 
         st.markdown(
             f"**{rc.get('app')}** &nbsp;·&nbsp; {rc.get('dataset')} &nbsp;·&nbsp; "
-            f"{rc.get('modality')} &nbsp;·&nbsp; `{'`, `'.join(rc.get('attributes', []))}`"
+            f"{rc.get('modality')}"
+            + (
+                f" &nbsp;·&nbsp; task=`{rc.get('generation_task')}`"
+                if rc.get("app") == "tool-neuron" and rc.get("modality") == "text"
+                else ""
+            )
+            + f" &nbsp;·&nbsp; `{'`, `'.join(rc.get('attributes', []))}`"
         )
 
         if total > 0:
