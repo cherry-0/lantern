@@ -16,6 +16,8 @@ from verify.backend.adapters.chatexpensetracker import ChatExpenseTrackerAdapter
 from verify.backend.adapters.photomath_blackbox import PhotomathAdapter
 from verify.backend.adapters.replika_blackbox import ReplikaAdapter
 from verify.backend.adapters.expensify_blackbox import ExpensifyAdapter
+from verify.backend.adapters.oxproxion import OxproxionAdapter
+from verify.backend.adapters.pocketpal import PocketPalAdapter
 
 # Registry: name → adapter class
 ADAPTER_REGISTRY: Dict[str, Type[BaseAdapter]] = {
@@ -33,6 +35,8 @@ ADAPTER_REGISTRY: Dict[str, Type[BaseAdapter]] = {
     "photomath": PhotomathAdapter,
     "replika": ReplikaAdapter,
     "expensify": ExpensifyAdapter,
+    "oxproxion": OxproxionAdapter,
+    "pocketpal-ai": PocketPalAdapter,
 }
 
 

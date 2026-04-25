@@ -34,3 +34,6 @@
 [submodule "target-apps/oxproxion"]
 	path = target-apps/oxproxion
 	url = https://github.com/stardomains3/oxproxion.git
+[submodule "target-apps/pocketpal-ai"]
+	path = target-apps/pocketpal-ai
+	url = https://github.com/a-ghorbani/pocketpal-ai.git

@@ -99,6 +99,7 @@ Stdout is parsed with `find("{")` (first `{`) and `rfind("}")` (last `}`) to cor
 | google-ai-edge-gallery | `google-ai-edge-gallery` | 3.10 | `pip install transformers accelerate torch` |
 | chat-driven-expense-tracker | `chat-driven-expense-tracker` | 3.10 | `pip install -r requirements.txt` |
 | tool-neuron | `tool-neuron` | 3.10 | `pip install -r requirements.txt` |
+| pocketpal-ai | `pocketpal-ai` | 3.10 | `pip install llama-cpp-python --prefer-binary` |
 
 Note: xend uses `poetry install --no-root` because `pyproject.toml` sets `package-mode = false`, which makes `pip install .` fail.  
 Note: skin-disease uses `tensorflow-macos` (not `tflite-runtime`) on Apple Silicon — see TROUBLESHOOTING.md §10.
@@ -237,6 +238,119 @@ The orchestrator calls `adapter._reset_openrouter_calls()` before each `run_pipe
 
 ### 5.3 `_build_serverless_externalizations()` — 3-tier priority
 
+---
+
+## PocketPal AI Completion Status
+
+PocketPal AI is now completed as a first-class Verify adapter and native pipeline target.
+
+### What was completed
+
+- **Native adapter path**
+  - `verify/backend/adapters/pocketpal.py`
+  - Confirms `POCKETPAL_GGUF_MODEL_PATH` exists.
+  - Uses `CondaRunner` with a dedicated `pocketpal-ai` env.
+  - Runs the app through `verify/backend/runners/pocketpal_runner.py`.
+  - Returns normalized `AdapterResult` with:
+    - `output_text`
+    - `structured_output`
+    - `externalizations`
+    - `metadata`
+
+- **GGUF model setup**
+  - `scripts/download_pocketpal_gguf.py`
+  - Downloads a local GGUF from Hugging Face into `models/pocketpal-ai/`.
+  - Can write `POCKETPAL_GGUF_MODEL_PATH=...` into `.env`.
+  - Verified with:
+    - `python -m py_compile scripts/download_pocketpal_gguf.py`
+    - a real download of `Qwen2.5-1.5B-Instruct-Q4_K_M.gguf`
+
+- **Native runner instrumentation**
+  - `verify/backend/runners/pocketpal_runner.py`
+  - Added explicit post-inference externalization events so PocketPal behaves like the stronger native adapters instead of relying only on incidental file-write capture.
+  - Post-inference channels now include:
+    - `UI`
+      - `STREAMING_TEXT`
+      - `DISPLAY_TEXT`
+      - `MESSAGE_METRICS`
+    - `STORAGE`
+      - `WATERMELONDB_PUT` for user message
+      - `WATERMELONDB_PUT` for assistant message
+      - `WATERMELONDB_PUT` for chat session update
+      - plus the underlying `FILE_WRITE` for the simulated local store
+
+- **Serverless fallback cleanup**
+  - `verify/backend/adapters/pocketpal.py`
+  - Removed truncation from fallback externalizations.
+  - The fallback now preserves the full prompt/response text inside `UI` and `STORAGE`, matching the recent ToolNeuron cleanup.
+
+- **Metadata completeness**
+  - `verify/backend/adapters/pocketpal.py`
+  - Native results now carry:
+    - `model_path`
+    - `model_name`
+    - `tokens_predicted`
+    - `max_tokens`
+    - `ctx_size`
+    - `system_prompt`
+
+### Framework integration status
+
+PocketPal does **not** need special frontend wiring. It already fits the generic Verify text pipeline:
+
+- registered in `verify/backend/adapters/__init__.py`
+- available to Initialization through adapter registry discovery
+- available to IOC / perturbation flows as a text app
+- available to batch runs through `verify/batch_config.csv`
+- compatible with result viewing because it returns standard `AdapterResult` fields
+
+In practice, PocketPal now works as a normal text-only Verify app:
+
+- modality: `text`
+- native mode: local GGUF via `llama.cpp` / `llama-cpp-python`
+- serverless mode: OpenRouter fallback
+
+### Verified results
+
+#### Static checks
+
+- `python -m py_compile verify/backend/adapters/pocketpal.py verify/backend/runners/pocketpal_runner.py` passed
+- `adapter.check_availability()` returned native availability with one-time env setup pending, then succeeded after setup
+
+#### Native end-to-end execution
+
+Executed a real native PocketPal run with:
+
+- model: `Qwen2.5-1.5B-Instruct-Q4_K_M.gguf`
+- env: `pocketpal-ai`
+- prompt: `Reply with exactly: PocketPal native path works.`
+
+Observed result:
+
+- output text: `PocketPal native path works.`
+- completion tokens: `6`
+- model load and inference succeeded
+- externalizations were captured correctly
+
+Observed native externalization channels:
+
+- `STORAGE`
+  - file write to `verify/backend/runners/pocketpal_chats.json`
+  - WatermelonDB-style message/session writes
+- `UI`
+  - streaming text
+  - displayed text
+  - message metrics
+
+This confirms the full native pipeline is working:
+
+`Verify adapter -> CondaRunner -> PocketPal runner -> GGUF inference -> post-inference externalization capture -> normalized AdapterResult`
+
+### Current limitations
+
+- PocketPal remains **text-only** in Verify, which matches the app integration implemented here.
+- The runner simulates WatermelonDB persistence with a local JSON store rather than booting the full React Native app runtime. This is intentional and consistent with Verify's native adapter design: preserve the real inference engine and the relevant post-inference behaviors without requiring the mobile UI process itself.
+
 ```python
 def _build_serverless_externalizations(self, realistic_fallback=None) -> dict:
 ```
@@ -365,6 +479,51 @@ Both the live `Perturb Input` page and the `View Results` page show externalizat
 **Output:** ai_response, model_id, input_modality
 
 **Modality:** image, text
+
+---
+
+### pocketpal-ai
+**Native:** `CondaRunner.run(pocketpal_runner.py)` inside a `pocketpal-ai` conda env. The runner loads the user-supplied GGUF model via `llama-cpp-python`, which wraps the same llama.cpp C++ library as the app's `llama.rn` binding. Running the same GGUF file reproduces the on-device inference faithfully — same model format, same engine, same computation. `n_gpu_layers=-1` enables Metal/CUDA acceleration mirroring the app's behaviour.
+
+**Requires:** `POCKETPAL_GGUF_MODEL_PATH` set to an absolute path of a local `.gguf` model file (e.g. `Qwen2.5-1.5B-Instruct-Q4_K_M.gguf`). Optional: `POCKETPAL_MAX_TOKENS` (default 512), `POCKETPAL_CTX_SIZE` (default 4096), `POCKETPAL_SYSTEM_PROMPT`.
+
+**Post-Inference Action:** After `set_phase("POST")`, the runner writes the chat session to a local JSON store via `pathlib.Path.write_text` — captured as a **STORAGE** externalization (mirrors `WatermelonDB` persisting `ChatSession` + `ChatMessage` rows to its SQLite-based local database).
+
+**Optional network externalizations in the real app** (none triggered automatically during normal chat):
+- **HuggingFace** (`huggingface.co`) — model download on first use (one-time setup, not per-inference)
+- **Firebase Functions** (`FIREBASE_FUNCTIONS_URL/feedback`, `/api/v1/submit`) — feedback submission and benchmark leaderboard; user-triggered only
+- **Supabase** (`SUPABASE_URL`) — PalsHub sync (community Pal configurations); user-triggered only
+
+**Serverless:** OpenRouter chat call with a generic on-device assistant system prompt. Externalizations via `_build_serverless_externalizations()` — STORAGE fallback describes WatermelonDB write; no NETWORK fallback (the app has no automatic post-inference network calls).
+
+**Output:** user_message, ai_response, tokens_predicted, model_path
+
+**Modality:** text
+
+---
+
+### oxproxion
+**Native:** `BlackBoxAdapter` path — boots the `verify_pixel7` AVD and drives the real Android UI via uiautomator2. The AVD snapshot must have the OpenRouter API key pre-configured in the app's Settings (stored in SharedPreferences). If the app is not already present in the snapshot, a locally built APK/APKM artifact is required under `target-apps/oxproxion/`. In the current workspace, no local Oxproxion APK/APKM artifact was present. Observes externalizations via mitmproxy (NETWORK) + ADB FsObserver (STORAGE) + ADB logcat (LOGGING).
+
+**UI flow (resource IDs from `fragment_chat.xml` / `item_message_ai.xml`):**
+1. Tap `resetChatButton` to clear any previous conversation.
+2. Tap `chatEditText`, type the dataset item text.
+3. Tap `sendChatButton` to submit.
+4. Poll `messageTextView` (last item in `chatRecyclerView`) until the streamed response stabilises (3 consecutive identical reads ~0.5 s apart).
+
+**Post-Inference Actions:** oxproxion has no mandatory server-side post-inference actions. When the user manually saves a session, `ChatRepository.insertSessionAndMessages()` writes a `ChatSession` + two `ChatMessage` rows to the on-device Room (SQLite) database — captured as a **STORAGE** externalization by the ADB FsObserver watching the app's private data directory.
+
+**Certificate pinning:** none (open-source app, plain HTTPS, no pinning bypass required).
+
+**Serverless:** Direct OpenRouter call with a neutral system prompt. Externalizations via `_build_serverless_externalizations()` — real call data at tier-1 when `_openrouter_calls` is populated; realistic fallback strings describe the Ktor HTTP call and Room DB write.
+
+**Output:** user_message, ai_response
+
+**Modality:** native `text`; serverless `text, image`
+
+**Current limitation:** the native black-box driver only automates the text chat flow. Oxproxion's app source does support image attachments (`attachmentButton`, gallery/camera launchers, attachment preview), but Verify's current `_drive_app()` implementation does not automate that path yet. Native image runs now fail fast with an explicit error instead of silently ignoring the image input.
+
+**LLM hosts:** `openrouter.ai`, `*.openrouter.ai` added to `llm_hosts` so `classify_phases()` correctly marks the inference POST request as DURING-phase.
 
 ---
 
@@ -733,6 +892,8 @@ Dataset item
 | google-ai-edge | HTTP Wrapper → HuggingFace transformers | OpenRouter text+vision | image, text |
 | chat-driven-expense-tracker | HTTP Wrapper → FastAPI + LangChain (Groq) → MongoDB + Pinecone | OpenRouter text | text |
 | tool-neuron | HTTP Wrapper → on-device GGUF (llama.cpp) + RAG + plugins | OpenRouter text+vision | text, image |
+| oxproxion | BlackBoxAdapter → AVD + uiautomator2 → real Ktor HTTP call to OpenRouter | OpenRouter text+vision | native: text; serverless: text, image |
+| pocketpal-ai | CondaRunner → llama-cpp-python with user-supplied GGUF → WatermelonDB write | OpenRouter text | text |
 
 ---
 
