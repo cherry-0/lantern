@@ -304,7 +304,16 @@ def _load_csv(path: Path) -> List[Dict[str, str]]:
             cleaned = {(k or "").strip(): (v or "").strip() for k, v in row.items()}
             if not any(v for v in cleaned.values()):
                 continue
-            cleaned.setdefault("generation_task", "")
+            # Handle both new format (input_modality/output_modality) and legacy (modality/generation_task)
+            if "input_modality" not in cleaned and "modality" in cleaned:
+                cleaned["input_modality"] = cleaned.pop("modality")
+            if "output_modality" not in cleaned and "generation_task" in cleaned:
+                cleaned["output_modality"] = cleaned.pop("generation_task") or "text"
+            cleaned.setdefault("input_modality", "")
+            cleaned.setdefault("output_modality", "")
+            # Also set legacy keys for backwards compatibility
+            cleaned["modality"] = cleaned["input_modality"]
+            cleaned["generation_task"] = cleaned["output_modality"]
             rows.append(cleaned)
     return rows
 
@@ -312,16 +321,23 @@ def _load_csv(path: Path) -> List[Dict[str, str]]:
 
 
 def _row_tag(row: Dict[str, str], mode: str) -> str:
-    generation_task = row.get("generation_task", "") or "text"
-    if row.get("app_name") == "tool-neuron" and row.get("modality") == "text":
-        return f"{mode}/{row['app_name']}/{row['dataset_name']}/{generation_task}"
-    return f"{mode}/{row['app_name']}/{row['dataset_name']}"
+    """Generate a unique tag for this config row."""
+    app_name = row.get("app_name", "")
+    dataset_name = row.get("dataset_name", "")
+    input_modality = row.get("input_modality", "") or row.get("modality", "")
+    output_modality = row.get("output_modality", "") or row.get("generation_task", "") or "text"
+
+    # Include modality info in tag for different input/output combinations
+    if input_modality != output_modality:
+        return f"{mode}/{app_name}/{dataset_name}/{input_modality}-to-{output_modality}"
+    return f"{mode}/{app_name}/{dataset_name}"
 
 
-def _ioc_cache_eval_method(eval_prompt: str, generation_task: str = "text") -> str:
+def _ioc_cache_eval_method(eval_prompt: str, output_modality: str = "text") -> str:
+    """Generate cache method string for IOC evaluation."""
     method = "openrouter" if eval_prompt == "prompt1" else f"openrouter:{eval_prompt}"
-    if generation_task != "text":
-        method = f"{method}:task={generation_task}"
+    if output_modality != "text":
+        method = f"{method}:task={output_modality}"
     return method
 
 
@@ -359,8 +375,11 @@ def _run_ioc(
     """
     app_name = row["app_name"]
     dataset_name = row["dataset_name"]
-    modality = row["modality"]
-    generation_task = row.get("generation_task", "") or "text"
+    input_modality = row.get("input_modality", "") or row.get("modality", "")
+    output_modality = row.get("output_modality", "") or row.get("generation_task", "") or "text"
+    # Backwards compatibility
+    modality = input_modality
+    generation_task = output_modality
     tag = _row_tag(row, "ioc")
     row_max = int(row["max_items"]) if row.get("max_items") else max_items
 
@@ -410,10 +429,11 @@ def _run_ioc(
         cache_module.get_cache_dir(
             app_name,
             dataset_name,
-            modality,
+            input_modality,
             [],
             "ioc_comparison",
-            _ioc_cache_eval_method(eval_prompt, generation_task),
+            _ioc_cache_eval_method(eval_prompt, output_modality),
+            output_modality,
         )
         if use_cache else None
     )
@@ -424,18 +444,20 @@ def _run_ioc(
             cache_module.save_run_config(cache_dir, {
                 "app_name": app_name,
                 "dataset_name": dataset_name,
-                "modality": modality,
-                "generation_task": generation_task,
+                "modality": input_modality,
+                "input_modality": input_modality,
+                "output_modality": output_modality,
+                "generation_task": output_modality,
                 "unified_attrs": unified_attrs,
                 "perturbation_method": "ioc_comparison",
-                "evaluation_method": _ioc_cache_eval_method(eval_prompt, generation_task),
+                "evaluation_method": _ioc_cache_eval_method(eval_prompt, output_modality),
                 "eval_prompt": eval_prompt,
             })
 
     n_success = n_failed = n_cached = 0
     item_results: List[Dict] = []
 
-    _log(tag, f"Starting IOC ({dataset_name}, {modality}, task={generation_task})")
+    _log(tag, f"Starting IOC ({dataset_name}, {input_modality}->{output_modality})")
     ext_eval_fn = _select_ioc_ext_eval_fn(eval_prompt)
 
     def _process_one(ok: bool, item: Dict, err: Optional[str]) -> Dict:
@@ -596,14 +618,21 @@ def _run_perturb(
     """
     app_name = row["app_name"]
     dataset_name = row["dataset_name"]
-    modality = row["modality"]
-    generation_task = row.get("generation_task", "") or "text"
+    input_modality = row.get("input_modality", "") or row.get("modality", "")
+    output_modality = row.get("output_modality", "") or row.get("generation_task", "") or "text"
+    # For perturbation, output is generally same as input (image->image, text->text)
+    if not output_modality or output_modality == input_modality:
+        output_modality = input_modality
+    # Backwards compatibility
+    modality = input_modality
+    generation_task = output_modality if input_modality == "text" else output_modality
+
     perturbation_method = row.get("perturbation_method") or None
     cache_method = perturbation_method
-    if app_name == "tool-neuron" and generation_task != "text":
-        suffix = f"task={generation_task}"
+    if app_name == "tool-neuron" and output_modality != "text":
+        suffix = f"task={output_modality}"
         cache_method = f"{perturbation_method}::{suffix}" if perturbation_method else suffix
-    attributes = _load_attrs_for_modality(modality)
+    attributes = _load_attrs_for_modality(input_modality)
     tag = _row_tag(row, "perturb")
     row_max = int(row["max_items"]) if row.get("max_items") else max_items
 
@@ -614,12 +643,12 @@ def _run_perturb(
 
     from verify.backend.orchestrator import Orchestrator
 
-    _log(tag, f"Starting perturb ({dataset_name}, {modality}, task={generation_task}, attrs={attributes}, method={perturbation_method})")
+    _log(tag, f"Starting perturb ({dataset_name}, {input_modality}->{output_modality}, attrs={attributes}, method={perturbation_method})")
 
     orch = Orchestrator(
         app_name=app_name,
         dataset_name=dataset_name,
-        modality=modality,
+        modality=input_modality,
         attributes=attributes,
         use_cache=use_cache,
         max_items=row_max,
@@ -663,7 +692,9 @@ def _run_perturb(
         "tag": tag,
         "app": app_name,
         "dataset": dataset_name,
-        "modality": modality,
+        "modality": input_modality,
+        "input_modality": input_modality,
+        "output_modality": output_modality,
         "generation_task": generation_task,
         "attributes": attributes,
         "perturbation_method": perturbation_method,

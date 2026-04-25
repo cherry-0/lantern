@@ -37,3 +37,6 @@
 [submodule "target-apps/pocketpal-ai"]
 	path = target-apps/pocketpal-ai
 	url = https://github.com/a-ghorbani/pocketpal-ai.git
+[submodule "target-apps/klyr"]
+	path = target-apps/klyr
+	url = https://github.com/HITARTH-GOHEL15/klyr.git

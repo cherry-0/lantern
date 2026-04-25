@@ -25,12 +25,14 @@ def _make_cache_key(
     attributes: List[str],
     perturbation_method: str = "",
     evaluation_method: str = "openrouter",
+    output_modality: str = "",
 ) -> str:
     """Generate a stable hash key for a run configuration."""
     parts = {
         "app": app_name,
         "dataset": dataset_name,
         "modality": modality,
+        "output_modality": output_modality or "",
         "attributes": sorted(attributes),
         "perturbation": perturbation_method,
         "evaluation": evaluation_method,
@@ -46,6 +48,7 @@ def get_cache_dir(
     attributes: List[str],
     perturbation_method: str = "",
     evaluation_method: str = "openrouter",
+    output_modality: str = "",
 ) -> Path:
     """Return the cache directory for the given run config (creates it if needed)."""
     key = _make_cache_key(
@@ -55,6 +58,7 @@ def get_cache_dir(
         attributes,
         perturbation_method,
         evaluation_method,
+        output_modality,
     )
     cache_dir = OUTPUTS_DIR / f"cache_{key}"
     cache_dir.mkdir(parents=True, exist_ok=True)

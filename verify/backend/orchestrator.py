@@ -179,11 +179,14 @@ class Orchestrator:
 
     def _save_run_config(self) -> None:
         """Save the run configuration for reproducibility."""
+        output_modality = self.adapter_kwargs.get("generation_task", "text")
         config = {
             "app_name": self.app_name,
             "dataset_name": self.dataset_name,
             "modality": self.modality,
-            "generation_task": self.adapter_kwargs.get("generation_task", "text"),
+            "input_modality": self.modality,
+            "output_modality": output_modality,
+            "generation_task": output_modality,
             "attributes": self.attributes,
             "perturbation_method": self.perturbation_method,
             "cache_perturbation_method": self._cache_perturbation_method(),

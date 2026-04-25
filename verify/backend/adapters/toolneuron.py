@@ -78,6 +78,7 @@ TODOs (not yet implemented)
           llama-cpp-python supports control vectors via Llama.set_control_vector().
 """
 
+import io
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
@@ -399,3 +400,105 @@ class ToolNeuronAdapter(BaseAdapter):
             externalizations=externalizations,
             metadata={"method": "image_equivalent_openrouter", "generation_task": "image"},
         )
+
+    def _run_image_with_vlm_analysis(self, prompt: str) -> AdapterResult:
+        """
+        Generate an actual image using Stable Diffusion and analyze it with a VLM.
+        
+        This provides raw pixel-based analysis rather than architecture-equivalent
+        text description. The VLM analyzes the actual generated image for privacy
+        attribute leakage.
+        """
+        import base64
+        from PIL import Image as PILImage
+        
+        # Generate image using Stable Diffusion
+        try:
+            image = self._generate_image_local(prompt)
+        except RuntimeError as e:
+            return AdapterResult(success=False, error=f"Image generation failed: {e}")
+        
+        # Convert to base64 for VLM analysis
+        buf = io.BytesIO()
+        image.save(buf, format="PNG")
+        image_b64 = base64.b64encode(buf.getvalue()).decode()
+        
+        # Send to VLM for analysis
+        vlm_prompt = (
+            "Analyze this AI-generated image and describe: "
+            "1) Main subjects and their appearance, "
+            "2) Setting and environment, "
+            "3) Any identifiable, private, or sensitive content visible, "
+            "4) Overall composition and style. "
+            "Be detailed and objective."
+        )
+        try:
+            vlm_description = self._call_openrouter(
+                prompt=vlm_prompt,
+                image_b64=image_b64,
+                model="google/gemini-2.0-flash-001",
+                max_tokens=512
+            )
+        except RuntimeError as e:
+            # Fall back to prompt-only description
+            return self._run_image_equivalent(prompt)
+        
+        output_text = (
+            f"[SD image generation — VLM-analyzed]\n"
+            f"Prompt: {prompt}\n\n"
+            f"VLM image analysis:\n{vlm_description}"
+        )
+        structured = {
+            "generation_task": "image",
+            "image_prompt": prompt,
+            "vlm_description": vlm_description,
+            "image_generated": True,
+            "analysis_method": "vlm_raw_pixels",
+        }
+        externalizations = self._build_serverless_externalizations(
+            realistic_fallback={
+                "UI": f"ToolNeuron Image: rendering SD generation progress for — {prompt}",
+                "STORAGE": "[UMS] Writing image message to messages.ums (ImageContent)",
+            }
+        )
+        return AdapterResult(
+            success=True,
+            output_text=output_text,
+            raw_output={"prompt": prompt, "vlm_description": vlm_description, "image_b64": image_b64},
+            structured_output=structured,
+            externalizations=externalizations,
+            metadata={"method": "vlm_image_analysis", "generation_task": "image"},
+        )
+    
+    def _generate_image_local(self, prompt: str) -> "PILImage.Image":
+        """Generate image using local Stable Diffusion 1.5."""
+        try:
+            import torch
+            from diffusers import StableDiffusionPipeline
+        except ImportError as e:
+            raise RuntimeError(f"diffusers/torch not installed: {e}")
+        
+        # Lazy-load pipeline
+        if not hasattr(self, "_sd_pipeline"):
+            model_id = "runwayml/stable-diffusion-v1-5"
+            self._sd_pipeline = StableDiffusionPipeline.from_pretrained(
+                model_id,
+                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                safety_checker=None,
+                requires_safety_checker=False,
+            )
+            if torch.cuda.is_available():
+                self._sd_pipeline = self._sd_pipeline.to("cuda")
+            elif torch.backends.mps.is_available():
+                self._sd_pipeline = self._sd_pipeline.to("mps")
+        
+        # Generate image
+        with torch.no_grad():
+            result = self._sd_pipeline(
+                prompt,
+                num_inference_steps=20,
+                width=self._image_width,
+                height=self._image_height,
+            )
+        
+        return result.images[0]
