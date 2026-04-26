@@ -3,3 +3,9 @@ PrivacyLens
 HR-VISPR
 SROIE2019
 SynthPAI
+MultiPriv
+OpenPII
+GretelSyntheticPII
+MIMIC-CXR
+MultiCaRe
+ASAP-AES
