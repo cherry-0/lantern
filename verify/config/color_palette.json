@@ -1,0 +1,35 @@
+{
+  "verdict": {
+    "confirmed leakage": "#ea8073",
+    "possible leakage": "#e6b174",
+    "no evidence": "#96b57d",
+    "na": "#e6e6e6"
+  },
+  "stage": {
+    "Input": "#5bc0de",
+    "Raw Output": "#d9534f",
+    "Externalized": "#f0ad4e"
+  },
+  "channel": {
+    "AGGREGATE": "#f0ad4e",
+    "Aggregate": "#f0ad4e",
+    "UI": "#7f8c8d",
+    "NETWORK": "#5b8def",
+    "Network": "#5b8def",
+    "STORAGE": "#27ae60",
+    "Storage": "#27ae60",
+    "LOGGING": "#f39c12",
+    "Logging": "#f39c12",
+    "Perturbed Aggregate": "#b9770e"
+  },
+  "heatmap": {
+    "empty": "#ffffff",
+    "missing": "#e6e6e6",
+    "exposure_high": "#c62828"
+  },
+  "binary": {
+    "positive": "#d9534f",
+    "negative": "#5cb85c",
+    "secondary": "#5bc0de"
+  }
+}

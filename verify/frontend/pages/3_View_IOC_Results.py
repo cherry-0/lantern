@@ -23,10 +23,16 @@ if str(LANTERN_ROOT) not in sys.path:
 import streamlit as st
 
 from verify.backend.evaluation_method.evaluator import (
+    VERDICT_CONFIRMED,
+    VERDICT_NO_EVIDENCE,
+    VERDICT_POSSIBLE,
+    entry_to_verdict,
     get_aggregate_eval_entry,
     get_channel_eval_entries,
     is_channelwise_eval_entry,
+    verdict_to_icon,
 )
+from verify.backend.utils.config import load_color_palette
 
 
 # ── Stage constants (mirrors 2_Input_Output_Comparison.py) ────────────────────
@@ -35,10 +41,11 @@ STAGE_INPUT  = "Input"
 STAGE_OUTPUT = "Raw Output"
 STAGE_EXT    = "Externalized"
 STAGES       = [STAGE_INPUT, STAGE_OUTPUT, STAGE_EXT]
+_PALETTE = load_color_palette()
 STAGE_COLORS = {
-    STAGE_INPUT:  "#5bc0de",
-    STAGE_OUTPUT: "#d9534f",
-    STAGE_EXT:    "#f0ad4e",
+    STAGE_INPUT:  _PALETTE["stage"][STAGE_INPUT],
+    STAGE_OUTPUT: _PALETTE["stage"][STAGE_OUTPUT],
+    STAGE_EXT:    _PALETTE["stage"][STAGE_EXT],
 }
 CHANNEL_STAGE_ORDER = ["AGGREGATE", "UI", "NETWORK", "STORAGE", "LOGGING"]
 CHANNEL_STAGE_LABELS = {
@@ -49,14 +56,23 @@ CHANNEL_STAGE_LABELS = {
     "LOGGING": "Logging",
 }
 CHANNEL_STAGE_COLORS = {
-    "AGGREGATE": "#f0ad4e",
-    "UI": "#7f8c8d",
-    "NETWORK": "#5b8def",
-    "STORAGE": "#27ae60",
-    "LOGGING": "#f39c12",
+    "AGGREGATE": _PALETTE["channel"]["AGGREGATE"],
+    "UI": _PALETTE["channel"]["UI"],
+    "NETWORK": _PALETTE["channel"]["NETWORK"],
+    "STORAGE": _PALETTE["channel"]["STORAGE"],
+    "LOGGING": _PALETTE["channel"]["LOGGING"],
 }
 
 DISPLAY_PREVIEW_CHARS = 4000
+VERDICT_COLORS = {
+    VERDICT_CONFIRMED: _PALETTE["verdict"][VERDICT_CONFIRMED],
+    VERDICT_POSSIBLE: _PALETTE["verdict"][VERDICT_POSSIBLE],
+    VERDICT_NO_EVIDENCE: _PALETTE["verdict"][VERDICT_NO_EVIDENCE],
+    "na": _PALETTE["verdict"]["na"],
+}
+
+def _binary_verdict(flag: bool) -> str:
+    return VERDICT_CONFIRMED if flag else VERDICT_NO_EVIDENCE
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -139,23 +155,20 @@ def _stage_table(
     ext_eval:     Dict[str, Any],
     unified_attrs: List[str],
 ):
-    _CHECK  = "✅"
-    _BG_YES = "background:#d4f5d4;"
-    _BG_NO  = "background:#fafafa;"
     _TD = "text-align:center;padding:6px 10px;border:1px solid #e0e0e0;font-size:0.95em;width:18%;"
     _TH = "text-align:center;padding:7px 10px;border:1px solid #d0d0d0;background:#f0f0f0;font-size:0.9em;font-weight:600;"
     _AT = "text-align:left;padding:6px 12px;border:1px solid #e0e0e0;font-size:0.95em;font-weight:500;width:46%;"
 
-    def cell(flag: bool) -> str:
-        bg = _BG_YES if flag else _BG_NO
-        return f'<td style="{_TD}{bg}">{"✅" if flag else ""}</td>'
+    def cell(verdict: str) -> str:
+        bg = f"background:{VERDICT_COLORS.get(verdict, VERDICT_COLORS[VERDICT_NO_EVIDENCE])};"
+        return f'<td style="{_TD}{bg}">{verdict_to_icon(verdict)}</td>'
 
     rows = "".join(
         f"<tr>"
         f'<td style="{_AT}">{attr}</td>'
-        f'{cell(input_labels.get(attr, 0) == 1)}'
-        f'{cell(isinstance(output_eval.get(attr), dict) and bool(output_eval[attr].get("inferable")))}'
-        f'{cell(bool(get_aggregate_eval_entry(ext_eval.get(attr)).get("inferable")))}'
+        f'{cell(_binary_verdict(input_labels.get(attr, 0) == 1))}'
+        f'{cell(_binary_verdict(isinstance(output_eval.get(attr), dict) and bool(output_eval[attr].get("inferable"))))}'
+        f'{cell(entry_to_verdict(ext_eval.get(attr)))}'
         f"</tr>"
         for attr in unified_attrs
     )
@@ -188,14 +201,14 @@ def _render_attribute_heatmap(
     import altair as alt
 
     rows = [
-        {"Stage": STAGE_INPUT, "Attribute": attr, "state": "yes" if input_labels.get(attr, 0) == 1 else "no"}
+        {"Stage": STAGE_INPUT, "Attribute": attr, "state": _binary_verdict(input_labels.get(attr, 0) == 1)}
         for attr in unified_attrs
     ]
     rows += [
         {
             "Stage": STAGE_OUTPUT,
             "Attribute": attr,
-            "state": "yes" if bool(output_eval.get(attr, {}).get("inferable")) else "no",
+            "state": _binary_verdict(bool(output_eval.get(attr, {}).get("inferable"))),
         }
         for attr in unified_attrs
     ]
@@ -210,12 +223,11 @@ def _render_attribute_heatmap(
         for attr in unified_attrs:
             entry = ext_eval.get(attr)
             if stage_key == "AGGREGATE":
-                inferable = bool(get_aggregate_eval_entry(entry).get("inferable"))
-                state = "yes" if inferable else "no"
+                state = entry_to_verdict(entry)
             else:
                 channels = get_channel_eval_entries(entry)
                 if stage_key in channels:
-                    state = "yes" if bool(channels[stage_key].get("inferable")) else "no"
+                    state = entry_to_verdict(channels[stage_key])
                 else:
                     state = "na"
             rows.append({"Stage": label, "Attribute": attr, "state": state})
@@ -225,32 +237,29 @@ def _render_attribute_heatmap(
 
     rect = (
         alt.Chart(df)
-        .mark_rect(stroke="#ffffff", strokeWidth=1)
+        .mark_rect(stroke=_PALETTE["heatmap"]["empty"], strokeWidth=1)
         .encode(
             x=alt.X("Attribute:N", sort=unified_attrs, axis=alt.Axis(labelAngle=-40, labelFontSize=10)),
             y=alt.Y("Stage:N", sort=stage_order, title=None),
             color=alt.Color(
                 "state:N",
                 scale=alt.Scale(
-                    domain=["yes", "no", "na"],
-                    range=["#c62828", "#ffffff", "#e6e6e6"],
+                    domain=[VERDICT_CONFIRMED, VERDICT_POSSIBLE, VERDICT_NO_EVIDENCE, "na"],
+                    range=[
+                        VERDICT_COLORS[VERDICT_CONFIRMED],
+                        VERDICT_COLORS[VERDICT_POSSIBLE],
+                        VERDICT_COLORS[VERDICT_NO_EVIDENCE],
+                        VERDICT_COLORS["na"],
+                    ],
                 ),
                 legend=None,
             ),
             tooltip=["Stage", "Attribute", alt.Tooltip("state:N", title="Status")],
         )
     )
-    text = (
-        alt.Chart(df[df["state"] == "yes"])
-        .mark_text(text="✓", fontSize=12, fontWeight="bold", color="#2f4f2f")
-        .encode(
-            x=alt.X("Attribute:N", sort=unified_attrs),
-            y=alt.Y("Stage:N", sort=stage_order),
-        )
-    )
-    chart = (rect + text).properties(width=alt.Step(44), height=alt.Step(44))
+    chart = rect.properties(width=alt.Step(44), height=alt.Step(44))
     st.altair_chart(chart, width="stretch")
-    st.caption("Red = inferable/present, white = not inferable, grey = channel not captured or not evaluated.")
+    st.caption("Red = confirmed leakage/present, yellow = possible leakage, green = no evidence, grey = channel not captured or not evaluated.")
 
 
 def _render_channel_aggregated(all_results: List[Dict[str, Any]], unified_attrs: List[str]):
@@ -419,7 +428,7 @@ def _render_channel_aggregated_heatmap(all_results: List[Dict[str, Any]], unifie
     if not df_na.empty:
         layers.append(
             alt.Chart(df_na)
-            .mark_rect(stroke="#ffffff", strokeWidth=1, color="#e6e6e6")
+            .mark_rect(stroke=_PALETTE["heatmap"]["empty"], strokeWidth=1, color=_PALETTE["heatmap"]["missing"])
             .encode(
                 x=alt.X("Attribute:N", sort=unified_attrs, axis=alt.Axis(labelAngle=-40, labelFontSize=10)),
                 y=alt.Y("Stage:N", sort=stage_order, title=None),
@@ -434,13 +443,16 @@ def _render_channel_aggregated_heatmap(all_results: List[Dict[str, Any]], unifie
     if not df_valid.empty:
         layers.append(
             alt.Chart(df_valid)
-            .mark_rect(stroke="#ffffff", strokeWidth=1)
+            .mark_rect(stroke=_PALETTE["heatmap"]["empty"], strokeWidth=1)
             .encode(
                 x=alt.X("Attribute:N", sort=unified_attrs, axis=alt.Axis(labelAngle=-40, labelFontSize=10)),
                 y=alt.Y("Stage:N", sort=stage_order, title=None),
                 color=alt.Color(
                     "Exposure Score:Q",
-                    scale=alt.Scale(domain=[0, 1], range=["#ffffff", "#c62828"]),
+                    scale=alt.Scale(
+                        domain=[0, 1],
+                        range=[_PALETTE["heatmap"]["empty"], _PALETTE["heatmap"]["exposure_high"]],
+                    ),
                     legend=alt.Legend(title="Exposure score"),
                 ),
                 tooltip=[
@@ -488,7 +500,7 @@ def _reasoning_expander(
                 entry = output_eval.get(attr)
                 if not isinstance(entry, dict):
                     continue
-                icon   = "🔴" if entry.get("inferable") else "🟢"
+                icon   = verdict_to_icon(_binary_verdict(bool(entry.get("inferable"))))
                 reason = entry.get("reasoning", "—")
                 st.markdown(f'{icon} <span style="font-size:0.9em"><b>{attr}</b></span>',
                             unsafe_allow_html=True)
@@ -503,7 +515,7 @@ def _reasoning_expander(
                     if not isinstance(entry, dict):
                         continue
                     agg = get_aggregate_eval_entry(entry)
-                    icon   = "🔴" if agg.get("inferable") else "🟢"
+                    icon   = verdict_to_icon(entry_to_verdict(entry))
                     reason = agg.get("reasoning", "—")
                     st.markdown(f'{icon} <span style="font-size:0.9em"><b>{attr}</b></span>',
                                 unsafe_allow_html=True)
@@ -513,7 +525,7 @@ def _reasoning_expander(
                         for channel, channel_entry in channels.items():
                             st.caption(
                                 f"[{channel}] "
-                                f'{"inferable" if channel_entry.get("inferable") else "not inferable"}: '
+                                f'{channel_entry.get("verdict") or ("confirmed leakage" if channel_entry.get("inferable") else "no evidence")}: '
                                 f'{channel_entry.get("reasoning", "—")}'
                             )
                     else:
@@ -630,7 +642,7 @@ def _render_item(
         st.markdown("**Stage-wise attribute presence**")
         st.caption(
             "Externalized stage uses the aggregate externalized result."
-            if eval_prompt == "prompt3"
+            if eval_prompt in ("prompt3", "prompt4")
             else "Externalized stage uses the stored ext_eval result."
         )
 
@@ -639,20 +651,12 @@ def _render_item(
         if result.get("ext_eval_error"):
             st.warning(f"Externalization evaluation error: {result['ext_eval_error']}")
 
-        if _has_prompt3_channel_data(result.get("ext_eval", {})):
-            _render_attribute_heatmap(
-                input_labels,
-                result.get("output_eval", {}),
-                result.get("ext_eval", {}),
-                unified_attrs,
-            )
-        else:
-            _stage_table(
-                input_labels,
-                result.get("output_eval", {}),
-                result.get("ext_eval", {}),
-                unified_attrs,
-            )
+        _render_attribute_heatmap(
+            input_labels,
+            result.get("output_eval", {}),
+            result.get("ext_eval", {}),
+            unified_attrs,
+        )
         _reasoning_expander(
             result.get("output_eval", {}),
             result.get("ext_eval", {}),

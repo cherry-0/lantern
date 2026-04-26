@@ -26,6 +26,7 @@ if str(LANTERN_ROOT) not in sys.path:
     sys.path.insert(0, str(LANTERN_ROOT))
 
 import streamlit as st
+from verify.backend.utils.config import EVAL_PROMPT_CHOICES, get_default_eval_prompt
 
 
 _BATCH_SCRIPT = VERIFY_ROOT / "run_batch.py"
@@ -309,12 +310,13 @@ def main() -> None:
         )
         eval_prompt = st.radio(
             "IOC Eval Prompt",
-            ["prompt1", "prompt2", "prompt3"],
-            index=0,
+            list(EVAL_PROMPT_CHOICES),
+            index=list(EVAL_PROMPT_CHOICES).index(get_default_eval_prompt()),
             disabled=running,
             help=(
                 "Applies to IOC externalization evaluation only. "
-                "Raw output stays on prompt1 so existing stage views remain stable."
+                "Raw output stays on prompt1 so existing stage views remain stable. "
+                "prompt4 uses confirmed/possible/no-evidence leakage verdicts."
             ),
         )
         use_cache = st.toggle("Use cache", value=True, disabled=running)
@@ -326,10 +328,10 @@ def main() -> None:
 
         # Select-all / deselect-all
         sa_col, da_col = st.columns(2)
-        if sa_col.button("Select all", use_container_width=True, disabled=running):
+        if sa_col.button("Select all", width="stretch", disabled=running):
             for i in range(len(all_rows)):
                 st.session_state[f"batch_row_{i}"] = True
-        if da_col.button("Deselect all", use_container_width=True, disabled=running):
+        if da_col.button("Deselect all", width="stretch", disabled=running):
             for i in range(len(all_rows)):
                 st.session_state[f"batch_row_{i}"] = False
 
@@ -453,16 +455,16 @@ def main() -> None:
             run_clicked = st.button(
                 run_label, type="primary",
                 disabled=(n_sel == 0),
-                use_container_width=True,
+                width="stretch",
             )
             if bs["log"]:
-                if st.button("Clear log", use_container_width=True):
+                if st.button("Clear log", width="stretch"):
                     bs["log"] = []
                     bs["returncode"] = None
                     st.rerun()
         else:
             run_clicked = False
-            if st.button("⏹ Stop", type="secondary", use_container_width=True):
+            if st.button("⏹ Stop", type="secondary", width="stretch"):
                 pid = bs.get("pid")
                 if pid:
                     try:

@@ -22,9 +22,19 @@ if str(LANTERN_ROOT) not in sys.path:
 
 import streamlit as st
 from verify.backend.evaluation_method.evaluator import (
+    VERDICT_CONFIRMED,
+    VERDICT_NO_EVIDENCE,
+    VERDICT_POSSIBLE,
+    entry_to_verdict,
     get_aggregate_eval_entry,
     get_channel_eval_entries,
     is_channelwise_eval_entry,
+    verdict_to_icon,
+)
+from verify.backend.utils.config import (
+    EVAL_PROMPT_CHOICES,
+    get_default_eval_prompt,
+    load_color_palette,
 )
 
 
@@ -52,10 +62,11 @@ STAGE_OUTPUT = "Raw Output"
 STAGE_EXT = "Externalized"
 STAGES = [STAGE_INPUT, STAGE_OUTPUT, STAGE_EXT]
 
+_PALETTE = load_color_palette()
 STAGE_COLORS = {
-    STAGE_INPUT: "#5bc0de",
-    STAGE_OUTPUT: "#d9534f",
-    STAGE_EXT: "#f0ad4e",
+    STAGE_INPUT: _PALETTE["stage"][STAGE_INPUT],
+    STAGE_OUTPUT: _PALETTE["stage"][STAGE_OUTPUT],
+    STAGE_EXT: _PALETTE["stage"][STAGE_EXT],
 }
 CHANNEL_STAGE_ORDER = ["AGGREGATE", "UI", "NETWORK", "STORAGE", "LOGGING"]
 CHANNEL_STAGE_LABELS = {
@@ -66,14 +77,24 @@ CHANNEL_STAGE_LABELS = {
     "LOGGING": "Logging",
 }
 CHANNEL_STAGE_COLORS = {
-    "AGGREGATE": "#f0ad4e",
-    "UI": "#7f8c8d",
-    "NETWORK": "#5b8def",
-    "STORAGE": "#27ae60",
-    "LOGGING": "#f39c12",
+    "AGGREGATE": _PALETTE["channel"]["AGGREGATE"],
+    "UI": _PALETTE["channel"]["UI"],
+    "NETWORK": _PALETTE["channel"]["NETWORK"],
+    "STORAGE": _PALETTE["channel"]["STORAGE"],
+    "LOGGING": _PALETTE["channel"]["LOGGING"],
 }
 
 DISPLAY_PREVIEW_CHARS = 4000
+VERDICT_COLORS = {
+    VERDICT_CONFIRMED: _PALETTE["verdict"][VERDICT_CONFIRMED],
+    VERDICT_POSSIBLE: _PALETTE["verdict"][VERDICT_POSSIBLE],
+    VERDICT_NO_EVIDENCE: _PALETTE["verdict"][VERDICT_NO_EVIDENCE],
+    "na": _PALETTE["verdict"]["na"],
+}
+
+
+def _binary_verdict(flag: bool) -> str:
+    return VERDICT_CONFIRMED if flag else VERDICT_NO_EVIDENCE
 
 
 # ─── Config loaders ───────────────────────────────────────────────────────────
@@ -178,6 +199,7 @@ def run_comparison_pipeline(
     max_items: Optional[int] = None,
     use_cache: bool = True,
     generation_task: str = "text",
+    eval_prompt: Optional[str] = None,
 ) -> Generator[Dict[str, Any], None, None]:
     """
     Generator that yields one result dict per dataset item.
@@ -203,9 +225,20 @@ def run_comparison_pipeline(
     from verify.backend.adapters import get_adapter
     from verify.backend.datasets.loader import iter_dataset
     from verify.backend.datasets.label_mapper import get_input_labels
-    from verify.backend.evaluation_method.evaluator import evaluate_inferability
+    from verify.backend.evaluation_method.evaluator import (
+        evaluate_inferability,
+        evaluate_inferability_v2,
+        evaluate_inferability_v3,
+        evaluate_inferability_v4,
+    )
     from verify.backend.utils import cache as cache_module
-    eval_prompt = "prompt1"
+
+    eval_prompt = eval_prompt or get_default_eval_prompt()
+    ext_eval_fn = {
+        "prompt2": evaluate_inferability_v2,
+        "prompt3": evaluate_inferability_v3,
+        "prompt4": evaluate_inferability_v4,
+    }.get(eval_prompt, evaluate_inferability)
 
     adapter = get_adapter(app_name)
     if adapter is None:
@@ -232,9 +265,13 @@ def run_comparison_pipeline(
                 "unified_attrs": unified_attrs,
                 "perturbation_method": "ioc_comparison",
                 "evaluation_method": (
-                    "openrouter"
+                    ("openrouter" if eval_prompt == "prompt1" else f"openrouter:{eval_prompt}")
                     if generation_task == "text"
-                    else f"openrouter:task={generation_task}"
+                    else (
+                        f"openrouter:task={generation_task}"
+                        if eval_prompt == "prompt1"
+                        else f"openrouter:{eval_prompt}:task={generation_task}"
+                    )
                 ),
                 "eval_prompt": eval_prompt,
             })
@@ -349,7 +386,7 @@ def run_comparison_pipeline(
 
         # 4. Evaluate externalized results (skip if empty)
         if ext_text.strip():
-            ext_ok, ext_eval, ext_err = evaluate_inferability(ext_text, unified_attrs)
+            ext_ok, ext_eval, ext_err = ext_eval_fn(ext_text, unified_attrs)
         else:
             ext_ok, ext_eval, ext_err = True, {}, None
 
@@ -391,9 +428,9 @@ def _display_image(b64_str: str | None, data=None):
     try:
         if b64_str:
             import base64
-            st.image(base64.b64decode(b64_str), use_container_width=True)
+            st.image(base64.b64decode(b64_str), width="stretch")
         elif data is not None:
-            st.image(data, use_container_width=True)
+            st.image(data, width="stretch")
         else:
             st.warning("No image available.")
     except Exception as e:
@@ -409,11 +446,8 @@ def _stage_table(
 ):
     """
     Full-width HTML table: attribute × 3 stages.
-    Cells with a positive result show ✅ on a light-green background.
+    Cells use the leakage verdict colors: red, yellow, or green.
     """
-    _CHECK = "✅"
-    _BG_YES = "background:#d4f5d4;"
-    _BG_NO = "background:#fafafa;"
     _TD_BASE = (
         "text-align:center;padding:6px 10px;border:1px solid #e0e0e0;"
         "font-size:0.95em;width:18%;"
@@ -432,18 +466,17 @@ def _stage_table(
         in_val = input_labels.get(attr, 0) == 1
         out_entry = output_eval.get(attr, {})
         out_val = isinstance(out_entry, dict) and bool(out_entry.get("inferable"))
-        ext_entry = get_aggregate_eval_entry(ext_eval.get(attr))
-        ext_val = bool(ext_entry.get("inferable"))
+        ext_verdict = entry_to_verdict(ext_eval.get(attr))
 
-        def cell(flag: bool) -> str:
-            bg = _BG_YES if flag else _BG_NO
-            content = _CHECK if flag else ""
+        def cell(verdict: str) -> str:
+            bg = f"background:{VERDICT_COLORS.get(verdict, VERDICT_COLORS[VERDICT_NO_EVIDENCE])};"
+            content = verdict_to_icon(verdict)
             return f'<td style="{_TD_BASE}{bg}">{content}</td>'
 
         rows_html.append(
             f'<tr>'
             f'<td style="{_ATTR_TD}">{attr}</td>'
-            f'{cell(in_val)}{cell(out_val)}{cell(ext_val)}'
+            f'{cell(_binary_verdict(in_val))}{cell(_binary_verdict(out_val))}{cell(ext_verdict)}'
             f'</tr>'
         )
 
@@ -479,14 +512,14 @@ def _render_attribute_heatmap(
     import altair as alt
 
     rows = [
-        {"Stage": STAGE_INPUT, "Attribute": attr, "state": "yes" if input_labels.get(attr, 0) == 1 else "no"}
+        {"Stage": STAGE_INPUT, "Attribute": attr, "state": _binary_verdict(input_labels.get(attr, 0) == 1)}
         for attr in unified_attrs
     ]
     rows += [
         {
             "Stage": STAGE_OUTPUT,
             "Attribute": attr,
-            "state": "yes" if bool(output_eval.get(attr, {}).get("inferable")) else "no",
+            "state": _binary_verdict(bool(output_eval.get(attr, {}).get("inferable"))),
         }
         for attr in unified_attrs
     ]
@@ -501,12 +534,11 @@ def _render_attribute_heatmap(
         for attr in unified_attrs:
             entry = ext_eval.get(attr)
             if stage_key == "AGGREGATE":
-                inferable = bool(get_aggregate_eval_entry(entry).get("inferable"))
-                state = "yes" if inferable else "no"
+                state = entry_to_verdict(entry)
             else:
                 channels = get_channel_eval_entries(entry)
                 if stage_key in channels:
-                    state = "yes" if bool(channels[stage_key].get("inferable")) else "no"
+                    state = entry_to_verdict(channels[stage_key])
                 else:
                     state = "na"
             rows.append({"Stage": label, "Attribute": attr, "state": state})
@@ -516,32 +548,29 @@ def _render_attribute_heatmap(
 
     rect = (
         alt.Chart(df)
-        .mark_rect(stroke="#ffffff", strokeWidth=1)
+        .mark_rect(stroke=_PALETTE["heatmap"]["empty"], strokeWidth=1)
         .encode(
             x=alt.X("Attribute:N", sort=unified_attrs, axis=alt.Axis(labelAngle=-40, labelFontSize=10)),
             y=alt.Y("Stage:N", sort=stage_order, title=None),
             color=alt.Color(
                 "state:N",
                 scale=alt.Scale(
-                    domain=["yes", "no", "na"],
-                    range=["#c62828", "#ffffff", "#e6e6e6"],
+                    domain=[VERDICT_CONFIRMED, VERDICT_POSSIBLE, VERDICT_NO_EVIDENCE, "na"],
+                    range=[
+                        VERDICT_COLORS[VERDICT_CONFIRMED],
+                        VERDICT_COLORS[VERDICT_POSSIBLE],
+                        VERDICT_COLORS[VERDICT_NO_EVIDENCE],
+                        VERDICT_COLORS["na"],
+                    ],
                 ),
                 legend=None,
             ),
             tooltip=["Stage", "Attribute", alt.Tooltip("state:N", title="Status")],
         )
     )
-    text = (
-        alt.Chart(df[df["state"] == "yes"])
-        .mark_text(text="✓", fontSize=12, fontWeight="bold", color="#2f4f2f")
-        .encode(
-            x=alt.X("Attribute:N", sort=unified_attrs),
-            y=alt.Y("Stage:N", sort=stage_order),
-        )
-    )
-    chart = (rect + text).properties(width=alt.Step(44), height=alt.Step(44))
-    st.altair_chart(chart, use_container_width=True)
-    st.caption("Red = inferable/present, white = not inferable, grey = channel not captured or not evaluated.")
+    chart = rect.properties(width=alt.Step(44), height=alt.Step(44))
+    st.altair_chart(chart, width="stretch")
+    st.caption("Red = confirmed leakage/present, yellow = possible leakage, green = no evidence, grey = channel not captured or not evaluated.")
 
 
 def _render_channel_aggregated(all_results: List[Dict[str, Any]], unified_attrs: List[str]):
@@ -633,7 +662,7 @@ def _render_channel_aggregated(all_results: List[Dict[str, Any]], unified_attrs:
         )
         .properties(height=320, title=f"Attribute-wise positive rate across {len(success)} item(s)")
     )
-    st.altair_chart(chart, use_container_width=True)
+    st.altair_chart(chart, width="stretch")
     st.caption(
         "Input/Raw Output/Aggregate use all successful items. Channel bars use only items where that channel was captured and evaluated."
     )
@@ -710,7 +739,7 @@ def _render_channel_aggregated_heatmap(all_results: List[Dict[str, Any]], unifie
     if not df_na.empty:
         layers.append(
             alt.Chart(df_na)
-            .mark_rect(stroke="#ffffff", strokeWidth=1, color="#e6e6e6")
+            .mark_rect(stroke=_PALETTE["heatmap"]["empty"], strokeWidth=1, color=_PALETTE["heatmap"]["missing"])
             .encode(
                 x=alt.X("Attribute:N", sort=unified_attrs, axis=alt.Axis(labelAngle=-40, labelFontSize=10)),
                 y=alt.Y("Stage:N", sort=stage_order, title=None),
@@ -725,13 +754,16 @@ def _render_channel_aggregated_heatmap(all_results: List[Dict[str, Any]], unifie
     if not df_valid.empty:
         layers.append(
             alt.Chart(df_valid)
-            .mark_rect(stroke="#ffffff", strokeWidth=1)
+            .mark_rect(stroke=_PALETTE["heatmap"]["empty"], strokeWidth=1)
             .encode(
                 x=alt.X("Attribute:N", sort=unified_attrs, axis=alt.Axis(labelAngle=-40, labelFontSize=10)),
                 y=alt.Y("Stage:N", sort=stage_order, title=None),
                 color=alt.Color(
                     "Exposure Score:Q",
-                    scale=alt.Scale(domain=[0, 1], range=["#ffffff", "#c62828"]),
+                    scale=alt.Scale(
+                        domain=[0, 1],
+                        range=[_PALETTE["heatmap"]["empty"], _PALETTE["heatmap"]["exposure_high"]],
+                    ),
                     legend=alt.Legend(title="Exposure score"),
                 ),
                 tooltip=[
@@ -757,7 +789,7 @@ def _render_channel_aggregated_heatmap(all_results: List[Dict[str, Any]], unifie
         chart = layers[0]
         for layer in layers[1:]:
             chart = chart + layer
-        st.altair_chart(chart, use_container_width=True)
+        st.altair_chart(chart, width="stretch")
     st.caption(
         "Heatmap cells show attribute-inferred accuracy / exposure rate by stage or channel. "
         "Absent channels remain blank light gray for layout consistency."
@@ -779,7 +811,7 @@ def _reasoning_expander(
                 entry = output_eval.get(attr)
                 if not isinstance(entry, dict):
                     continue
-                icon = "🔴" if entry.get("inferable") else "🟢"
+                icon = verdict_to_icon(_binary_verdict(bool(entry.get("inferable"))))
                 reason = entry.get("reasoning", "—")
                 st.markdown(
                     f'{icon} <span style="font-size:0.9em"><b>{attr}</b></span>',
@@ -796,7 +828,7 @@ def _reasoning_expander(
                     if not isinstance(entry, dict):
                         continue
                     agg = get_aggregate_eval_entry(entry)
-                    icon = "🔴" if agg.get("inferable") else "🟢"
+                    icon = verdict_to_icon(entry_to_verdict(entry))
                     reason = agg.get("reasoning", "—")
                     st.markdown(
                         f'{icon} <span style="font-size:0.9em"><b>{attr}</b></span>',
@@ -808,7 +840,7 @@ def _reasoning_expander(
                         for channel, channel_entry in channels.items():
                             st.caption(
                                 f"[{channel}] "
-                                f'{"inferable" if channel_entry.get("inferable") else "not inferable"}: '
+                                f'{channel_entry.get("verdict") or ("confirmed leakage" if channel_entry.get("inferable") else "no evidence")}: '
                                 f'{channel_entry.get("reasoning", "—")}'
                             )
                     else:
@@ -841,7 +873,7 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
         detail_key = f"ioc_render_details_{idx}"
         show_details = bool(st.session_state.get(detail_key, False))
         if not show_details:
-            if st.button("Load details", key=f"ioc_load_details_{idx}", use_container_width=True):
+            if st.button("Load details", key=f"ioc_load_details_{idx}", width="stretch"):
                 st.session_state[detail_key] = True
                 st.rerun()
             st.caption("Details are not rendered until requested. Click `Load details` to render this item.")
@@ -875,7 +907,7 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
                     cols = st.columns(min(len(frames), 2))
                     for c, f in zip(cols, frames[:2]):
                         with c:
-                            st.image(f, use_container_width=True)
+                            st.image(f, width="stretch")
                 else:
                     st.info("No media available.")
 
@@ -916,20 +948,12 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
         if result.get("ext_eval_error"):
             st.warning(f"Externalization evaluation error: {result['ext_eval_error']}")
 
-        if _has_prompt3_channel_data(result.get("ext_eval", {})):
-            _render_attribute_heatmap(
-                result.get("input_labels", {}),
-                result.get("output_eval", {}),
-                result.get("ext_eval", {}),
-                unified_attrs,
-            )
-        else:
-            _stage_table(
-                result.get("input_labels", {}),
-                result.get("output_eval", {}),
-                result.get("ext_eval", {}),
-                unified_attrs,
-            )
+        _render_attribute_heatmap(
+            result.get("input_labels", {}),
+            result.get("output_eval", {}),
+            result.get("ext_eval", {}),
+            unified_attrs,
+        )
 
         # ── Reasoning ─────────────────────────────────────────────────────
         _reasoning_expander(
@@ -1035,13 +1059,14 @@ def main():
 
         # Output Modality
         st.subheader("Output Modality")
-        # Default output is same as input, but allow different (e.g., text->image)
+        # Default output is text for classifier/analysis apps; tool-neuron can generate images.
         output_options = ["text", "image"]
-        if selected_modality == "image":
-            # For image input, output is typically also image (perturbation)
-            output_options = ["image", "text"]
+        if selected_app == "skin-disease-detection":
+            output_options = ["text"]
+        elif selected_modality == "image":
+            output_options = ["text", "image"]
         elif selected_modality == "video":
-            output_options = ["video", "text"]
+            output_options = ["text", "video"]
         
         # tool-neuron generates image outputs; all other apps produce text
         if selected_app == "tool-neuron":
@@ -1087,11 +1112,27 @@ def main():
             "Use cache (skip already-processed items)", value=False, key="ioc_use_cache"
         )
 
+        st.divider()
+
+        # Evaluation prompt
+        st.subheader("Evaluation Prompt")
+        prompt_choices = list(EVAL_PROMPT_CHOICES)
+        eval_prompt = st.radio(
+            "Prompt Version",
+            prompt_choices,
+            index=prompt_choices.index(get_default_eval_prompt()),
+            key="ioc_eval_prompt",
+            help=(
+                "Overrides VERIFY_EVAL_PROMPT from .env for this IOC run. "
+                "Raw output evaluation remains prompt1; this setting applies to externalized results."
+            ),
+        )
+
         run_clicked = st.button(
             "▶ Run Comparison",
             type="primary",
             disabled=not (app_available and unified_attrs),
-            use_container_width=True,
+            width="stretch",
         )
         if not app_available:
             st.caption(f"App '{selected_app}' is not available.")
@@ -1127,6 +1168,7 @@ def main():
             "output_modality": output_modality,
             "generation_task": generation_task,
             "max_items": max_items,
+            "eval_prompt": eval_prompt,
         }
         st.session_state.ioc_run_config = run_cfg
         st.session_state.ioc_last_run_config = run_cfg   # mark as authoritative
@@ -1145,6 +1187,7 @@ def main():
             max_items=max_items,
             use_cache=use_cache,
             generation_task=generation_task,
+            eval_prompt=eval_prompt,
         )
         st.rerun()
 
@@ -1192,6 +1235,7 @@ def main():
                 or selected_modality != last_cfg.get("modality")
                 or output_modality != last_output_modality
                 or max_items != last_cfg.get("max_items")
+                or eval_prompt != last_cfg.get("eval_prompt")
             )
 
             if stale:
@@ -1206,7 +1250,8 @@ def main():
                 n = len(results)
                 st.subheader(
                     f"Results — {rc.get('app', '')} / {rc.get('dataset', '')} "
-                    f"/ {rc.get('modality', '')} ({n} item{'s' if n != 1 else ''})"
+                    f"/ {rc.get('modality', '')} / {rc.get('eval_prompt', '')} "
+                    f"({n} item{'s' if n != 1 else ''})"
                 )
                 st.divider()
                 st.subheader("Aggregated Attribute-wise Positive Rate")

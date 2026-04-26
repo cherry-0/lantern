@@ -509,8 +509,8 @@ def _aggregate_section(items: List[Dict[str, Any]], unified_attrs: List[str]):
                 .properties(height=220, title="Precision / Recall / F1 per attribute")
             )
 
-            st.altair_chart(bar,   use_container_width=True)
-            st.altair_chart(lines, use_container_width=True)
+            st.altair_chart(bar,   width="stretch")
+            st.altair_chart(lines, width="stretch")
             st.caption(
                 "Stacked bar: **green** = TP · **red** = FP · **amber** = FN · **blue-grey** = TN  |  "
                 "Lines: **blue** = Precision · **orange** = Recall · **green** = F1  |  "
@@ -533,7 +533,7 @@ def _aggregate_section(items: List[Dict[str, Any]], unified_attrs: List[str]):
             "Accuracy":  _fmt(r["Accuracy"]),
         } for r in rows])
 
-        st.dataframe(display_df, hide_index=True, use_container_width=True)
+        st.dataframe(display_df, hide_index=True, width="stretch")
 
         # Macro-average summary (skip undefined)
         valid_p  = [r["Precision"] for r in rows if r["Precision"] is not None]
@@ -650,7 +650,7 @@ def main():
         selected_label = st.selectbox("Pick a run", list(options.keys()))
         selected_path  = options[selected_label]
 
-        load_btn = st.button("📂 Load", type="primary", use_container_width=True)
+        load_btn = st.button("📂 Load", type="primary", width="stretch")
 
         st.divider()
         st.caption(

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import csv
 import json
+import shutil
 import sys
 import time
 from collections import defaultdict
@@ -36,6 +37,55 @@ from verify.backend.utils.cache import normalize_eval_prompt
 _BATCH_CONFIG = VERIFY_ROOT / "batch_config.csv"
 _OUTPUTS_DIR  = VERIFY_ROOT / "outputs"
 _DIR_SUMMARY  = "dir_summary.json"   # written by patch_ext_ui.py
+
+
+def _delete_output_dirs(dirs: List[str]) -> Tuple[int, List[str]]:
+    """Delete output directories for one progress group."""
+    deleted = 0
+    errors: List[str] = []
+    for raw in dirs:
+        path = Path(raw)
+        try:
+            if not path.exists() or not path.is_dir():
+                continue
+            if path.parent != _OUTPUTS_DIR:
+                errors.append(f"Refused outside outputs: {path}")
+                continue
+            shutil.rmtree(path)
+            deleted += 1
+        except Exception as e:
+            errors.append(f"{path.name}: {e}")
+    return deleted, errors
+
+
+def _group_label(c: Dict) -> str:
+    mode_label = "IOC" if c["method"] == "ioc_comparison" else (c["method"] or "unknown")
+    prompt_label = c.get("eval_prompt") or "-"
+    in_mod = c.get("input_modality", "") or c.get("modality", "?")
+    out_mod = c.get("output_modality", "") or c.get("modality", "?")
+    mod_display = f"{in_mod}->{out_mod}" if in_mod != out_mod else in_mod
+    return (
+        f"{c['app_name']} / {c['dataset_name']} / {mod_display} "
+        f"[{mode_label}] / {prompt_label}"
+    )
+
+
+def _render_delete_group(c: Dict, key_prefix: str) -> None:
+    dirs = c.get("dirs", [])
+    if not dirs:
+        st.caption("No output directories recorded for this group.")
+        return
+
+    confirm_key = f"{key_prefix}_confirm"
+    confirmed = st.checkbox("Confirm delete", key=confirm_key)
+    if st.button("Delete output group", key=f"{key_prefix}_delete", type="secondary", disabled=not confirmed):
+        deleted, errors = _delete_output_dirs(dirs)
+        if errors:
+            st.error("; ".join(errors))
+        if deleted:
+            st.success(f"Deleted {deleted} output director{'y' if deleted == 1 else 'ies'}.")
+            st.cache_data.clear()
+            st.rerun()
 
 
 # ── Data loading ──────────────────────────────────────────────────────────────
@@ -488,6 +538,37 @@ def main() -> None:
             styled = df.style.apply(_style_table, axis=None)
             st.dataframe(styled, width="stretch", height=40 * (len(df) + 1) + 36)
 
+    # ── Delete output groups ──────────────────────────────────────────────────
+    if caches:
+        st.divider()
+        with st.expander("Delete Output Groups", expanded=False):
+            st.caption(
+                "Deletes cached output directories from `verify/outputs/`. "
+                "This does not edit `verify/batch_config.csv`; it only removes recorded results."
+            )
+            sorted_caches = sorted(
+                caches,
+                key=lambda x: (
+                    x["app_name"],
+                    x["dataset_name"],
+                    x.get("input_modality", "") or x.get("modality", ""),
+                    x.get("output_modality", "") or x.get("modality", ""),
+                    x["method"],
+                    x.get("eval_prompt", ""),
+                ),
+            )
+            for idx, c in enumerate(sorted_caches):
+                with st.container(border=True):
+                    st.markdown(f"**{_group_label(c)}**")
+                    st.caption(
+                        f"{c.get('success_count', 0)} success, "
+                        f"{c.get('failed_count', 0)} failed, "
+                        f"{len(c.get('dirs', []))} director{'y' if len(c.get('dirs', [])) == 1 else 'ies'}"
+                    )
+                    for d in c.get("dirs", []):
+                        st.code(d, language=None)
+                    _render_delete_group(c, f"progress_del_{idx}")
+
     # ── Fully Failed Runs ─────────────────────────────────────────────────────
     fully_failed = [
         c for c in caches
@@ -504,14 +585,8 @@ def main() -> None:
                 "Check runner logs or re-run with `--no-cache`."
             )
             for c in sorted(fully_failed, key=lambda x: (x["app_name"], x["dataset_name"])):
-                mode_label = "IOC" if c["method"] == "ioc_comparison" else (c["method"] or "IOC")
-                prompt_label = c.get("eval_prompt") or "—"
-                in_mod = c.get("input_modality", "") or c.get("modality", "?")
-                out_mod = c.get("output_modality", "") or c.get("modality", "?")
-                mod_display = f"{in_mod}->{out_mod}" if in_mod != out_mod else in_mod
                 st.markdown(
-                    f"**{c['app_name']}** / `{c['dataset_name']}` / `{mod_display}` &nbsp; "
-                    f"`[{mode_label}]` / `{prompt_label}` &nbsp; "
+                    f"**{_group_label(c)}** &nbsp; "
                     f"— {c.get('failed_count', '?')} failed items",
                     unsafe_allow_html=True,
                 )
@@ -533,13 +608,8 @@ def main() -> None:
                                                               x.get("input_modality", "") or x.get("modality", ""),
                                                               x.get("output_modality", "") or x.get("modality", ""), 
                                                               x["method"])):
-                prompt_label = c.get("eval_prompt") or "—"
-                in_mod = c.get("input_modality", "") or c.get("modality", "?")
-                out_mod = c.get("output_modality", "") or c.get("modality", "?")
-                mod_display = f"{in_mod}->{out_mod}" if in_mod != out_mod else in_mod
                 st.markdown(
-                    f"**{c['app_name']}** / `{c['dataset_name']}` / `{mod_display}` "
-                    f"&nbsp; `[{c['method'] or 'unknown'}]` / `{prompt_label}` &nbsp; "
+                    f"**{_group_label(c)}** &nbsp; "
                     f"— {c.get('success_count', 0)} success, {c.get('failed_count', 0)} failed",
                     unsafe_allow_html=True,
                 )

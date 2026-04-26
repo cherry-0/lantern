@@ -31,6 +31,7 @@ if str(LANTERN_ROOT) not in sys.path:
 
 import streamlit as st
 from verify.backend.utils.cache import normalize_eval_prompt
+from verify.backend.utils.config import EVAL_PROMPT_CHOICES, get_default_eval_prompt
 
 
 _REEVAL_SCRIPT = VERIFY_ROOT / "reeval.py"
@@ -274,13 +275,14 @@ def main() -> None:
 
         prompt_mode = st.radio(
             "Evaluation prompt",
-            ["prompt1", "prompt2", "prompt3"],
-            index=0,
+            list(EVAL_PROMPT_CHOICES),
+            index=list(EVAL_PROMPT_CHOICES).index(get_default_eval_prompt()),
             disabled=running,
             help=(
                 "prompt1: binary inferability. "
                 "prompt2: binary inferability + prediction. "
-                "prompt3: aggregate externalized result + per-channel threat."
+                "prompt3: aggregate externalized result + per-channel threat. "
+                "prompt4: prompt3 reasoning with confirmed/possible/no-evidence leakage verdicts."
             ),
         )
 
@@ -299,7 +301,7 @@ def main() -> None:
         dry_run = st.toggle("Dry run (no writes)", value=False, disabled=running)
         st.divider()
 
-        if st.button("🔄 Refresh table", use_container_width=True):
+        if st.button("🔄 Refresh table", width="stretch"):
             st.cache_data.clear()
             st.rerun()
 
@@ -334,7 +336,7 @@ def main() -> None:
         if st.button(
             f"🏷 Initialize labels  ({unlabeled} unlabeled dirs)",
             disabled=running or unlabeled == 0,
-            use_container_width=True,
+            width="stretch",
             help=init_tip,
         ):
             cmd = [sys.executable, "-u", str(_REEVAL_SCRIPT), "--init"]
@@ -371,11 +373,11 @@ def main() -> None:
         sa_col, da_col, _, filt_col = st.columns([1, 1, 2, 3])
         section_key = section_title.lower().replace(" ", "_")
 
-        if sa_col.button("Select all", key=f"sa_{section_key}", disabled=running, use_container_width=True):
+        if sa_col.button("Select all", key=f"sa_{section_key}", disabled=running, width="stretch"):
             for d in section_dirs:
                 st.session_state[f"reeval_row_{d['_orig_idx']}"] = True
             st.rerun()
-        if da_col.button("Deselect all", key=f"da_{section_key}", disabled=running, use_container_width=True):
+        if da_col.button("Deselect all", key=f"da_{section_key}", disabled=running, width="stretch"):
             for d in section_dirs:
                 st.session_state[f"reeval_row_{d['_orig_idx']}"] = False
             st.rerun()
@@ -465,7 +467,7 @@ def main() -> None:
                 label,
                 type="primary",
                 disabled=(n_sel == 0 or not model),
-                use_container_width=True,
+                width="stretch",
             )
             if run_clicked:
                 cmd = [
@@ -475,10 +477,14 @@ def main() -> None:
                     "--dir-workers", str(dir_workers),
                     "--dir",
                 ] + selected_dirs
-                if prompt_mode == "prompt2":
+                if prompt_mode == "prompt1":
+                    cmd.append("--prompt1")
+                elif prompt_mode == "prompt2":
                     cmd.append("--prompt2")
                 elif prompt_mode == "prompt3":
                     cmd.append("--prompt3")
+                elif prompt_mode == "prompt4":
+                    cmd.append("--prompt4")
                 if verbose:  cmd.append("--verbose")
                 if dry_run:  cmd.append("--dry-run")
                 rs.update({"running": True, "log": [f"$ {' '.join(cmd)}", ""],
@@ -486,11 +492,11 @@ def main() -> None:
                 threading.Thread(target=_run_subprocess, args=(cmd, rs), daemon=True).start()
                 st.rerun()
         else:
-            st.button("⏳ Running…", disabled=True, use_container_width=True)
+            st.button("⏳ Running…", disabled=True, width="stretch")
 
     with stop_col:
         if running:
-            if st.button("⏹ Stop", type="secondary", use_container_width=True):
+            if st.button("⏹ Stop", type="secondary", width="stretch"):
                 pid = rs.get("pid")
                 if pid:
                     try:

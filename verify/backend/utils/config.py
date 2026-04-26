@@ -4,9 +4,10 @@ Config utilities: load config files and environment variables for Verify.
 
 import os
 import csv
+import json
 import threading
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import Any, List, Dict, Optional
 
 # Root of the verify/ directory
 VERIFY_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -17,6 +18,52 @@ BACKEND_DIR = VERIFY_ROOT / "backend"
 DATASET_DIR = BACKEND_DIR / "datasets"
 OUTPUTS_DIR = VERIFY_ROOT / "outputs"
 TARGET_APPS_DIR = LANTERN_ROOT / "target-apps"
+EVAL_PROMPT_CHOICES = ("prompt1", "prompt2", "prompt3", "prompt4")
+DEFAULT_COLOR_PALETTE: Dict[str, Dict[str, str]] = {
+    "verdict": {
+        "confirmed leakage": "#f96d36",
+        "possible leakage": "#f7b44f",
+        "no evidence": "#98d198",
+        "na": "#e6e6e6",
+    },
+    "stage": {
+        "Input": "#5bc0de",
+        "Raw Output": "#d9534f",
+        "Externalized": "#f0ad4e",
+    },
+    "channel": {
+        "AGGREGATE": "#f0ad4e",
+        "Aggregate": "#f0ad4e",
+        "UI": "#7f8c8d",
+        "NETWORK": "#5b8def",
+        "Network": "#5b8def",
+        "STORAGE": "#27ae60",
+        "Storage": "#27ae60",
+        "LOGGING": "#f39c12",
+        "Logging": "#f39c12",
+        "Perturbed Aggregate": "#b9770e",
+    },
+    "heatmap": {
+        "empty": "#ffffff",
+        "missing": "#e6e6e6",
+        "exposure_high": "#c62828",
+    },
+    "binary": {
+        "positive": "#d9534f",
+        "negative": "#5cb85c",
+        "secondary": "#5bc0de",
+    },
+}
+
+
+def _deep_merge_dict(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge_dict(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
 
 
 def load_dataset_list() -> List[str]:
@@ -63,6 +110,29 @@ def load_perturbation_method_map() -> Dict[str, str]:
     return mapping
 
 
+def load_color_palette() -> Dict[str, Dict[str, str]]:
+    """Load UI color palette from verify/config/color_palette.json."""
+    path = CONFIG_DIR / "color_palette.json"
+    if not path.exists():
+        return DEFAULT_COLOR_PALETTE
+    try:
+        data = json.loads(path.read_text())
+    except Exception:
+        return DEFAULT_COLOR_PALETTE
+    if not isinstance(data, dict):
+        return DEFAULT_COLOR_PALETTE
+    merged = _deep_merge_dict(DEFAULT_COLOR_PALETTE, data)
+    return {
+        section: {
+            str(key): str(value)
+            for key, value in values.items()
+            if isinstance(values, dict)
+        }
+        for section, values in merged.items()
+        if isinstance(values, dict)
+    }
+
+
 def get_env(key: str, default: Optional[str] = None) -> Optional[str]:
     """
     Read an environment variable. Attempts to load from the root .env if not set.
@@ -95,6 +165,20 @@ def get_env(key: str, default: Optional[str] = None) -> Optional[str]:
 def get_openrouter_api_key() -> Optional[str]:
     """Return OpenRouter API key from environment."""
     return get_env("OPENROUTER_API_KEY") or get_env("OPENROUTER_KEY")
+
+
+def get_default_eval_prompt() -> str:
+    """
+    Return the default IOC externalization evaluator prompt.
+
+    Resolution order:
+      1. VERIFY_EVAL_PROMPT
+      2. EVAL_PROMPT
+      3. prompt4
+    """
+    raw = get_env("VERIFY_EVAL_PROMPT") or get_env("EVAL_PROMPT") or "prompt4"
+    value = raw.strip().lower()
+    return value if value in EVAL_PROMPT_CHOICES else "prompt4"
 
 
 def is_debug() -> bool:

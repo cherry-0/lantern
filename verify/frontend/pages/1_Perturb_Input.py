@@ -24,12 +24,19 @@ if str(LANTERN_ROOT) not in sys.path:
 
 import streamlit as st
 from verify.backend.evaluation_method.evaluator import (
+    VERDICT_CONFIRMED,
+    VERDICT_NO_EVIDENCE,
+    VERDICT_POSSIBLE,
+    entry_to_verdict,
     get_aggregate_eval_entry,
     get_channel_eval_entries,
     is_channelwise_eval_entry,
+    verdict_to_icon,
 )
+from verify.backend.utils.config import load_color_palette
 
 DISPLAY_PREVIEW_CHARS = 4000
+_PALETTE = load_color_palette()
 CHANNEL_STAGE_ORDER = ["AGGREGATE", "UI", "NETWORK", "STORAGE", "LOGGING"]
 CHANNEL_STAGE_LABELS = {
     "AGGREGATE": "Aggregate",
@@ -39,12 +46,22 @@ CHANNEL_STAGE_LABELS = {
     "LOGGING": "Logging",
 }
 CHANNEL_STAGE_COLORS = {
-    "Aggregate": "#f0ad4e",
-    "UI": "#7f8c8d",
-    "Network": "#5b8def",
-    "Storage": "#27ae60",
-    "Logging": "#f39c12",
+    "Aggregate": _PALETTE["channel"]["Aggregate"],
+    "UI": _PALETTE["channel"]["UI"],
+    "Network": _PALETTE["channel"]["Network"],
+    "Storage": _PALETTE["channel"]["Storage"],
+    "Logging": _PALETTE["channel"]["Logging"],
 }
+VERDICT_COLORS = {
+    VERDICT_CONFIRMED: _PALETTE["verdict"][VERDICT_CONFIRMED],
+    VERDICT_POSSIBLE: _PALETTE["verdict"][VERDICT_POSSIBLE],
+    VERDICT_NO_EVIDENCE: _PALETTE["verdict"][VERDICT_NO_EVIDENCE],
+    "na": _PALETTE["verdict"]["na"],
+}
+
+
+def _binary_verdict(flag: bool) -> str:
+    return VERDICT_CONFIRMED if flag else VERDICT_NO_EVIDENCE
 
 # ─── Page config ─────────────────────────────────────────────────────────────
 
@@ -112,9 +129,9 @@ def _display_image(b64_str: str | None, data=None, caption: str = ""):
             import io
             img_data = base64.b64decode(b64_str)
             img = PILImage.open(io.BytesIO(img_data))
-            st.image(img, caption=caption, use_container_width=True)
+            st.image(img, caption=caption, width="stretch")
         elif data is not None:
-            st.image(data, caption=caption, use_container_width=True)
+            st.image(data, caption=caption, width="stretch")
         else:
             st.warning("No image data available.")
     except Exception as e:
@@ -161,7 +178,7 @@ def _display_frames(frames: list, caption_prefix: str = "Frame"):
     cols = st.columns(min(len(frames), 4))
     for i, (col, frame) in enumerate(zip(cols, frames)):
         with col:
-            st.image(frame, caption=f"{caption_prefix} {i+1}", use_container_width=True)
+            st.image(frame, caption=f"{caption_prefix} {i+1}", width="stretch")
 
 
 def _eval_chart(eval_results: dict, stage_label: str):
@@ -188,7 +205,7 @@ def _eval_chart(eval_results: dict, stage_label: str):
         attr = row["Attribute"]
         score = row["Inferability Score"]
         inferable = row["Inferable"]
-        icon = "🔴" if inferable else "🟢"
+        icon = verdict_to_icon(_binary_verdict(bool(inferable)))
         st.markdown(f"{icon} **{attr}**: score={score:.2f} — {'Inferable' if inferable else 'Not inferable'}")
 
         reasoning = eval_results.get(attr, {}).get("reasoning", "")
@@ -204,13 +221,13 @@ def _eval_chart(eval_results: dict, stage_label: str):
             y=alt.Y("Inferability Score:Q", scale=alt.Scale(domain=[0, 1])),
             color=alt.condition(
                 alt.datum["Inferable"] == True,
-                alt.value("#d9534f"),
-                alt.value("#5cb85c"),
+                alt.value(_PALETTE["binary"]["positive"]),
+                alt.value(_PALETTE["binary"]["negative"]),
             ),
         )
         .properties(height=200)
     )
-    st.altair_chart(chart, use_container_width=True)
+    st.altair_chart(chart, width="stretch")
 
 
 def _has_channelwise_eval(eval_results: dict) -> bool:
@@ -230,14 +247,14 @@ def _render_eval_heatmap(eval_results: dict, stage_label: str):
             {
                 "Stage": f"{stage_label} Aggregate",
                 "Attribute": attr,
-                "state": "yes" if agg.get("inferable") else "no",
+                "state": entry_to_verdict(entry),
             }
         )
         channels = get_channel_eval_entries(entry)
         for channel in CHANNEL_STAGE_ORDER[1:]:
             state = "na"
             if channel in channels:
-                state = "yes" if channels[channel].get("inferable") else "no"
+                state = entry_to_verdict(channels[channel])
             rows.append(
                 {
                     "Stage": f"{stage_label} {CHANNEL_STAGE_LABELS[channel]}",
@@ -251,25 +268,33 @@ def _render_eval_heatmap(eval_results: dict, stage_label: str):
     stage_order = [f"{stage_label} Aggregate"] + [f"{stage_label} {CHANNEL_STAGE_LABELS[c]}" for c in CHANNEL_STAGE_ORDER[1:]]
     rect = (
         alt.Chart(df)
-        .mark_rect(stroke="#ffffff", strokeWidth=1)
+        .mark_rect(stroke=_PALETTE["heatmap"]["empty"], strokeWidth=1)
         .encode(
             x=alt.X("Attribute:N", sort=attrs, axis=alt.Axis(labelAngle=-40, labelFontSize=10)),
             y=alt.Y("Stage:N", sort=stage_order, title=None),
             color=alt.Color(
                 "state:N",
-                scale=alt.Scale(domain=["yes", "no", "na"], range=["#d4f5d4", "#fafafa", "#e6e6e6"]),
+                scale=alt.Scale(
+                    domain=[VERDICT_CONFIRMED, VERDICT_POSSIBLE, VERDICT_NO_EVIDENCE, "na"],
+                    range=[
+                        VERDICT_COLORS[VERDICT_CONFIRMED],
+                        VERDICT_COLORS[VERDICT_POSSIBLE],
+                        VERDICT_COLORS[VERDICT_NO_EVIDENCE],
+                        VERDICT_COLORS["na"],
+                    ],
+                ),
                 legend=None,
             ),
             tooltip=["Stage", "Attribute", alt.Tooltip("state:N", title="Status")],
         )
     )
     text = (
-        alt.Chart(df[df["state"] == "yes"])
-        .mark_text(text="✓", fontSize=12, fontWeight="bold", color="#2f4f2f")
+        alt.Chart(df[df["state"].isin([VERDICT_CONFIRMED, VERDICT_POSSIBLE])])
+        .mark_text(text="●", fontSize=12, fontWeight="bold", color="#2f2f2f")
         .encode(x=alt.X("Attribute:N", sort=attrs), y=alt.Y("Stage:N", sort=stage_order))
     )
-    st.altair_chart((rect + text).properties(height=max(180, 34 * len(stage_order))), use_container_width=True)
-    st.caption("Green = inferable, white = not inferable, grey = channel not available in this evaluation.")
+    st.altair_chart((rect + text).properties(height=max(180, 34 * len(stage_order))), width="stretch")
+    st.caption("Red = confirmed leakage, yellow = possible leakage, green = no evidence, grey = channel not available in this evaluation.")
 
 
 def _render_channel_aggregated_chart(all_results: list[dict], attributes: list[str]):
@@ -317,7 +342,7 @@ def _render_channel_aggregated_chart(all_results: list[dict], attributes: list[s
     color_range = []
     for label in stage_order:
         if label.endswith("Aggregate"):
-            color_range.append(CHANNEL_STAGE_COLORS["Aggregate"] if label.startswith("Original") else "#b9770e")
+            color_range.append(CHANNEL_STAGE_COLORS["Aggregate"] if label.startswith("Original") else _PALETTE["channel"]["Perturbed Aggregate"])
         elif label.endswith("UI"):
             color_range.append(CHANNEL_STAGE_COLORS["UI"])
         elif label.endswith("Network"):
@@ -340,7 +365,7 @@ def _render_channel_aggregated_chart(all_results: list[dict], attributes: list[s
         )
         .properties(height=320, title=f"Attribute-wise positive rate across {len(success)} item(s)")
     )
-    st.altair_chart(chart, use_container_width=True)
+    st.altair_chart(chart, width="stretch")
     st.caption("Aggregate bars use all successful items. Channel bars use only items where that channel exists in the saved evaluation.")
 
 
@@ -600,13 +625,13 @@ def _render_aggregated_chart(all_results: list, attributes: list):
             y=alt.Y("Avg Inferability Score:Q", scale=alt.Scale(domain=[0, 1])),
             color=alt.Color("Stage:N", scale=alt.Scale(
                 domain=["Original (avg score)", "Perturbed (avg score)"],
-                range=["#d9534f", "#5bc0de"],
+                range=[_PALETTE["binary"]["positive"], _PALETTE["binary"]["secondary"]],
             )),
             xOffset="Stage:N",
         )
         .properties(height=250)
     )
-    st.altair_chart(chart, use_container_width=True)
+    st.altair_chart(chart, width="stretch")
     st.caption("Average inferability score across all items (lower is better after perturbation).")
 
 
@@ -760,7 +785,7 @@ def main():
             "▶ Verify",
             type="primary",
             disabled=not (app_available and selected_attributes),
-            use_container_width=True,
+            width="stretch",
         )
 
         if not selected_attributes:
@@ -948,7 +973,7 @@ def main():
                     ),
                 })
             if rows:
-                st.dataframe(pd.DataFrame(rows), use_container_width=True)
+                st.dataframe(pd.DataFrame(rows), width="stretch")
 
         # Download buttons
         st.subheader("Download Report")
@@ -963,7 +988,7 @@ def main():
                     data=json_path.read_text(),
                     file_name="verify_report.json",
                     mime="application/json",
-                    use_container_width=True,
+                    width="stretch",
                 )
             else:
                 st.info("JSON report not available.")
@@ -976,7 +1001,7 @@ def main():
                     data=csv_path.read_text(),
                     file_name="verify_report.csv",
                     mime="text/csv",
-                    use_container_width=True,
+                    width="stretch",
                 )
             else:
                 st.info("CSV report not available.")
