@@ -16,8 +16,14 @@ from verify.backend.adapters.chatexpensetracker import ChatExpenseTrackerAdapter
 from verify.backend.adapters.photomath_blackbox import PhotomathAdapter
 from verify.backend.adapters.replika_blackbox import ReplikaAdapter
 from verify.backend.adapters.expensify_blackbox import ExpensifyAdapter
+from verify.backend.adapters.noom_blackbox import NoomAdapter
 from verify.backend.adapters.oxproxion import OxproxionAdapter
 from verify.backend.adapters.pocketpal import PocketPalAdapter
+from verify.backend.adapters.klyr import KlyrAdapter
+from verify.backend.adapters.fiscalflow import FiscalFlowAdapter
+from verify.backend.adapters.spendsense import SpendSenseAdapter
+from verify.backend.adapters.edupal import EduPalAdapter
+from verify.backend.adapters.lira import LiraAdapter
 
 # Registry: name → adapter class
 ADAPTER_REGISTRY: Dict[str, Type[BaseAdapter]] = {
@@ -37,6 +43,11 @@ ADAPTER_REGISTRY: Dict[str, Type[BaseAdapter]] = {
     "expensify": ExpensifyAdapter,
     "oxproxion": OxproxionAdapter,
     "pocketpal-ai": PocketPalAdapter,
+    "klyr": KlyrAdapter,
+    "fiscal-flow": FiscalFlowAdapter,
+    "spendsense": SpendSenseAdapter,
+    "edupal": EduPalAdapter,
+    "lira": LiraAdapter,
 }
 
 
