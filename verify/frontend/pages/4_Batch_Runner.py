@@ -395,7 +395,7 @@ def main() -> None:
         app_modality_combos = sorted({
             (row.get("input_modality", "") or row.get("modality", ""),
              row.get("output_modality", "") or row.get("modality", ""))
-            for i, row in all_rows if row.get("app_name") == app_name
+            for i, row in enumerate(all_rows) if row.get("app_name") == app_name
         })
 
         for in_mod, out_mod in app_modality_combos:

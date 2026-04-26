@@ -38,6 +38,13 @@ KNOWN_APPS = [
     "photomath",
     "replika",
     "expensify",
+    "pocketpal-ai",
+    "oxproxion",
+    "klyr",
+    "fiscal-flow",
+    "spendsense",
+    "edupal",
+    "lira",
 ]
 
 STAGE_INPUT = "Input"
@@ -1018,21 +1025,39 @@ def main():
 
         st.divider()
 
-        # Modality
-        st.subheader("Modality")
+        # Input Modality
+        st.subheader("Input Modality")
         selected_modality = st.selectbox(
-            "Modality", ["image", "text", "video"], key="ioc_modality"
+            "Input Modality", ["image", "text", "video"], key="ioc_modality"
         )
-        generation_task = "text"
-        if selected_app == "tool-neuron" and selected_modality == "text":
-            st.divider()
-            st.subheader("ToolNeuron Task")
-            generation_task = st.radio(
-                "Generation task",
-                ["text", "image"],
-                key="ioc_toolneuron_generation_task",
-                help="ToolNeuron can run either text generation or text-to-image generation from text inputs.",
-            )
+
+        st.divider()
+
+        # Output Modality
+        st.subheader("Output Modality")
+        # Default output is same as input, but allow different (e.g., text->image)
+        output_options = ["text", "image"]
+        if selected_modality == "image":
+            # For image input, output is typically also image (perturbation)
+            output_options = ["image", "text"]
+        elif selected_modality == "video":
+            output_options = ["video", "text"]
+        
+        # tool-neuron generates image outputs; all other apps produce text
+        if selected_app == "tool-neuron":
+            default_output = "image"
+        else:
+            default_output = "text"
+        output_modality = st.radio(
+            "Output Modality",
+            output_options,
+            index=output_options.index(default_output) if default_output in output_options else 0,
+            key="ioc_output_modality",
+            help="Select the expected output modality from the app. For most apps this matches input, but some (like ToolNeuron) can generate different output types.",
+        )
+        
+        # generation_task is used for backwards compatibility
+        generation_task = output_modality
 
         st.divider()
 
@@ -1098,6 +1123,8 @@ def main():
             "app": selected_app,
             "dataset": selected_dataset,
             "modality": selected_modality,
+            "input_modality": selected_modality,
+            "output_modality": output_modality,
             "generation_task": generation_task,
             "max_items": max_items,
         }
@@ -1134,13 +1161,11 @@ def main():
         processed = st.session_state.ioc_items_processed
         total = st.session_state.ioc_items_total
 
+        in_mod = rc.get('modality', '?')
+        out_mod = rc.get('output_modality', '') or rc.get('generation_task', '') or in_mod
+        mod_display = f"{in_mod}->{out_mod}" if in_mod != out_mod else in_mod
         st.markdown(
-            f"**{rc.get('app')}** · {rc.get('dataset')} · {rc.get('modality')}"
-            + (
-                f" · task=`{rc.get('generation_task')}`"
-                if rc.get("app") == "tool-neuron" and rc.get("modality") == "text"
-                else ""
-            )
+            f"**{rc.get('app')}** · {rc.get('dataset')} · `{mod_display}`"
         )
         if total > 0:
             st.progress(
@@ -1160,10 +1185,12 @@ def main():
 
         if results:
             last_cfg = st.session_state.ioc_last_run_config
+            last_output_modality = last_cfg.get("output_modality", "") or last_cfg.get("generation_task", "")
             stale = bool(last_cfg) and (
                 selected_app != last_cfg.get("app")
                 or selected_dataset != last_cfg.get("dataset")
                 or selected_modality != last_cfg.get("modality")
+                or output_modality != last_output_modality
                 or max_items != last_cfg.get("max_items")
             )
 

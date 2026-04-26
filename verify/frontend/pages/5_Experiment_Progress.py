@@ -85,12 +85,12 @@ def _scan_outputs() -> List[Dict]:
     Scan ALL verify/outputs/ directories (both cache_* and timestamped run dirs).
 
     Returns a list of dicts:
-      app_name, dataset_name, modality, method, eval_prompt,
+      app_name, dataset_name, input_modality, output_modality, method, eval_prompt,
       success_count, failed_count, stale_count,
       prompt_success_counts, has_summary, dirs (list of directory paths for this key)
 
     Counts are aggregated across all directories for the same
-    (app_name, dataset_name, modality, perturbation_method, eval_prompt) key by
+    (app_name, dataset_name, input_modality, output_modality, perturbation_method, eval_prompt) key by
     deduplicating item filenames. This avoids dropping coverage when a run was
     split across multiple output directories.
     """
@@ -113,8 +113,9 @@ def _scan_outputs() -> List[Dict]:
             return "success", existing_stale or incoming_stale
         return existing_status, existing_stale
 
-    # Per-key state. key = (app, dataset, modality, method, eval_prompt)
-    key_modality: Dict[tuple, str] = {}
+    # Per-key state. key = (app, dataset, input_modality, output_modality, method, eval_prompt)
+    key_input_modality: Dict[tuple, str] = {}
+    key_output_modality: Dict[tuple, str] = {}
     key_prompt: Dict[tuple, str] = {}
     key_dirs: Dict[tuple, List[str]] = defaultdict(list)
     key_items: Dict[tuple, Dict[str, Tuple[str, bool]]] = defaultdict(dict)
@@ -132,15 +133,18 @@ def _scan_outputs() -> List[Dict]:
             cfg      = json.loads(config_path.read_text())
             app      = cfg.get("app_name", "").strip()
             dataset  = cfg.get("dataset_name", "").strip()
-            modality = cfg.get("modality", "").strip()
+            # Support both new (input/output_modality) and legacy (modality/generation_task) formats
+            input_modality = cfg.get("input_modality", "").strip() or cfg.get("modality", "").strip()
+            output_modality = cfg.get("output_modality", "").strip() or cfg.get("generation_task", "").strip() or input_modality
             method   = cfg.get("perturbation_method", "").strip()
             eval_prompt = str(cfg.get("eval_prompt") or "").strip()
             if method == "ioc_comparison":
                 eval_prompt = normalize_eval_prompt(eval_prompt)
             if not app or not dataset:
                 continue
-            key = (app, dataset, modality, method, eval_prompt)
-            key_modality[key] = modality
+            key = (app, dataset, input_modality, output_modality, method, eval_prompt)
+            key_input_modality[key] = input_modality
+            key_output_modality[key] = output_modality
             key_prompt[key] = eval_prompt
             key_dirs[key].append(str(d))
 
@@ -193,8 +197,9 @@ def _scan_outputs() -> List[Dict]:
     result: List[Dict] = []
 
     for key in all_keys:
-        app, dataset, modality, method, eval_prompt = key
-        modality = key_modality.get(key, "")
+        app, dataset, input_modality, output_modality, method, eval_prompt = key
+        input_modality = key_input_modality.get(key, "")
+        output_modality = key_output_modality.get(key, "")
         eval_prompt = key_prompt.get(key, eval_prompt)
         dirs = key_dirs.get(key, [])
         items = key_items.get(key, {})
@@ -214,7 +219,9 @@ def _scan_outputs() -> List[Dict]:
         result.append({
             "app_name": app,
             "dataset_name": dataset,
-            "modality": modality,
+            "modality": input_modality,  # Legacy
+            "input_modality": input_modality,
+            "output_modality": output_modality,
             "method": method,
             "eval_prompt": eval_prompt,
             "success_count": success_count,
@@ -245,27 +252,41 @@ def _build_table(
     mode: str,          # "ioc" or "perturb"
 ) -> pd.DataFrame:
     """
-    Return an app × dataset DataFrame with cell strings of the form:
+    Return an (app, input_modality, output_modality) × dataset DataFrame with cell strings:
       "M / N"              — M successful items out of N total
       "M / N (S stale)"    — S items have outdated ext_eval scores
       "—"                  — combo not in batch config
     Failed items are excluded from M.
+    
+    Rows are indexed by (app, input_modality, output_modality) to separate different
+    modality combinations (e.g., image->text vs text->text for the same app).
     """
-    apps     = sorted({r["app_name"]    for r in batch_rows})
-    datasets = sorted({r["dataset_name"] for r in batch_rows})
-
-    # (app, dataset) → modality from batch config
-    combo_modality: Dict[Tuple[str, str], str] = {
-        (r["app_name"], r["dataset_name"]): r["modality"]
+    # (app, input_modality, output_modality, dataset) tuples from batch config
+    combo_keys = {
+        (r["app_name"], r.get("input_modality", "") or r.get("modality", ""), 
+         r.get("output_modality", "") or r.get("modality", ""), r["dataset_name"])
         for r in batch_rows
     }
+    
+    # Unique row identifiers (app, input_modality, output_modality)
+    row_ids = sorted({(r["app_name"], 
+                       r.get("input_modality", "") or r.get("modality", ""),
+                       r.get("output_modality", "") or r.get("modality", ""))
+                     for r in batch_rows})
+    
+    # Unique datasets
+    datasets = sorted({r["dataset_name"] for r in batch_rows})
 
-    # (app, dataset, modality) → (success_count, stale_count, prompt_success_counts)
-    cache_lookup: Dict[Tuple[str, str, str], Tuple[int, int, Dict[str, int]]] = {}
+    # (app, input_modality, output_modality, dataset) → (success, stale, prompt_counts)
+    cache_lookup: Dict[Tuple[str, str, str, str], Tuple[int, int, Dict[str, int]]] = {}
     for c in caches:
-        key = (c["app_name"], c["dataset_name"], c.get("modality", ""))
+        app = c["app_name"]
+        dataset = c["dataset_name"]
+        in_mod = c.get("input_modality", "") or c.get("modality", "")
+        out_mod = c.get("output_modality", "") or c.get("modality", "")
         is_ioc = c["method"] == "ioc_comparison"
         if (mode == "ioc" and is_ioc) or (mode == "perturb" and not is_ioc):
+            key = (app, in_mod, out_mod, dataset)
             success = c.get("success_count", 0)
             stale   = c.get("stale_count",   0)
             prompt_counts = dict(c.get("prompt_success_counts", {}) or {})
@@ -278,17 +299,19 @@ def _build_table(
                     merged_counts[prompt] = merged_counts.get(prompt, 0) + count
                 cache_lookup[key] = (success, max(stale, existing[1]), merged_counts)
 
-    data: Dict[str, Dict[str, str]] = {}
-    for app in apps:
-        row: Dict[str, str] = {}
+    # Build DataFrame with MultiIndex for rows
+    data: Dict[Tuple[str, str, str], Dict[str, str]] = {}
+    for row_id in row_ids:
+        app, in_mod, out_mod = row_id
+        row: Dict[str, str] = {"input_modality": in_mod, "output_modality": out_mod}
         for dataset in datasets:
-            combo = (app, dataset)
-            if combo not in combo_modality:
+            combo_key = (app, in_mod, out_mod, dataset)
+            if combo_key not in combo_keys:
                 row[dataset] = "—"
             else:
-                modality = combo_modality[combo]
-                n = _dataset_size(dataset, modality)
-                m, stale, prompt_counts = cache_lookup.get((app, dataset, modality), (0, 0, {}))
+                # Use input modality for dataset size lookup
+                n = _dataset_size(dataset, in_mod)
+                m, stale, prompt_counts = cache_lookup.get(combo_key, (0, 0, {}))
                 cell = f"{m} / {n}" if n > 0 else f"{m} / ?"
                 if stale > 0:
                     cell += f" ({stale} stale)"
@@ -300,19 +323,24 @@ def _build_table(
                 if version_parts:
                     cell += " [" + ", ".join(version_parts) + "]"
                 row[dataset] = cell
-        data[app] = row
+        data[row_id] = row
 
-    return pd.DataFrame(data, index=datasets).T   # apps as rows, datasets as cols
+    df = pd.DataFrame.from_dict(data, orient="index")
+    df.index.names = ["app", "input_modality", "output_modality"]
+    return df
 
 
 def _style_table(df: pd.DataFrame) -> pd.DataFrame:
     """Return same-shape DataFrame of CSS strings for st.dataframe styling."""
     styles = pd.DataFrame("", index=df.index, columns=df.columns)
-    for app in df.index:
+    for idx in df.index:
         for dataset in df.columns:
-            val = str(df.loc[app, dataset])
+            # Skip modality columns
+            if dataset in ("input_modality", "output_modality"):
+                continue
+            val = str(df.loc[idx, dataset])
             if val == "—":
-                styles.loc[app, dataset] = (
+                styles.loc[idx, dataset] = (
                     "background-color:#f5f5f5; color:#c0c0c0"
                 )
             elif "/" in val:
@@ -326,7 +354,7 @@ def _style_table(df: pd.DataFrame) -> pd.DataFrame:
                     n     = int(n_raw) if n_raw != "?" else 0
                     if n > 0 and m >= n:
                         # Complete (possibly stale)
-                        styles.loc[app, dataset] = (
+                        styles.loc[idx, dataset] = (
                             "background-color:#c3e6cb; color:#155724; font-weight:600"
                             if not stale else
                             "background-color:#d4edda; color:#155724; font-weight:600; "
@@ -334,12 +362,12 @@ def _style_table(df: pd.DataFrame) -> pd.DataFrame:
                         )
                     elif m > 0:
                         # Partial (possibly stale)
-                        styles.loc[app, dataset] = (
+                        styles.loc[idx, dataset] = (
                             "background-color:#fff3cd; color:#856404"
                         )
                     else:
                         # Not started
-                        styles.loc[app, dataset] = (
+                        styles.loc[idx, dataset] = (
                             "background-color:#f8d7da; color:#721c24"
                         )
                 except (ValueError, IndexError):
@@ -396,12 +424,18 @@ def main() -> None:
 
     caches = _scan_outputs()
     batch_combo_keys = {
-        (r["app_name"], r["dataset_name"], r["modality"])
+        (r["app_name"], 
+         r.get("input_modality", "") or r.get("modality", ""),
+         r.get("output_modality", "") or r.get("modality", ""),
+         r["dataset_name"])
         for r in batch_rows
     }
     unmapped_caches = [
         c for c in caches
-        if (c["app_name"], c["dataset_name"], c.get("modality", "")) not in batch_combo_keys
+        if (c["app_name"], 
+            c.get("input_modality", ""), 
+            c.get("output_modality", ""), 
+            c["dataset_name"]) not in batch_combo_keys
     ]
 
     # ── Stats row ─────────────────────────────────────────────────────────────
@@ -472,8 +506,11 @@ def main() -> None:
             for c in sorted(fully_failed, key=lambda x: (x["app_name"], x["dataset_name"])):
                 mode_label = "IOC" if c["method"] == "ioc_comparison" else (c["method"] or "IOC")
                 prompt_label = c.get("eval_prompt") or "—"
+                in_mod = c.get("input_modality", "") or c.get("modality", "?")
+                out_mod = c.get("output_modality", "") or c.get("modality", "?")
+                mod_display = f"{in_mod}->{out_mod}" if in_mod != out_mod else in_mod
                 st.markdown(
-                    f"**{c['app_name']}** / `{c['dataset_name']}` / `{c.get('modality', '?')}` &nbsp; "
+                    f"**{c['app_name']}** / `{c['dataset_name']}` / `{mod_display}` &nbsp; "
                     f"`[{mode_label}]` / `{prompt_label}` &nbsp; "
                     f"— {c.get('failed_count', '?')} failed items",
                     unsafe_allow_html=True,
@@ -492,10 +529,16 @@ def main() -> None:
                 "(app, dataset, modality) combination is not present in `verify/batch_config.csv`, "
                 "so they are not represented in the matrix."
             )
-            for c in sorted(unmapped_caches, key=lambda x: (x["app_name"], x["dataset_name"], x.get("modality", ""), x["method"])):
+            for c in sorted(unmapped_caches, key=lambda x: (x["app_name"], x["dataset_name"], 
+                                                              x.get("input_modality", "") or x.get("modality", ""),
+                                                              x.get("output_modality", "") or x.get("modality", ""), 
+                                                              x["method"])):
                 prompt_label = c.get("eval_prompt") or "—"
+                in_mod = c.get("input_modality", "") or c.get("modality", "?")
+                out_mod = c.get("output_modality", "") or c.get("modality", "?")
+                mod_display = f"{in_mod}->{out_mod}" if in_mod != out_mod else in_mod
                 st.markdown(
-                    f"**{c['app_name']}** / `{c['dataset_name']}` / `{c.get('modality', '?')}` "
+                    f"**{c['app_name']}** / `{c['dataset_name']}` / `{mod_display}` "
                     f"&nbsp; `[{c['method'] or 'unknown'}]` / `{prompt_label}` &nbsp; "
                     f"— {c.get('success_count', 0)} success, {c.get('failed_count', 0)} failed",
                     unsafe_allow_html=True,

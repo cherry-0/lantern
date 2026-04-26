@@ -26,6 +26,10 @@ _MODE_LABELS  = ["Native", "Serverless"]
 _APP_DEFAULT_MODES = {
     "chat-driven-expense-tracker": "serverless",
     "oxproxion": "serverless",
+    # No backend server — Firebase Cloud Functions / browser-only PWA
+    "edupal": "serverless",
+    "spendsense": "serverless",
+    "fiscalflow": "serverless",
 }
 
 
