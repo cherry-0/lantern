@@ -40,3 +40,15 @@
 [submodule "target-apps/klyr"]
 	path = target-apps/klyr
 	url = https://github.com/HITARTH-GOHEL15/klyr.git
+[submodule "target-apps/fiscal-flow"]
+	path = target-apps/fiscal-flow
+	url = https://github.com/MelKorSA/fiscal-flow
+[submodule "target-apps/spendsense"]
+	path = target-apps/spendsense
+	url = https://github.com/Vishwas-Chakilam/SpendSense.git
+[submodule "target-apps/edupal"]
+	path = target-apps/edupal
+	url = https://github.com/juntoku9/edupal.git
+[submodule "target-apps/lira"]
+	path = target-apps/lira
+	url = https://github.com/bold-ronin/lira.git
