@@ -220,6 +220,90 @@ def synthpai_to_unified(item: Dict[str, Any], unified_attrs: List[str]) -> Dict[
     return result
 
 
+# ── OpenPII mapper ────────────────────────────────────────────────────────────
+
+_OPENPII_LABEL_MAP: Dict[str, str] = {
+    # identity — names, contact details, credentials
+    "GIVENNAME": "identity", "SURNAME": "identity", "NAME": "identity",
+    "NICKNAME": "identity", "USERNAME": "identity", "PREFIX": "identity",
+    "EMAIL": "identity", "PHONE": "identity", "PHONENUMBER": "identity",
+    "TELEFONNUMBER": "identity", "IDCARD": "identity", "PASS": "identity",
+    "PASSPORT": "identity", "DRIVERSLICENSE": "identity", "SOCIALNUM": "identity",
+    "SSN": "identity", "TAXNUM": "identity", "ACCOUNTNUM": "identity",
+    "IBAN": "identity", "CREDITCARDNUMBER": "identity", "USERAGENT": "identity",
+    "SECONDARY": "identity",
+    # location — geographic identifiers
+    "CITY": "location", "STREET": "location", "COUNTY": "location",
+    "STATE": "location", "ZIPCODE": "location", "COUNTRY": "location",
+    "POSTCODE": "location", "BUILDINGNUM": "location",
+    # age
+    "AGE": "age", "DATEOFBIRTH": "age",
+    # gender
+    "SEX": "gender",
+}
+
+
+def openpii_to_unified(item: Dict[str, Any], unified_attrs: List[str]) -> Dict[str, int]:
+    """
+    Map OpenPII privacy_mask span labels to the unified attribute list.
+
+    Each span in openpii_spans has: {label, start, end, value, label_index}.
+    Labels are upper-cased PII type names (e.g. GIVENNAME, CITY, EMAIL).
+    Only positive spans from _OPENPII_LABEL_MAP are mapped; everything else is 0.
+    """
+    result = {attr: 0 for attr in unified_attrs}
+    for span in item.get("openpii_spans") or []:
+        if not isinstance(span, dict):
+            continue
+        label = str(span.get("label", "")).upper()
+        attr = _OPENPII_LABEL_MAP.get(label)
+        if attr and attr in result:
+            result[attr] = 1
+    return result
+
+
+# ── GretelSyntheticPII mapper ──────────────────────────────────────────────────
+
+_GRETEL_PII_LABEL_MAP: Dict[str, str] = {
+    # identity — names, contact, credentials
+    "person": "identity", "person_name": "identity", "full_name": "identity",
+    "first_name": "identity", "last_name": "identity", "name": "identity",
+    "email_address": "identity", "email": "identity",
+    "phone_number": "identity", "phone": "identity",
+    "ssn": "identity", "social_security_number": "identity",
+    "credit_card_number": "identity", "id_number": "identity",
+    "passport_number": "identity", "drivers_license": "identity",
+    "username": "identity", "url": "identity",
+    # location
+    "street_address": "location", "address": "location",
+    "city": "location", "country": "location", "zip_code": "location",
+    "state": "location", "location": "location",
+    # age
+    "date_of_birth": "age", "age": "age",
+    # gender
+    "gender": "gender",
+    # medical
+    "medical_condition": "medical", "diagnosis": "medical", "medication": "medical",
+}
+
+
+def gretel_pii_to_unified(item: Dict[str, Any], unified_attrs: List[str]) -> Dict[str, int]:
+    """
+    Map GretelSyntheticPII pii_spans label values to the unified attribute list.
+
+    Each span: {start, end, label}. Labels are lowercase snake_case type names.
+    """
+    result = {attr: 0 for attr in unified_attrs}
+    for span in item.get("gretel_pii_spans") or []:
+        if not isinstance(span, dict):
+            continue
+        label = str(span.get("label", "")).lower().strip()
+        attr = _GRETEL_PII_LABEL_MAP.get(label)
+        if attr and attr in result:
+            result[attr] = 1
+    return result
+
+
 # ── Generic / HR-VISPR direct mapper ─────────────────────────────────────────
 
 def generic_to_unified(privacy_labels: List[str], unified_attrs: List[str]) -> Dict[str, int]:
@@ -250,6 +334,12 @@ def get_input_labels(item: Dict[str, Any], unified_attrs: List[str]) -> Dict[str
 
     if label_source == "synthpai":
         return synthpai_to_unified(item, unified_attrs)
+
+    if label_source == "openpii":
+        return openpii_to_unified(item, unified_attrs)
+
+    if label_source == "gretel_pii":
+        return gretel_pii_to_unified(item, unified_attrs)
 
     if "seed" in item or "vignette" in item or "trajectory" in item:
         return privacylens_to_unified(item, unified_attrs)

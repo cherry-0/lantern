@@ -12,6 +12,12 @@ verify/backend/datasets/HR-VISPR/
 verify/backend/datasets/VISPR/
 verify/backend/datasets/SROIE2019/
 verify/backend/datasets/SynthPAI/
+verify/backend/datasets/ASAP-AES/
+verify/backend/datasets/GretelSyntheticPII/
+verify/backend/datasets/MIMIC-CXR/
+verify/backend/datasets/MultiCaRe/
+verify/backend/datasets/MultiPriv/
+verify/backend/datasets/OpenPII/
 
 # perturbation method sources
 verify/backend/perturbation_method/Imago_Obscura/src/

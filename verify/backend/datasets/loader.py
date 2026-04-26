@@ -244,6 +244,80 @@ def _is_hf_dataset(dataset_path: Path) -> bool:
     )
 
 
+def _is_hf_image_dataset(dataset_path: Path) -> bool:
+    """Return True if any HF split in the directory has an Image feature column."""
+    for sub in dataset_path.iterdir():
+        if not sub.is_dir():
+            continue
+        info_file = sub / "dataset_info.json"
+        if info_file.exists():
+            try:
+                info = json.loads(info_file.read_text())
+                for feat_info in info.get("features", {}).values():
+                    if isinstance(feat_info, dict) and feat_info.get("_type") == "Image":
+                        return True
+            except Exception:
+                pass
+    return False
+
+
+def _is_openpii_dataset(dataset_path: Path) -> bool:
+    """Return True if the directory contains the OpenPII JSONL nested structure."""
+    for sub in dataset_path.iterdir():
+        if not sub.is_dir():
+            continue
+        data_dir = sub / "data"
+        if data_dir.is_dir():
+            for split_dir in data_dir.iterdir():
+                if split_dir.is_dir() and any(split_dir.glob("*.jsonl")):
+                    return True
+    return False
+
+
+def _is_mimicxr_dataset(dataset_path: Path) -> bool:
+    """Return True if the directory contains a MIMIC-CXR layout (CSV + official_data_iccv_final/)."""
+    for sub in dataset_path.iterdir():
+        if sub.is_dir() and (sub / "official_data_iccv_final").is_dir():
+            return any(sub.glob("*.csv"))
+    return False
+
+
+def _is_multicare_dataset(dataset_path: Path) -> bool:
+    """Return True if the directory contains a MultiCaRe cases.parquet file."""
+    return (dataset_path / "cases.parquet").exists()
+
+
+def _is_asapaes_dataset(dataset_path: Path) -> bool:
+    """Return True if the directory contains ASAP-AES TSV files in a subdirectory."""
+    for sub in dataset_path.iterdir():
+        if sub.is_dir() and any(sub.glob("*.tsv")):
+            return True
+    return False
+
+
+def _parse_stringified_list(s: str) -> List[str]:
+    """Parse a stringified Python list (e.g. \"['a', 'b']\") back to a Python list."""
+    import ast
+    try:
+        result = ast.literal_eval(s)
+        if isinstance(result, list):
+            return [str(x) for x in result]
+    except Exception:
+        pass
+    return []
+
+
+def _extract_study_id(img_path: str) -> str:
+    """
+    Extract the study ID (e.g. 's50414267') from a MIMIC-CXR image path.
+    Path format: files/p{10}/p{subject_id}/s{study_id}/{image}.jpg
+    """
+    for part in img_path.replace("\\", "/").split("/"):
+        if part.startswith("s") and part[1:].isdigit():
+            return part
+    return ""
+
+
 def detect_modality(dataset_name: str) -> Optional[str]:
     """
     Heuristically detect the modality of a dataset by inspecting its files.
@@ -253,8 +327,26 @@ def detect_modality(dataset_name: str) -> Optional[str]:
     if dataset_path is None:
         return None
 
-    # HuggingFace disk datasets are always treated as text
+    # MIMIC-CXR: image
+    if _is_mimicxr_dataset(dataset_path):
+        return "image"
+
+    # MultiCaRe: text
+    if _is_multicare_dataset(dataset_path):
+        return "text"
+
+    # OpenPII: text
+    if _is_openpii_dataset(dataset_path):
+        return "text"
+
+    # ASAP-AES: text
+    if _is_asapaes_dataset(dataset_path):
+        return "text"
+
+    # HuggingFace disk datasets — image if any split has an Image feature, else text
     if _is_hf_dataset(dataset_path):
+        if _is_hf_image_dataset(dataset_path):
+            return "image"
         return "text"
 
     # SROIE2019-style datasets (split/img/)
@@ -525,6 +617,46 @@ def _hf_row_to_item(row: Dict[str, Any], source: str, idx: int) -> Dict[str, Any
         "raw": row,
     }
 
+    # GretelSyntheticPII schema: synthetic document with PII spans
+    if "generated_text" in row and "pii_spans" in row:
+        generated_text = str(row.get("generated_text") or "")
+        pii_spans_raw = row.get("pii_spans", "[]")
+        if isinstance(pii_spans_raw, list):
+            pii_spans = pii_spans_raw
+        elif isinstance(pii_spans_raw, str):
+            try:
+                pii_spans = json.loads(pii_spans_raw)
+            except Exception:
+                pii_spans = []
+        else:
+            pii_spans = []
+        item["filename"] = str(row.get("index", idx))
+        item["text_content"] = generated_text
+        item["data"] = generated_text
+        item["gretel_pii_spans"] = pii_spans
+        item["label_source"] = "gretel_pii"
+        item["document_type"] = str(row.get("document_type") or "")
+        item["domain"] = str(row.get("domain") or "")
+        return item
+
+    # MultiPriv schema: only an 'image' field (PIL image decoded by HF)
+    pil_img = row.get("image")
+    if pil_img is not None and hasattr(pil_img, "mode"):
+        import io as _io
+        item["modality"] = "image"
+        item["filename"] = f"img_{idx:05d}"
+        item["label_source"] = "multiprivate"
+        try:
+            rgb = pil_img.convert("RGB")
+            item["data"] = rgb
+            buf = _io.BytesIO()
+            rgb.save(buf, format="JPEG", quality=85)
+            item["image_base64"] = base64.b64encode(buf.getvalue()).decode("utf-8")
+        except Exception:
+            item["image_base64"] = ""
+            item["data"] = None
+        return item
+
     # SynthPAI schema: each row is a Reddit-style post from a synthetic persona.
     # Key fields: text (post content), profile (ground-truth private attributes), id.
     profile = row.get("profile")
@@ -625,6 +757,237 @@ def _iter_hf_dataset(
                 yield False, {"modality": "text", "path": source, "filename": f"row_{idx:05d}"}, str(e)
 
 
+def _iter_openpii_dataset(
+    dataset_path: Path,
+) -> Generator[Tuple[bool, Dict[str, Any], Optional[str]], None, None]:
+    """
+    Load the OpenPII (ai4privacy) dataset from nested JSONL files.
+
+    Structure:
+        <name>/data/train/train.jsonl
+        <name>/data/validation/test.jsonl
+
+    Each row: source_text (PII text), masked_text, privacy_mask (span list),
+              uid, language, split.
+    """
+    jsonl_files: List[Path] = []
+    for sub in sorted(dataset_path.iterdir()):
+        if not sub.is_dir():
+            continue
+        data_dir = sub / "data"
+        if not data_dir.is_dir():
+            continue
+        for split_dir in sorted(data_dir.iterdir()):
+            if split_dir.is_dir():
+                jsonl_files.extend(sorted(split_dir.glob("*.jsonl")))
+
+    if not jsonl_files:
+        yield False, {}, "No JSONL files found in OpenPII dataset."
+        return
+
+    for jf in jsonl_files:
+        with open(jf, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except Exception as e:
+                    yield False, {"modality": "text", "path": str(jf), "filename": "?"}, str(e)
+                    continue
+
+                uid = str(row.get("uid", ""))
+                source_text = str(row.get("source_text") or "")
+                privacy_mask = row.get("privacy_mask", [])
+
+                item: Dict[str, Any] = {
+                    "modality": "text",
+                    "path": str(jf),
+                    "filename": uid or f"uid_{uid}",
+                    "text_content": source_text,
+                    "data": source_text,
+                    "raw": row,
+                    "openpii_spans": privacy_mask if isinstance(privacy_mask, list) else [],
+                    "label_source": "openpii",
+                    "language": str(row.get("language") or ""),
+                    "openpii_uid": uid,
+                }
+                yield True, item, None
+
+
+def _iter_mimicxr_dataset(
+    dataset_path: Path,
+) -> Generator[Tuple[bool, Dict[str, Any], Optional[str]], None, None]:
+    """
+    Load MIMIC-CXR: one item per image file, with the study's text_augment attached.
+
+    Structure:
+        <name>/mimic_cxr_aug_train.csv  (or _validate.csv)
+        <name>/official_data_iccv_final/files/p{10}/p{subject}/s{study}/{img}.jpg
+
+    CSV columns used: subject_id, image (list of paths), text_augment (list of reports).
+    Image paths in CSV are relative to official_data_iccv_final/.
+    """
+    import ast
+    import csv as csv_module
+
+    ds_dir: Optional[Path] = None
+    for sub in dataset_path.iterdir():
+        if sub.is_dir() and (sub / "official_data_iccv_final").is_dir():
+            ds_dir = sub
+            break
+    if ds_dir is None:
+        yield False, {}, "MIMIC-CXR: official_data_iccv_final/ subdirectory not found."
+        return
+
+    img_root = ds_dir / "official_data_iccv_final"
+
+    # Prefer train CSV, then validate
+    csv_files = sorted(ds_dir.glob("*.csv"), key=lambda p: (0 if "train" in p.name else 1))
+    if not csv_files:
+        yield False, {}, "MIMIC-CXR: no CSV files found."
+        return
+
+    for csv_path in csv_files:
+        with open(csv_path, encoding="utf-8", errors="replace") as f:
+            reader = csv_module.DictReader(f)
+            for row in reader:
+                subject_id = str(row.get("subject_id", ""))
+
+                image_paths = _parse_stringified_list(row.get("image", "[]"))
+                text_augments = _parse_stringified_list(row.get("text_augment", "[]"))
+
+                # Build study_id → text_augment mapping (studies in order of first appearance)
+                study_ids_ordered: List[str] = []
+                seen: set = set()
+                for p in image_paths:
+                    sid = _extract_study_id(p)
+                    if sid and sid not in seen:
+                        study_ids_ordered.append(sid)
+                        seen.add(sid)
+
+                study_to_text: Dict[str, str] = {
+                    sid: (text_augments[i] if i < len(text_augments) else "")
+                    for i, sid in enumerate(study_ids_ordered)
+                }
+
+                for img_path_str in image_paths:
+                    full_path = img_root / img_path_str
+                    if not full_path.exists():
+                        continue
+
+                    sid = _extract_study_id(img_path_str)
+                    text_content = study_to_text.get(sid, "")
+
+                    base_item: Dict[str, Any] = {
+                        "modality": "image",
+                        "path": str(full_path),
+                        "filename": full_path.name,
+                        "text_content": text_content,
+                        "label_source": "mimicxr",
+                        "subject_id": subject_id,
+                        "study_id": sid,
+                    }
+
+                    ok, item, err = _load_image_item(full_path, base_item)
+                    if ok:
+                        # Ensure text_content survives _load_image_item (it modifies in place)
+                        item["text_content"] = text_content
+                    yield ok, item, err
+
+
+def _iter_multicare_dataset(
+    dataset_path: Path,
+) -> Generator[Tuple[bool, Dict[str, Any], Optional[str]], None, None]:
+    """
+    Load MultiCaRe clinical case reports from cases.parquet.
+
+    Columns used: article_id, case_id, case_text.
+    All labels are all-zeros (no pre-labelled PII attributes).
+    """
+    parquet_path = dataset_path / "cases.parquet"
+    try:
+        import pandas as pd
+        df = pd.read_parquet(str(parquet_path))
+    except ImportError:
+        yield False, {}, "pandas + pyarrow required for MultiCaRe. Install: pip install pandas pyarrow"
+        return
+    except Exception as e:
+        yield False, {}, f"MultiCaRe: failed to load cases.parquet: {e}"
+        return
+
+    for _, row in df.iterrows():
+        case_id = str(row.get("case_id", ""))
+        article_id = str(row.get("article_id", ""))
+        case_text = str(row.get("case_text") or "")
+
+        item: Dict[str, Any] = {
+            "modality": "text",
+            "path": str(parquet_path),
+            "filename": case_id,
+            "text_content": case_text,
+            "data": case_text,
+            "raw": {"case_id": case_id, "article_id": article_id},
+            "label_source": "multicare",
+            "article_id": article_id,
+            "case_id": case_id,
+        }
+        yield True, item, None
+
+
+def _iter_asapaes_dataset(
+    dataset_path: Path,
+) -> Generator[Tuple[bool, Dict[str, Any], Optional[str]], None, None]:
+    """
+    Load ASAP-AES student essays from TSV files.
+
+    Structure: <name>/asap-aes/training_set_rel3.tsv  (and valid_set.tsv)
+    Columns used: essay_id, essay_set, essay, domain1_score.
+    All labels are all-zeros (no pre-labelled PII attributes).
+    """
+    import csv as csv_module
+
+    tsv_files: List[Path] = []
+    for sub in sorted(dataset_path.iterdir()):
+        if sub.is_dir():
+            tsv_files.extend(sorted(sub.glob("*.tsv")))
+
+    # Prefer training set first
+    training = [f for f in tsv_files if "training" in f.name]
+    other = [f for f in tsv_files if "training" not in f.name]
+    ordered = training + other
+
+    if not ordered:
+        yield False, {}, "ASAP-AES: no TSV files found."
+        return
+
+    for tsv_path in ordered:
+        with open(tsv_path, encoding="utf-8", errors="replace") as f:
+            reader = csv_module.DictReader(f, delimiter="\t")
+            for row in reader:
+                essay_id = str(row.get("essay_id", ""))
+                essay_set = str(row.get("essay_set", ""))
+                essay = str(row.get("essay") or "").strip()
+                if not essay:
+                    continue
+                score = str(row.get("domain1_score") or "")
+
+                item: Dict[str, Any] = {
+                    "modality": "text",
+                    "path": str(tsv_path),
+                    "filename": f"essay_{essay_id}",
+                    "text_content": essay,
+                    "data": essay,
+                    "raw": dict(row),
+                    "label_source": "asap_aes",
+                    "essay_id": essay_id,
+                    "essay_set": essay_set,
+                    "domain1_score": score,
+                }
+                yield True, item, None
+
+
 def count_dataset_items(dataset_name: str, modality: str) -> int:
     """
     Return the total number of items in a dataset without loading all data.
@@ -634,6 +997,58 @@ def count_dataset_items(dataset_name: str, modality: str) -> int:
     dataset_path = get_dataset_path(dataset_name)
     if dataset_path is None:
         return 0
+
+    if _is_mimicxr_dataset(dataset_path):
+        import csv as _csv
+        for sub in dataset_path.iterdir():
+            if sub.is_dir() and (sub / "official_data_iccv_final").is_dir():
+                csv_files = sorted(sub.glob("*.csv"), key=lambda p: (0 if "train" in p.name else 1))
+                total = 0
+                for csv_path in csv_files:
+                    try:
+                        with open(csv_path, encoding="utf-8", errors="replace") as f:
+                            for row in _csv.DictReader(f):
+                                total += len(_parse_stringified_list(row.get("image", "[]")))
+                    except Exception:
+                        pass
+                return total
+        return 0
+
+    if _is_multicare_dataset(dataset_path):
+        try:
+            import pandas as _pd
+            return len(_pd.read_parquet(str(dataset_path / "cases.parquet")))
+        except Exception:
+            return 0
+
+    if _is_openpii_dataset(dataset_path):
+        total = 0
+        for sub in dataset_path.iterdir():
+            if not sub.is_dir():
+                continue
+            data_dir = sub / "data"
+            if data_dir.is_dir():
+                for split_dir in data_dir.iterdir():
+                    if split_dir.is_dir():
+                        for jf in split_dir.glob("*.jsonl"):
+                            try:
+                                total += sum(1 for line in open(jf, encoding="utf-8", errors="replace") if line.strip())
+                            except Exception:
+                                pass
+        return total
+
+    if _is_asapaes_dataset(dataset_path):
+        import csv as _csv
+        total = 0
+        for sub in dataset_path.iterdir():
+            if sub.is_dir():
+                for tsv_path in sub.glob("*.tsv"):
+                    try:
+                        with open(tsv_path, encoding="utf-8", errors="replace") as f:
+                            total += sum(1 for _ in _csv.DictReader(f, delimiter="\t"))
+                    except Exception:
+                        pass
+        return total
 
     if _is_hf_dataset(dataset_path):
         total = 0
@@ -692,7 +1107,15 @@ def iter_dataset(
         return
 
     count = 0
-    if _is_hf_dataset(dataset_path):
+    if _is_mimicxr_dataset(dataset_path):
+        source = _iter_mimicxr_dataset(dataset_path)
+    elif _is_multicare_dataset(dataset_path):
+        source = _iter_multicare_dataset(dataset_path)
+    elif _is_openpii_dataset(dataset_path):
+        source = _iter_openpii_dataset(dataset_path)
+    elif _is_asapaes_dataset(dataset_path):
+        source = _iter_asapaes_dataset(dataset_path)
+    elif _is_hf_dataset(dataset_path):
         source = _iter_hf_dataset(dataset_path)
     elif _is_sroie_dataset(dataset_path):
         source = _iter_sroie_dataset(dataset_path)
