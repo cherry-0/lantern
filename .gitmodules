@@ -58,3 +58,9 @@
 [submodule "target-apps/healyks"]
 	path = target-apps/healyks
 	url = https://github.com/Korags05/Healyks.git
+[submodule "target-apps/waico"]
+	path = target-apps/waico
+	url = https://github.com/sitatec/Waico.git
+[submodule "target-apps/SGPA"]
+	path = target-apps/SGPA
+	url = https://github.com/GPA95/SGPA.git

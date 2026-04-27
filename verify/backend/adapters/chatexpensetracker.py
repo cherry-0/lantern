@@ -65,18 +65,31 @@ Categories should be one of: Food, Transportation, Utilities, Entertainment, Sho
 Example: [{{"item": "groceries", "amount": 50, "category": "Food"}}]"""
 
 _DEFAULT_HOST = "http://localhost:8000"
+_SERVERLESS_MODEL = "google/gemini-2.0-flash-001"
 
 
 def _parse_items_from_llm(raw: str) -> List[Dict[str, Any]]:
     """Extract the JSON array from a raw LLM response string."""
     # Use greedy match to capture the full array including nested objects
     match = re.search(r"\[.*\]", raw, re.DOTALL)
-    if not match:
-        return []
-    try:
-        return json.loads(match.group())
-    except json.JSONDecodeError:
-        return []
+    if match:
+        try:
+            parsed = json.loads(match.group())
+            return parsed if isinstance(parsed, list) else []
+        except json.JSONDecodeError:
+            pass
+
+    # Some models wrap JSON in markdown or omit the surrounding array. Keep
+    # completed object literals instead of discarding the whole response.
+    items: List[Dict[str, Any]] = []
+    for object_match in re.finditer(r"\{[^{}]*\}", raw, re.DOTALL):
+        try:
+            item = json.loads(object_match.group())
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict):
+            items.append(item)
+    return items
 
 
 def _format_output(parsed: List[Dict[str, Any]], raw_entry: str) -> str:
@@ -90,6 +103,16 @@ def _format_output(parsed: List[Dict[str, Any]], raw_entry: str) -> str:
         category = item.get("category", "Other")
         lines.append(f"  {i}. {name} — {amount} ({category})")
     return "\n".join(lines)
+
+
+def _http_error_detail(exc: Exception) -> str:
+    """Return provider response details when requests raises an HTTPError."""
+    response = getattr(exc, "response", None)
+    if response is None:
+        return str(exc)
+    text = getattr(response, "text", "") or ""
+    detail = text[:1000].strip()
+    return f"{exc}; response={detail}" if detail else str(exc)
 
 
 class ChatExpenseTrackerAdapter(BaseAdapter):
@@ -114,6 +137,11 @@ class ChatExpenseTrackerAdapter(BaseAdapter):
 
     # ── Availability ──────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _has_serverless_fallback() -> bool:
+        api_key = get_openrouter_api_key()
+        return bool(api_key and not api_key.startswith("your_"))
+
     def check_availability(self) -> Tuple[bool, str]:
         if use_app_servers():
             try:
@@ -121,15 +149,24 @@ class ChatExpenseTrackerAdapter(BaseAdapter):
                 resp = requests.get(f"{self._host}/", timeout=5)
                 if resp.ok:
                     return True, f"[NATIVE] Server reachable at {self._host}"
+                if self._has_serverless_fallback():
+                    return True, (
+                        f"[NATIVE] Server returned {resp.status_code} at {self._host}; "
+                        "falling back to serverless OpenRouter."
+                    )
                 return False, f"[NATIVE] Server returned {resp.status_code} at {self._host}"
             except Exception as e:
+                if self._has_serverless_fallback():
+                    return True, (
+                        f"[NATIVE] Cannot reach server at {self._host}: {e}; "
+                        "falling back to serverless OpenRouter."
+                    )
                 return False, (
                     f"[NATIVE] Cannot reach server at {self._host}: {e}\n"
                     "Start with: cd target-apps/chat-driven-expense-tracker/backend && "
                     "uvicorn main:app --reload"
                 )
-        api_key = get_openrouter_api_key()
-        if api_key and not api_key.startswith("your_"):
+        if self._has_serverless_fallback():
             return True, "[SERVERLESS] Using OpenRouter to replicate Groq expense parsing."
         return False, "[SERVERLESS] No OPENROUTER_API_KEY configured."
 
@@ -149,7 +186,18 @@ class ChatExpenseTrackerAdapter(BaseAdapter):
             return AdapterResult(success=False, error="Empty text input.")
 
         if use_app_servers():
-            return self._run_native(entry)
+            native_result = self._run_native(entry)
+            if native_result.success or not self._has_serverless_fallback():
+                return native_result
+
+            fallback_result = self._run_serverless(entry)
+            fallback_result.metadata.update(
+                {
+                    "native_fallback_error": native_result.error,
+                    "native_host": self._host,
+                }
+            )
+            return fallback_result
         return self._run_serverless(entry)
 
     # ── NATIVE mode ───────────────────────────────────────────────────────────
@@ -236,7 +284,7 @@ class ChatExpenseTrackerAdapter(BaseAdapter):
         prompt = _PARSE_PROMPT.format(entry=entry)
 
         print(
-            f"[chat-expense-tracker] Calling OpenRouter (groq/llama3-8b-8192)  "
+            f"[chat-expense-tracker] Calling OpenRouter ({_SERVERLESS_MODEL})  "
             f"entry={entry[:80]!r}",
             file=sys.stderr, flush=True,
         )
@@ -244,10 +292,38 @@ class ChatExpenseTrackerAdapter(BaseAdapter):
         try:
             raw_response = self._call_openrouter(
                 prompt=prompt,
+                model=_SERVERLESS_MODEL,
                 max_tokens=512,
+                extra_body={"temperature": 0},
             )
-        except RuntimeError as e:
-            return AdapterResult(success=False, error=str(e))
+        except Exception as e:
+            error = _http_error_detail(e)
+            externalizations = self._build_serverless_externalizations(
+                realistic_fallback={
+                    "NETWORK": (
+                        f"[Groq API Fallback] attempted expense parse via OpenRouter — "
+                        f"model={_SERVERLESS_MODEL}, entry={(entry[:120])!r}, error={error}"
+                    ),
+                }
+            )
+            return AdapterResult(
+                success=True,
+                output_text=_format_output([], entry),
+                raw_output={"entry": entry, "llm_response": "", "parsed": [], "error": error},
+                structured_output={
+                    "raw_entry": entry,
+                    "parsed": [],
+                    "total_amount": 0,
+                    "categories": [],
+                    "status": "parse_failed",
+                },
+                externalizations=externalizations,
+                metadata={
+                    "method": "serverless_openrouter",
+                    "model": _SERVERLESS_MODEL,
+                    "provider_error": error,
+                },
+            )
 
         print(
             f"[chat-expense-tracker] Raw LLM response: {raw_response[:200]!r}",
@@ -301,5 +377,5 @@ class ChatExpenseTrackerAdapter(BaseAdapter):
             raw_output={"entry": entry, "llm_response": raw_response, "parsed": parsed},
             structured_output=structured,
             externalizations=externalizations,
-            metadata={"method": "serverless_openrouter", "model": "groq/llama3-8b-8192"},
+            metadata={"method": "serverless_openrouter", "model": _SERVERLESS_MODEL},
         )
