@@ -310,6 +310,11 @@ def get_channel_eval_entries(entry: Any) -> Dict[str, Dict[str, Any]]:
     }
 
 
+def is_nested_eval_entry(entry: Any) -> bool:
+    """Return True if entry has aggregate/channels structure (prompt3 binary OR prompt4 verdict)."""
+    return is_verdict_eval_entry(entry) or is_channelwise_eval_entry(entry)
+
+
 def entry_to_verdict(entry: Any) -> str:
     """Extract verdict string from any eval entry (binary flat/channelwise or verdict)."""
     agg = get_aggregate_eval_entry(entry)

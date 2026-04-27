@@ -52,3 +52,9 @@
 [submodule "target-apps/lira"]
 	path = target-apps/lira
 	url = https://github.com/bold-ronin/lira.git
+[submodule "target-apps/nutri-track"]
+	path = target-apps/nutri-track
+	url = https://github.com/Eryc123Y/NutriTrack.git
+[submodule "target-apps/healyks"]
+	path = target-apps/healyks
+	url = https://github.com/Korags05/Healyks.git
