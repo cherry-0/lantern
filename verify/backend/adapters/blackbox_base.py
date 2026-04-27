@@ -10,6 +10,8 @@ See analysis/verify_report_blackbox.md for architectural context.
 """
 from __future__ import annotations
 
+import importlib.util
+import shutil
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -75,6 +77,16 @@ class BlackBoxAdapter(BaseAdapter):
             return False, (
                 "[BLACKBOX] Requires USE_APP_SERVERS=true and an Android emulator. "
                 "Serverless fallback is not supported for closed-source adapters."
+            )
+        if importlib.util.find_spec("uiautomator2") is None:
+            return False, (
+                "[BLACKBOX] Missing Python package 'uiautomator2'. "
+                "Install native Android dependencies with: pip install -r verify/requirements.txt"
+            )
+        if not shutil.which("mitmdump"):
+            return False, (
+                "[BLACKBOX] Missing 'mitmdump'. "
+                "Install native Android dependencies with: pip install -r verify/requirements.txt"
             )
         return EmulatorManager.probe(self.config.avd_name)
 

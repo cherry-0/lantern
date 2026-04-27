@@ -346,14 +346,29 @@ class EmulatorManager:
             parts = line.split()
             if len(parts) == 2 and parts[1] == "device" and parts[0].startswith("emulator-"):
                 serial = parts[0]
-                # Match AVD name via emu command
-                name_res = subprocess.run(
-                    [adb, "-s", serial, "emu", "avd", "name"],
-                    capture_output=True, text=True, timeout=5,
-                )
-                if name_res.returncode == 0 and self.avd_name in name_res.stdout:
+                if self._serial_matches_avd(adb, serial):
                     return serial
         return None
+
+    def _serial_matches_avd(self, adb: str, serial: str) -> bool:
+        """Return True when an emulator serial belongs to this manager's AVD."""
+        prop_res = subprocess.run(
+            [adb, "-s", serial, "shell", "getprop", "ro.boot.qemu.avd_name"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if prop_res.returncode == 0 and prop_res.stdout.strip() == self.avd_name:
+            return True
+
+        # Fallback for emulator images that do not expose ro.boot.qemu.avd_name.
+        name_res = subprocess.run(
+            [adb, "-s", serial, "emu", "avd", "name"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return name_res.returncode == 0 and self.avd_name in name_res.stdout
 
     def _wait_for_device(self, timeout_s: int) -> Optional[str]:
         """Block until the emulator appears in adb devices and finishes booting."""
@@ -369,11 +384,7 @@ class EmulatorManager:
                 if len(parts) == 2 and parts[1] == "device" and parts[0].startswith("emulator-"):
                     # Prefer the one whose AVD matches
                     cand = parts[0]
-                    name_res = subprocess.run(
-                        [adb, "-s", cand, "emu", "avd", "name"],
-                        capture_output=True, text=True, timeout=5,
-                    )
-                    if name_res.returncode == 0 and self.avd_name in name_res.stdout:
+                    if self._serial_matches_avd(adb, cand):
                         serial = cand
                         break
             if serial:

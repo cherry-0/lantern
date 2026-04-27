@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -84,6 +85,33 @@ class AndroidDriver:
         if not el.wait(timeout=timeout):
             raise TimeoutError(f"Element not found within {timeout}s: {locator}")
         return (el.get_text() or "").strip()
+
+    def read_last(self, locator: Dict[str, Any]) -> str:
+        """
+        Return the text of the last matching node in the current hierarchy.
+
+        uiautomator2's indexed selectors are inconsistent across versions for
+        dynamic RecyclerView rows, so use the XML hierarchy as the stable path.
+        """
+        xml = self.dump_hierarchy()
+        root = ET.fromstring(xml)
+        matches = []
+        for node in root.iter("node"):
+            ok = True
+            for key, value in locator.items():
+                attr = {
+                    "resourceId": "resource-id",
+                    "className": "class",
+                    "contentDescription": "content-desc",
+                }.get(key, key)
+                if str(node.attrib.get(attr, "")) != str(value):
+                    ok = False
+                    break
+            if ok:
+                matches.append(node)
+        if not matches:
+            return ""
+        return (matches[-1].attrib.get("text") or "").strip()
 
     def wait_for(self, locator: Dict[str, Any], timeout: float = 30) -> bool:
         """Return True if `locator` resolves within `timeout`s, else False."""
