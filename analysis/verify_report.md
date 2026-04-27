@@ -527,6 +527,75 @@ Both the live `Perturb Input` page and the `View Results` page show externalizat
 
 ---
 
+### sgpa
+**Native (serverless equivalent):** SGPA is a Streamlit web app backed by Google Gemini 2.5 Flash; the UI is not automatable. Both `USE_APP_SERVERS=true` and `false` fall through to the OpenRouter serverless path replicating the Explainer workflow.
+
+**Serverless:** OpenRouter call with SGPA's Study Buddy system prompt using `google/gemini-2.5-flash`. Mirrors the Explainer mode: definition/analogy → step-by-step breakdown → misconceptions → Key Takeaways.
+
+**Externalizations:**
+- **NETWORK**: `generate_response()` → `google-generativeai` SDK → POST `generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent` with full user prompt on every inference.
+- **STORAGE**: `log_usage()` called from `components/chat_ui.py:105` after every response — appends a row to `logs/usage_log.csv` containing `session_id` (UUID), `mode`, `sub_mode`, `topic` (first 50 chars of prompt), `had_pdf`, `prompt_chars`, `response_chars`, `visuals_enabled`, `visuals_detected`, `visuals_used`.
+- **UI**: Full AI response rendered in Streamlit chat interface.
+
+**Output:** response (academic explanation text)
+
+**Modality:** text
+
+**Full analysis:** `analysis/sgpa.md`
+
+---
+
+### waico
+**Native (serverless equivalent):** Waico runs entirely on-device (Gemma 3n via MediaPipe LLM Inference, Flutter/Dart Android). No data ever leaves the device during inference; there are no server endpoints. Both `USE_APP_SERVERS=true` and `false` fall through to the OpenRouter serverless path replicating the Counselor agent.
+
+**Serverless:** OpenRouter call with Waico's Counselor system prompt (CBT/ACT/mindfulness-informed, empathetic wellbeing support) using the default OpenRouter model as a proxy for on-device Gemma 3n.
+
+**Externalizations:**
+- **STORAGE** (always, post-inference): `ConversationProcessor` runs three LLM passes after every conversation — saves `Conversation` (summary + clinical observations), `ConversationMemory` (episodic memories vectorised via Qwen3-Embedding-0.6B), and updated `User` profile to ObjectBox on-device DB.
+- **UI**: Response streamed token-by-token in the Counselor chat screen.
+- **NETWORK** (conditional, tool-triggered): `ReportTool` → `flutter_mailer` sends clinical wellbeing report to therapist/doctor email. `PhoneCallTool` → `flutter_phone_direct_caller` dials health professional directly.
+- **NETWORK** (one-time setup only): `background_downloader` fetches Gemma 3n `.task` + STT model from `huggingface.co/sitatech/waico-models` on first launch. Not a per-inference channel.
+
+**Output:** response (wellbeing/counseling text)
+
+**Modality:** text
+
+**Full analysis:** `analysis/waico.md`
+
+---
+
+## 6.1 Externalization Channel Summary (All Apps)
+
+| App | NETWORK | STORAGE | UI | Notes |
+|---|---|---|---|---|
+| clone | ✗ | ✅ ChatMessage + ChatSession (Django ORM / SQLite) | ✅ | |
+| snapdo | ✗ | ✗ | ✅ | No post-inference storage |
+| momentag | ✗ | ✗ | ✅ captions + tags | Local CLIP/BLIP inference |
+| xend | ✅ `googleapis.com` (Gmail send, 401 w/ dummy token) | ✗ | ✅ | |
+| budget-lens | ✅ exchange rate API | ✅ Expense (Django ORM) | ✅ | |
+| deeptutor | ✗ | ✗ | ✅ | |
+| llm-vtuber | ✅ `speech.platform.bing.com` (EdgeTTS) | ✗ | ✅ WebSocket push | |
+| skin-disease-detection | ✗ | ✗ | ✅ | Local TFLite inference |
+| google-ai-edge-gallery | ✗ | ✗ | ✅ | Local transformer inference |
+| pocketpal-ai | ✗ | ✅ WatermelonDB / SQLite (chat session) | ✅ | On-device GGUF; optional HuggingFace model download (one-time) |
+| oxproxion | ✅ OpenRouter (Ktor HTTP) | ✅ Room SQLite (conditional — when session saved) | ✅ | LOGGING via ADB logcat in native blackbox mode |
+| chat-driven-expense-tracker | ✅ OpenRouter / Gemini API | ✗ | ✅ | |
+| photomath | ✅ Photomath OCR + solve API (blackbox) | ✗ | ✅ | |
+| replika | ✅ Replika API (blackbox) | ✗ | ✅ | |
+| expensify | ✅ Expensify API (blackbox) | ✗ | ✅ | |
+| klyr | ✅ Gemini API (`gemini-2.5-flash`) | ✗ | ✅ | Retry call re-sends same data on JSON parse failure |
+| fiscal-flow | ✅ LLM API | ✗ | ✅ | |
+| spendsense | ✅ Vision / LLM API | ✗ | ✅ | |
+| edupal | ✅ LLM API | ✗ | ✅ | |
+| lira | ✅ LLM API | ✗ | ✅ | |
+| nutri-track | ✅ LLM API | ✗ | ✅ | |
+| healyks | ✅ Firebase backend + Gemini 2.0 Flash API | ✗ | ✅ | |
+| tool-neuron | ✅ OpenRouter (text + image gen) | ✗ | ✅ | |
+| **sgpa** | ✅ Gemini 2.5 Flash API | ✅ `logs/usage_log.csv` (topic snippet + session UUID) | ✅ | |
+| **waico** | ✅ Tool-triggered only: email (`flutter_mailer`), phone call (`flutter_phone_direct_caller`) | ✅ ObjectBox: Conversation + ConversationMemory (RAG embeddings) + User profile | ✅ | No automatic per-inference network calls; on-device Gemma 3n |
+
+---
+
 ## 7. How to Add a New App
 
 ### Step 1: Create the adapter

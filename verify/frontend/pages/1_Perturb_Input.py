@@ -125,6 +125,8 @@ KNOWN_APPS = [
     "lira",
     "nutri-track",
     "healyks",
+    "sgpa",
+    "waico",
 ]
 MODALITIES = ["image", "text", "video"]
 

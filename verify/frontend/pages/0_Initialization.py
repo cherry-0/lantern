@@ -30,6 +30,10 @@ _APP_DEFAULT_MODES = {
     "edupal": "serverless",
     "spendsense": "serverless",
     "fiscalflow": "serverless",
+    # Streamlit web app — not automatable natively
+    "sgpa": "serverless",
+    # Flutter/Dart on-device app — no server endpoints
+    "waico": "serverless",
 }
 
 

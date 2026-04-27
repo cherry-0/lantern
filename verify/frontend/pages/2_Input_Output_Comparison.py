@@ -57,6 +57,8 @@ KNOWN_APPS = [
     "lira",
     "nutri-track",
     "healyks",
+    "sgpa",
+    "waico",
 ]
 
 STAGE_INPUT = "Input"
