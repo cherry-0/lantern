@@ -18,7 +18,7 @@ BACKEND_DIR = VERIFY_ROOT / "backend"
 DATASET_DIR = BACKEND_DIR / "datasets"
 OUTPUTS_DIR = VERIFY_ROOT / "outputs"
 TARGET_APPS_DIR = LANTERN_ROOT / "target-apps"
-EVAL_PROMPT_CHOICES = ("prompt1", "prompt2", "prompt3", "prompt4")
+EVAL_PROMPT_CHOICES = ("prompt1", "prompt2", "prompt3", "prompt4", "prompt5")
 DEFAULT_COLOR_PALETTE: Dict[str, Dict[str, str]] = {
     "verdict": {
         "confirmed leakage": "#f96d36",
@@ -175,6 +175,7 @@ def get_default_eval_prompt() -> str:
       1. VERIFY_EVAL_PROMPT
       2. EVAL_PROMPT
       3. prompt4
+      4. prompt5
     """
     raw = get_env("VERIFY_EVAL_PROMPT") or get_env("EVAL_PROMPT") or "prompt4"
     value = raw.strip().lower()

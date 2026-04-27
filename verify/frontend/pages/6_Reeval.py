@@ -282,7 +282,8 @@ def main() -> None:
                 "prompt1: binary inferability. "
                 "prompt2: binary inferability + prediction. "
                 "prompt3: aggregate externalized result + per-channel threat. "
-                "prompt4: prompt3 reasoning with confirmed/possible/no-evidence leakage verdicts."
+                "prompt4: prompt3 reasoning with confirmed/possible/no-evidence leakage verdicts. "
+                "prompt5: prompt4 plus prediction."
             ),
         )
 
@@ -485,6 +486,8 @@ def main() -> None:
                     cmd.append("--prompt3")
                 elif prompt_mode == "prompt4":
                     cmd.append("--prompt4")
+                elif prompt_mode == "prompt5":
+                    cmd.append("--prompt5")
                 if verbose:  cmd.append("--verbose")
                 if dry_run:  cmd.append("--dry-run")
                 rs.update({"running": True, "log": [f"$ {' '.join(cmd)}", ""],

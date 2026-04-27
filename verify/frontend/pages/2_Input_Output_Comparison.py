@@ -232,6 +232,7 @@ def run_comparison_pipeline(
         evaluate_inferability_v2,
         evaluate_inferability_v3,
         evaluate_inferability_v4,
+        evaluate_inferability_v5,
     )
     from verify.backend.utils import cache as cache_module
 
@@ -240,6 +241,7 @@ def run_comparison_pipeline(
         "prompt2": evaluate_inferability_v2,
         "prompt3": evaluate_inferability_v3,
         "prompt4": evaluate_inferability_v4,
+        "prompt5": evaluate_inferability_v5,
     }.get(eval_prompt, evaluate_inferability)
 
     adapter = get_adapter(app_name)

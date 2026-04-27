@@ -642,7 +642,7 @@ def _render_item(
         st.markdown("**Stage-wise attribute presence**")
         st.caption(
             "Externalized stage uses the aggregate externalized result."
-            if eval_prompt in ("prompt3", "prompt4")
+            if eval_prompt in ("prompt3", "prompt4", "prompt5")
             else "Externalized stage uses the stored ext_eval result."
         )
 

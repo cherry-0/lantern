@@ -255,7 +255,8 @@ def _profile_table(
     if not has_predictions:
         st.caption(
             "ℹ️ No MCQ predictions found — run `python verify/reeval.py --model <model> "
-            "--prompt2 --dataset SynthPAI` to populate the `prediction` field."
+            "--prompt2 --dataset SynthPAI` or `--prompt5 --dataset SynthPAI` "
+            "to populate the `prediction` field."
         )
 
     st.markdown(
@@ -357,6 +358,8 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
                 help=(
                     "Populated after running:\n"
                     "python verify/reeval.py --model <model> --prompt2 --dataset SynthPAI\n"
+                    "or\n"
+                    "python verify/reeval.py --model <model> --prompt5 --dataset SynthPAI\n"
                     "Shows '—' until predictions are available."
                 ),
             )

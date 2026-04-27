@@ -263,7 +263,8 @@ def main() -> None:
             help=(
                 "Applies to IOC externalization evaluation only. "
                 "Raw output stays on prompt1 so existing stage views remain stable. "
-                "prompt4 uses confirmed/possible/no-evidence leakage verdicts."
+                "prompt4 uses confirmed/possible/no-evidence leakage verdicts. "
+                "prompt5 also includes prediction."
             ),
         )
         use_cache = st.toggle("Use cache", value=True, disabled=running)

@@ -8,6 +8,10 @@ pandas>=2.0.0
 PyYAML>=6.0.0
 datasets>=2.0.0
 
+# Native Android / black-box app pipelines
+uiautomator2>=3.2.0
+mitmproxy>=10.0.0
+
 # Optional: needed for video support
 # opencv-python>=4.8.0
 

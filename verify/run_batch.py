@@ -351,8 +351,11 @@ def _select_ioc_ext_eval_fn(eval_prompt: str):
         evaluate_inferability_v2,
         evaluate_inferability_v3,
         evaluate_inferability_v4,
+        evaluate_inferability_v5,
     )
 
+    if eval_prompt == "prompt5":
+        return evaluate_inferability_v5
     if eval_prompt == "prompt4":
         return evaluate_inferability_v4
     if eval_prompt == "prompt3":
@@ -852,7 +855,8 @@ def main() -> None:
         default=get_default_eval_prompt(),
         help=(
             "IOC externalization evaluation prompt "
-            "(prompt1=binary, prompt2=prediction, prompt3=channel-wise aggregate, prompt4=3-way verdict)"
+            "(prompt1=binary, prompt2=prediction, prompt3=channel-wise aggregate, "
+            "prompt4=3-way verdict, prompt5=3-way verdict + prediction)"
         ),
     )
     args = parser.parse_args()
