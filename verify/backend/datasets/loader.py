@@ -9,6 +9,7 @@ import base64
 import functools
 import json
 import random
+import threading
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional, Tuple
@@ -22,6 +23,7 @@ VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
 
 # Number of frames to sample from a video
 VIDEO_FRAME_COUNT = 4
+_HF_LOAD_LOCK = threading.Lock()
 
 
 # HR-VISPR 18-class label names (index → attribute)
@@ -733,13 +735,27 @@ def _iter_hf_dataset(
 ) -> Generator[Tuple[bool, Dict[str, Any], Optional[str]], None, None]:
     """Load a HuggingFace dataset saved to disk and yield one item per row."""
     try:
-        from datasets import load_from_disk  # type: ignore
+        from datasets import disable_progress_bars, load_from_disk  # type: ignore
     except ImportError:
         yield False, {}, "The 'datasets' library is required. Install with: pip install datasets"
         return
 
     try:
-        ds_dict = load_from_disk(str(dataset_path))
+        with _HF_LOAD_LOCK:
+            try:
+                disable_progress_bars()
+            except Exception:
+                pass
+            try:
+                from tqdm import tqdm as _tqdm_cls
+
+                # Some tqdm versions initialize this lazily. HuggingFace datasets
+                # can touch it during load_from_disk from worker threads.
+                if not hasattr(_tqdm_cls, "_lock"):
+                    _tqdm_cls.set_lock(threading.RLock())
+            except Exception:
+                pass
+            ds_dict = load_from_disk(str(dataset_path))
     except Exception as e:
         yield False, {}, f"Failed to load HuggingFace dataset from {dataset_path}: {e}"
         return
