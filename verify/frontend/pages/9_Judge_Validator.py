@@ -2,7 +2,7 @@
 Judge Validator — evaluate the LLM-based privacy leakage evaluator against
 ground-truth labels from SynthPAI, HR-VISPR, and OpenPII.
 
-For each (content, attribute) sample the existing evaluate_inferability_v4
+For each (content, attribute) sample the existing evaluate_inferability_v5
 evaluator is used as the judge.  Its 3-way verdict is compared against the
 dataset's binary ground-truth label to produce precision, coverage, ambiguity,
 and recall metrics.
@@ -15,6 +15,7 @@ import json
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -31,7 +32,7 @@ from verify.backend.evaluation_method.evaluator import (
     VERDICT_CONFIRMED,
     VERDICT_NO_EVIDENCE,
     VERDICT_POSSIBLE,
-    evaluate_inferability_v4,
+    evaluate_inferability_v5,
     get_aggregate_eval_entry,
 )
 from verify.backend.judge.data_loader import (
@@ -56,6 +57,8 @@ from verify.backend.utils.config import get_openrouter_api_key, load_color_palet
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 _CACHE_DIR  = VERIFY_ROOT / "outputs" / "judge_validation_cache"
+_RUNS_DIR   = VERIFY_ROOT / "outputs" / "judge_validation_runs"
+_EVALUATOR_VERSION = "v5"
 _PALETTE    = load_color_palette()
 _VERDICT_COLORS = {
     LABEL_CONFIRMED: _PALETTE["verdict"][VERDICT_CONFIRMED],
@@ -69,7 +72,7 @@ _DIFFICULTY_ORDER = ["explicit", "implicit", "none"]
 # ── Caching helpers ───────────────────────────────────────────────────────────
 
 def _cache_key(sample_id: str, model: str) -> str:
-    raw = f"{sample_id}||{model}"
+    raw = f"{sample_id}||{model}||{_EVALUATOR_VERSION}"
     return hashlib.md5(raw.encode()).hexdigest()
 
 
@@ -97,6 +100,21 @@ def _save_cached(sample_id: str, model: str, result: Dict[str, Any]) -> None:
         pass
 
 
+def _save_run_results(results: List[Dict[str, Any]], run_info: Dict[str, Any]) -> Optional[Path]:
+    """Persist a completed judge-validation run so the viewer page can reload it."""
+    try:
+        _RUNS_DIR.mkdir(parents=True, exist_ok=True)
+        run_id = datetime.now().strftime("judge_validation_%Y%m%d_%H%M%S_%f")
+        run_dir = _RUNS_DIR / run_id
+        run_dir.mkdir(parents=True, exist_ok=False)
+        saved_info = {**run_info, "run_dir": str(run_dir)}
+        (run_dir / "results.json").write_text(json.dumps(results, ensure_ascii=False, indent=2))
+        (run_dir / "run_info.json").write_text(json.dumps(saved_info, ensure_ascii=False, indent=2))
+        return run_dir
+    except Exception:
+        return None
+
+
 # ── Judge call (wraps evaluator) ──────────────────────────────────────────────
 
 def _judge_sample(
@@ -105,7 +123,7 @@ def _judge_sample(
     api_key: Optional[str],
 ) -> Dict[str, Any]:
     """
-    Run evaluate_inferability_v4 on a single sample and return a result dict.
+    Run evaluate_inferability_v5 on a single sample and return a result dict.
 
     For text samples the text_content is passed directly.
     For image samples (HR-VISPR) the base64 image is embedded in a descriptor
@@ -124,12 +142,12 @@ def _judge_sample(
     if img_b64:
         # For image samples: embed the image as a data URI in the text so that
         # vision-capable models (e.g. Gemini) can process it via the standard
-        # text prompt path used by evaluate_inferability_v4.
+        # text prompt path used by evaluate_inferability_v5.
         output_text = f"[IMAGE DATA URI]\ndata:image/jpeg;base64,{img_b64}"
     else:
         output_text = text
 
-    ok, results, error = evaluate_inferability_v4(
+    ok, results, error = evaluate_inferability_v5(
         output_text, [attr], api_key=api_key, model=model
     )
 
@@ -138,6 +156,7 @@ def _judge_sample(
             "label":       LABEL_NONE,
             "confidence":  0.0,
             "explanation": error or "Evaluation failed.",
+            "prediction":  None,
             "judge_ok":    False,
             "judge_error": error,
         }
@@ -148,6 +167,7 @@ def _judge_sample(
             "label":       normalise_verdict(verdict),
             "confidence":  agg.get("score", 0) / 2.0,   # score is 0/1/2 → 0/0.5/1.0
             "explanation": agg.get("reasoning", ""),
+            "prediction":  agg.get("prediction"),
             "judge_ok":    True,
             "judge_error": None,
         }
@@ -317,6 +337,9 @@ def _render_sample_viewer(results: List[Dict[str, Any]]) -> None:
                 )
                 st.markdown("**Explanation:**")
                 st.caption(r.get("explanation") or "—")
+                if r.get("prediction"):
+                    st.markdown("**Prediction:**")
+                    st.caption(str(r.get("prediction")))
                 if not r.get("judge_ok"):
                     st.error(f"Judge error: {r.get('judge_error')}")
 
@@ -380,6 +403,7 @@ def _export_button(results: List[Dict[str, Any]]) -> None:
             "ground_truth": r["ground_truth"],
             "label":        r.get("label", ""),
             "confidence":   r.get("confidence", ""),
+            "prediction":   r.get("prediction", ""),
             "explanation":  r.get("explanation", ""),
             "judge_ok":     r.get("judge_ok", False),
             "from_cache":   r.get("from_cache", False),
@@ -510,13 +534,19 @@ def main() -> None:
         elapsed = time.time() - t0
 
         pbar.empty()
-        st.session_state["jv_results"]   = results
-        st.session_state["jv_run_info"]  = {
+        run_info = {
             "datasets": selected_datasets,
             "n_samples": len(results),
             "model":     model,
             "elapsed":   elapsed,
+            "evaluator": _EVALUATOR_VERSION,
         }
+        run_dir = _save_run_results(results, run_info)
+        if run_dir is not None:
+            run_info["run_dir"] = str(run_dir)
+
+        st.session_state["jv_results"]   = results
+        st.session_state["jv_run_info"]  = run_info
         st.rerun()
 
     # ── Display results ───────────────────────────────────────────────────────
