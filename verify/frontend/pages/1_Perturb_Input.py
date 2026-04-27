@@ -116,6 +116,15 @@ KNOWN_APPS = [
     "photomath",
     "replika",
     "expensify",
+    "pocketpal-ai",
+    "oxproxion",
+    "klyr",
+    "fiscal-flow",
+    "spendsense",
+    "edupal",
+    "lira",
+    "nutri-track",
+    "healyks",
 ]
 MODALITIES = ["image", "text", "video"]
 
@@ -655,7 +664,7 @@ def main():
 
     config = _load_config()
     datasets = config["datasets"]
-    all_apps = config["apps"]
+    all_apps = list(dict.fromkeys([*config["apps"], *KNOWN_APPS]))
     perturbation_map = config["perturbation_map"]
 
     # Keep a stable ordering for historically prominent apps, but still expose
@@ -869,15 +878,13 @@ def main():
         rc = st.session_state.run_config
         processed = st.session_state.items_processed
         total = st.session_state.items_total
+        in_mod = rc.get("modality", "?")
+        out_mod = rc.get("output_modality", "") or rc.get("generation_task", "") or in_mod
+        workflow = f"{in_mod}->{out_mod}"
 
         st.markdown(
             f"**{rc.get('app')}** &nbsp;·&nbsp; {rc.get('dataset')} &nbsp;·&nbsp; "
-            f"{rc.get('modality')}"
-            + (
-                f" &nbsp;·&nbsp; task=`{rc.get('generation_task')}`"
-                if rc.get("app") == "tool-neuron" and rc.get("modality") == "text"
-                else ""
-            )
+            f"`{workflow}`"
             + f" &nbsp;·&nbsp; `{'`, `'.join(rc.get('attributes', []))}`"
         )
 
@@ -914,18 +921,22 @@ def main():
             )
 
             if stale:
+                last_in_mod = last_cfg.get("modality", "?")
+                last_out_mod = last_cfg.get("output_modality", "") or last_cfg.get("generation_task", "") or last_in_mod
                 st.info(
                     f"Results below are from a previous run "
                     f"(**{last_cfg.get('app', '?')}** / {last_cfg.get('dataset', '?')} "
-                    f"/ {last_cfg.get('modality', '?')}). "
+                    f"/ {last_in_mod}->{last_out_mod}). "
                     "Click **▶ Verify** to run with the current configuration."
                 )
             else:
                 n = len(st.session_state.results)
                 rc = st.session_state.run_config
+                in_mod = rc.get("modality", "")
+                out_mod = rc.get("output_modality", "") or rc.get("generation_task", "") or in_mod
                 st.subheader(
                     f"Results — {rc.get('app', '')} / {rc.get('dataset', '')} "
-                    f"/ {rc.get('modality', '')} ({n} item{'s' if n != 1 else ''})"
+                    f"/ {in_mod}->{out_mod} ({n} item{'s' if n != 1 else ''})"
                 )
 
                 for result in st.session_state.results:

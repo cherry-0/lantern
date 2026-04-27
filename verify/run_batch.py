@@ -46,13 +46,15 @@ for _p in (str(_LANTERN_ROOT), str(_VERIFY_ROOT)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+from verify.backend.utils.config import EVAL_PROMPT_CHOICES, get_default_eval_prompt
+
 # ── Attribute loading from config files ──────────────────────────────────────
 
 _CONFIG_DIR = _VERIFY_ROOT / "config"
 
 # Cache so each file is only read once
 _ATTR_CACHE: Dict[str, List[str]] = {}
-_EVAL_PROMPT_CHOICES = ("prompt1", "prompt2", "prompt3")
+_EVAL_PROMPT_CHOICES = EVAL_PROMPT_CHOICES
 
 
 def _load_attrs_for_modality(modality: str) -> List[str]:
@@ -327,10 +329,12 @@ def _row_tag(row: Dict[str, str], mode: str) -> str:
     input_modality = row.get("input_modality", "") or row.get("modality", "")
     output_modality = row.get("output_modality", "") or row.get("generation_task", "") or "text"
 
-    # Include modality info in tag for different input/output combinations
-    if input_modality != output_modality:
-        return f"{mode}/{app_name}/{dataset_name}/{input_modality}-to-{output_modality}"
-    return f"{mode}/{app_name}/{dataset_name}"
+    workflow = (
+        f"{input_modality}->{output_modality}"
+        if input_modality and output_modality
+        else input_modality or output_modality
+    )
+    return f"{mode}/{app_name}/{dataset_name}/{workflow}"
 
 
 def _ioc_cache_eval_method(eval_prompt: str, output_modality: str = "text") -> str:
@@ -346,8 +350,11 @@ def _select_ioc_ext_eval_fn(eval_prompt: str):
         evaluate_inferability,
         evaluate_inferability_v2,
         evaluate_inferability_v3,
+        evaluate_inferability_v4,
     )
 
+    if eval_prompt == "prompt4":
+        return evaluate_inferability_v4
     if eval_prompt == "prompt3":
         return evaluate_inferability_v3
     if eval_prompt == "prompt2":
@@ -363,7 +370,7 @@ def _run_ioc(
     max_items: Optional[int],
     use_cache: bool,
     item_workers: int = 1,
-    eval_prompt: str = "prompt1",
+    eval_prompt: str = get_default_eval_prompt(),
 ) -> Dict[str, Any]:
     """
     Headless IOC pipeline matching run_comparison_pipeline() in
@@ -842,10 +849,10 @@ def main() -> None:
     parser.add_argument(
         "--eval-prompt",
         choices=_EVAL_PROMPT_CHOICES,
-        default="prompt1",
+        default=get_default_eval_prompt(),
         help=(
             "IOC externalization evaluation prompt "
-            "(prompt1=binary, prompt2=prediction, prompt3=channel-wise aggregate)"
+            "(prompt1=binary, prompt2=prediction, prompt3=channel-wise aggregate, prompt4=3-way verdict)"
         ),
     )
     args = parser.parse_args()
@@ -885,9 +892,15 @@ def main() -> None:
             attrs = _load_attrs_for_modality(row.get("modality", ""))
             method = row.get("perturbation_method") or "(config default)"
             row_max = row.get("max_items") or args.max_items or "all"
-            generation_task = row.get("generation_task", "") or "text"
+            input_modality = row.get("input_modality", "") or row.get("modality", "")
+            output_modality = row.get("output_modality", "") or row.get("generation_task", "") or "text"
+            workflow = (
+                f"{input_modality}->{output_modality}"
+                if input_modality and output_modality
+                else input_modality or output_modality
+            )
             print(f"  {mode_label}  {row['app_name']:<30s}  {row['dataset_name']:<12s}"
-                  f"  {row['modality']:<6s}  task={generation_task:<5s}  method={method}  items={row_max}")
+                  f"  {workflow:<12s}  method={method}  items={row_max}")
             if fn is _run_ioc:
                 print(f"            ext_eval_prompt: {args.eval_prompt}  (raw_output=prompt1)")
             if fn is _run_perturb:
@@ -902,8 +915,16 @@ def main() -> None:
     has_text = any(r.get("modality") == "text" for r in rows)
     if has_text:
         try:
-            import tqdm  # noqa: F401
+            import threading as _threading
+            from tqdm import tqdm as _tqdm_cls
+
+            if not hasattr(_tqdm_cls, "_lock"):
+                _tqdm_cls.set_lock(_threading.RLock())
             import datasets as _ds  # noqa: F401
+            try:
+                _ds.disable_progress_bars()
+            except Exception:
+                pass
         except ImportError:
             pass
 

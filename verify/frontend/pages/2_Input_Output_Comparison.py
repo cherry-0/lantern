@@ -28,7 +28,7 @@ from verify.backend.evaluation_method.evaluator import (
     entry_to_verdict,
     get_aggregate_eval_entry,
     get_channel_eval_entries,
-    is_channelwise_eval_entry,
+    is_nested_eval_entry,
     verdict_to_icon,
 )
 from verify.backend.utils.config import (
@@ -55,6 +55,8 @@ KNOWN_APPS = [
     "spendsense",
     "edupal",
     "lira",
+    "nutri-track",
+    "healyks",
 ]
 
 STAGE_INPUT = "Input"
@@ -261,6 +263,8 @@ def run_comparison_pipeline(
                 "app_name": app_name,
                 "dataset_name": dataset_name,
                 "modality": modality,
+                "input_modality": modality,
+                "output_modality": generation_task,
                 "generation_task": generation_task,
                 "unified_attrs": unified_attrs,
                 "perturbation_method": "ioc_comparison",
@@ -499,7 +503,7 @@ def _stage_table(
 
 
 def _has_prompt3_channel_data(ext_eval: Dict[str, Any]) -> bool:
-    return any(is_channelwise_eval_entry(entry) for entry in ext_eval.values())
+    return any(is_nested_eval_entry(entry) for entry in ext_eval.values())
 
 
 def _render_attribute_heatmap(
@@ -834,7 +838,7 @@ def _reasoning_expander(
                         f'{icon} <span style="font-size:0.9em"><b>{attr}</b></span>',
                         unsafe_allow_html=True,
                     )
-                    if is_channelwise_eval_entry(entry):
+                    if is_nested_eval_entry(entry):
                         st.caption(f"Aggregate: {reason}")
                         channels = get_channel_eval_entries(entry)
                         for channel, channel_entry in channels.items():
@@ -992,7 +996,7 @@ def main():
     config = _load_config()
     unified_attrs = _load_unified_attrs()
     datasets = config["datasets"]
-    all_apps = config["apps"]
+    all_apps = list(dict.fromkeys([*config["apps"], *KNOWN_APPS]))
 
     recognized_apps = [a for a in all_apps if a in KNOWN_APPS]
     other_apps = [a for a in all_apps if a not in KNOWN_APPS]
@@ -1206,7 +1210,7 @@ def main():
 
         in_mod = rc.get('modality', '?')
         out_mod = rc.get('output_modality', '') or rc.get('generation_task', '') or in_mod
-        mod_display = f"{in_mod}->{out_mod}" if in_mod != out_mod else in_mod
+        mod_display = f"{in_mod}->{out_mod}"
         st.markdown(
             f"**{rc.get('app')}** · {rc.get('dataset')} · `{mod_display}`"
         )

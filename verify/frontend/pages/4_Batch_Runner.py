@@ -11,7 +11,6 @@ import csv
 import html as _html
 import re
 import signal
-import io
 import subprocess
 import sys
 import threading
@@ -79,63 +78,6 @@ def _row_identity(row: Dict[str, str]) -> Tuple[str, str, str, str, str]:
         row.get("dataset_name", "").strip(),
         row.get("perturbation_method", "").strip(),
     )
-
-
-def _render_csv_row(row: Dict[str, str]) -> str:
-    buf = io.StringIO()
-    writer = csv.DictWriter(buf, fieldnames=_CSV_FIELDNAMES, extrasaction="ignore", lineterminator="\n")
-    writer.writerow({name: row.get(name, "") for name in _CSV_FIELDNAMES})
-    return buf.getvalue()
-
-
-def _merge_temp_into_batch_config(temp_path: Path, batch_path: Path) -> None:
-    """Merge edited temp rows back into the persistent batch config."""
-    updated_rows = _load_csv_rows(temp_path)
-    if not updated_rows or not batch_path.exists():
-        return
-
-    updated_by_key = {_row_identity(row): row for row in updated_rows}
-    original_lines = batch_path.read_text().splitlines(keepends=True)
-    merged_lines: List[str] = []
-    seen_keys = set()
-    header_seen = False
-
-    for line in original_lines:
-        stripped = line.strip()
-        if not header_seen:
-            merged_lines.append(line if line.endswith("\n") else line + "\n")
-            header_seen = True
-            continue
-        if not stripped or line.lstrip().startswith("#"):
-            merged_lines.append(line if line.endswith("\n") else line + "\n")
-            continue
-
-        try:
-            values = next(csv.reader([line]))
-        except Exception:
-            merged_lines.append(line if line.endswith("\n") else line + "\n")
-            continue
-
-        row = {
-            name: (values[idx].strip() if idx < len(values) else "")
-            for idx, name in enumerate(_CSV_FIELDNAMES)
-        }
-        key = _row_identity(row)
-        replacement = updated_by_key.get(key)
-        if replacement is not None:
-            merged_lines.append(_render_csv_row(replacement))
-            seen_keys.add(key)
-        else:
-            merged_lines.append(line if line.endswith("\n") else line + "\n")
-
-    missing_rows = [row for key, row in updated_by_key.items() if key not in seen_keys]
-    if missing_rows:
-        if merged_lines and not merged_lines[-1].endswith("\n"):
-            merged_lines[-1] += "\n"
-        for row in missing_rows:
-            merged_lines.append(_render_csv_row(row))
-
-    batch_path.write_text("".join(merged_lines))
 
 
 def _stable_unique(values: List[str]) -> List[str]:
@@ -222,7 +164,7 @@ def _parse_progress_line(line: str, progress: Dict) -> None:
 
 # ── Background subprocess ─────────────────────────────────────────────────────
 
-def _run_subprocess(cmd: List[str], temp_csv: Path, batch_csv: Path, state: Dict) -> None:
+def _run_subprocess(cmd: List[str], temp_csv: Path, state: Dict) -> None:
     """Daemon thread: execute cmd and stream stdout into the shared state dict.
 
     Writes only to `state` (a plain dict held in session_state) — never
@@ -251,10 +193,6 @@ def _run_subprocess(cmd: List[str], temp_csv: Path, batch_csv: Path, state: Dict
         state["running"]        = False
         state["just_finished"]  = True   # triggers one extra rerun to flush final log
         try:
-            _merge_temp_into_batch_config(temp_csv, batch_csv)
-        except Exception as exc:
-            state["log"].append(f"[RUNNER WARN] Failed to sync {temp_csv.name} into {batch_csv.name}: {exc}")
-        try:
             temp_csv.unlink(missing_ok=True)
         except Exception:
             pass
@@ -267,6 +205,15 @@ def main() -> None:
     st.markdown("Select configs from `batch_config.csv` and run the batch evaluation pipeline.")
 
     all_rows = _load_csv_rows(_BATCH_CONFIG)
+    config_signature = (
+        str(_BATCH_CONFIG.stat().st_mtime_ns) if _BATCH_CONFIG.exists() else "missing",
+        tuple(_row_identity(row) for row in all_rows),
+    )
+    if st.session_state.get("batch_config_signature") != config_signature:
+        for key in list(st.session_state.keys()):
+            if str(key).startswith("batch_row_"):
+                st.session_state.pop(key, None)
+        st.session_state["batch_config_signature"] = config_signature
 
     if not all_rows:
         st.error(
@@ -401,7 +348,7 @@ def main() -> None:
         })
 
         for in_mod, out_mod in app_modality_combos:
-            mod_display = f"{in_mod}→{out_mod}" if in_mod != out_mod else in_mod
+            mod_display = f"{in_mod}->{out_mod}"
             row_cols = st.columns([1.4] + [1.8] * len(datasets))
             row_cols[0].markdown(
                 f'<div class="batch-app-cell">{_html.escape(app_name or "—")}</div>\n'
@@ -515,11 +462,9 @@ def main() -> None:
                         else [mode])
         for task_mode in modes_to_run:
             for row in selected_rows:
-                generation_task = row.get("generation_task", "") or "text"
-                if row["app_name"] == "tool-neuron" and row["modality"] == "text":
-                    tag = f"{task_mode}/{row['app_name']}/{row['dataset_name']}/{generation_task}"
-                else:
-                    tag = f"{task_mode}/{row['app_name']}/{row['dataset_name']}"
+                input_modality = row.get("input_modality") or row.get("modality", "")
+                generation_task = row.get("output_modality") or row.get("generation_task", "") or "text"
+                tag = f"{task_mode}/{row['app_name']}/{row['dataset_name']}/{input_modality}->{generation_task}"
                 row_max_str = row.get("max_items", "")
                 total: Optional[int] = (
                     int(row_max_str) if row_max_str
@@ -544,8 +489,8 @@ def main() -> None:
                     "cached":   0,
                     "app":      row["app_name"],
                     "dataset":  row["dataset_name"],
-                    "modality": row["modality"],
-                    "generation_task": row.get("generation_task", "") or "text",
+                    "modality": input_modality,
+                    "generation_task": generation_task,
                     "mode":     task_mode,
                 }
 
@@ -557,7 +502,7 @@ def main() -> None:
 
         threading.Thread(
             target=_run_subprocess,
-            args=(cmd, _TEMP_CONFIG, _BATCH_CONFIG, bs),
+            args=(cmd, _TEMP_CONFIG, bs),
             daemon=True,
         ).start()
         st.rerun()
@@ -574,7 +519,9 @@ def main() -> None:
             total   = p["total"]
             app     = p["app"]
             dataset = p["dataset"]
+            input_modality = p.get("modality", "")
             generation_task = p.get("generation_task", "text")
+            workflow = f"{input_modality}->{generation_task}" if input_modality else generation_task
             mode_lbl = "IOC" if p["mode"] == "ioc" else "Perturb"
 
             if status == "pending":
@@ -588,12 +535,7 @@ def main() -> None:
 
             label_md = (
                 f"{status_icon} &nbsp; **[{mode_lbl}]** &nbsp; "
-                f"`{app}` / `{dataset}`"
-                + (
-                    f" &nbsp; <span style='color:#777'>task={_html.escape(generation_task)}</span>"
-                    if app == "tool-neuron" and p.get("modality") == "text"
-                    else ""
-                )
+                f"`{app}` / `{dataset}` / `{_html.escape(workflow)}`"
             )
 
             if status == "pending":

@@ -883,6 +883,8 @@ def main():
     app_name = run_config.get("app_name", "unknown")
     dataset_name = run_config.get("dataset_name", "unknown")
     modality = run_config.get("modality", "image")
+    output_modality = run_config.get("output_modality") or run_config.get("generation_task") or modality
+    workflow = f"{modality}->{output_modality}"
     attributes = run_config.get("attributes", [])
     pert_method = run_config.get("perturbation_method", "")
     started_at = run_config.get("started_at", "")
@@ -893,7 +895,7 @@ def main():
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("App", app_name)
     c2.metric("Dataset", dataset_name)
-    c3.metric("Modality", modality)
+    c3.metric("Workflow", workflow)
     c4.metric("Items", len(items))
 
     info_cols = st.columns(3)
@@ -980,7 +982,7 @@ def main():
     # ── Per-item results ───────────────────────────────────────────────────
     st.divider()
     n = len(items)
-    st.subheader(f"Results — {app_name} / {dataset_name} / {modality} ({n} item{'s' if n != 1 else ''})")
+    st.subheader(f"Results — {app_name} / {dataset_name} / {workflow} ({n} item{'s' if n != 1 else ''})")
 
     cache_dir_path = _get_cache_dir_for_run(run_config)
     for idx, result in enumerate(items):

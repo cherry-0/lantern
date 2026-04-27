@@ -555,12 +555,90 @@ def _aggregate_section(items: List[Dict[str, Any]], unified_attrs: List[str]):
 
 # ── Directory discovery ───────────────────────────────────────────────────────
 
+_IOC_ITEM_KEYS = {"ext_eval", "input_labels", "ext_text", "output_eval_ok"}
+
+
+def _workflow_from_config(cfg: Dict[str, Any]) -> Tuple[str, str, str]:
+    input_modality = str(cfg.get("input_modality") or cfg.get("modality") or "?")
+    output_modality = str(cfg.get("output_modality") or cfg.get("generation_task") or "text")
+    workflow = (
+        f"{input_modality}->{output_modality}"
+        if input_modality and output_modality
+        else input_modality or output_modality or "?"
+    )
+    return input_modality, output_modality, workflow
+
+
+def _sniff_ioc_item(run_dir: Path) -> Optional[Dict[str, Any]]:
+    """Return the first item JSON that looks like an IOC result item."""
+    for f in sorted(run_dir.iterdir()):
+        if f.suffix != ".json" or f.name in ("run_config.json", "dir_summary.json"):
+            continue
+        try:
+            item = json.loads(f.read_text())
+        except Exception:
+            continue
+        if _IOC_ITEM_KEYS.issubset(item.keys()):
+            return item
+    return None
+
+
+def _is_synthpai_text_ioc_dir(run_dir: Path, cfg: Dict[str, Any]) -> bool:
+    """Accept modern run_config metadata and older caches discoverable by item schema."""
+    sample = _sniff_ioc_item(run_dir)
+    if sample is None:
+        return False
+
+    dataset_name = cfg.get("dataset_name") or sample.get("dataset_name")
+    if dataset_name is None:
+        input_item = sample.get("input_item", {})
+        if isinstance(input_item, dict):
+            dataset_name = input_item.get("dataset_name") or input_item.get("dataset")
+
+    modality = cfg.get("modality") or sample.get("modality")
+    is_ioc = (
+        cfg.get("perturbation_method") == "ioc_comparison"
+        or _IOC_ITEM_KEYS.issubset(sample.keys())
+    )
+    return dataset_name == "SynthPAI" and modality == "text" and is_ioc
+
+
 @st.cache_data(ttl=30)
 def _list_synthpai_ioc_dirs() -> List[Tuple[str, str, str, str]]:
     """
-    Scan verify/outputs/ for SynthPAI + text + ioc_comparison runs.
+    Scan verify/outputs/ for SynthPAI + text + IOC runs.
     Returns list of (dir_path_str, app_name, dir_name, label).
     """
+    outputs_root = LANTERN_ROOT / "verify" / "outputs"
+    if not outputs_root.exists():
+        return []
+
+    found = []
+    for d in outputs_root.iterdir():
+        if not d.is_dir():
+            continue
+        cfg_path = d / "run_config.json"
+        cfg: Dict[str, Any] = {}
+        try:
+            if cfg_path.exists():
+                cfg = json.loads(cfg_path.read_text())
+        except Exception:
+            cfg = {}
+        if _is_synthpai_text_ioc_dir(d, cfg):
+            app   = cfg.get("app_name", "unknown")
+            if app == "unknown":
+                sample = _sniff_ioc_item(d) or {}
+                app = sample.get("app_name") or sample.get("app") or "unknown"
+            _, _, workflow = _workflow_from_config(cfg)
+            label = f"{app} / {workflow}  [{d.name}]"
+            found.append((str(d), app, d.name, label))
+
+    return sorted(found, key=lambda x: x[2], reverse=True)
+
+
+@st.cache_data(ttl=30)
+def _list_synthpai_non_ioc_dirs() -> List[Tuple[str, str, str]]:
+    """Return SynthPAI text dirs that exist but are not IOC result dirs."""
     outputs_root = LANTERN_ROOT / "verify" / "outputs"
     if not outputs_root.exists():
         return []
@@ -579,13 +657,14 @@ def _list_synthpai_ioc_dirs() -> List[Tuple[str, str, str, str]]:
         if (
             cfg.get("dataset_name") == "SynthPAI"
             and cfg.get("modality") == "text"
-            and cfg.get("perturbation_method") == "ioc_comparison"
+            and cfg.get("perturbation_method") != "ioc_comparison"
         ):
-            app   = cfg.get("app_name", "unknown")
-            label = f"{app}  [{d.name}]"
-            found.append((str(d), app, d.name, label))
-
-    return sorted(found, key=lambda x: x[2], reverse=True)
+            found.append((
+                d.name,
+                cfg.get("app_name", "unknown"),
+                cfg.get("perturbation_method", "unknown"),
+            ))
+    return sorted(found, key=lambda x: x[0], reverse=True)
 
 
 def _load_items(dir_path: str) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
@@ -630,10 +709,19 @@ def main():
         st.header("Select Run")
 
         if not available:
+            non_ioc = _list_synthpai_non_ioc_dirs()
             st.warning(
                 "No SynthPAI + text + IOC runs found in `verify/outputs/`.\n\n"
                 "Run the **Input / Output Comparison** page with the SynthPAI dataset first."
             )
+            if non_ioc:
+                st.info(
+                    f"Found {len(non_ioc)} SynthPAI text run(s), but they are not IOC results. "
+                    "Their `run_config.json` uses another `perturbation_method`, usually "
+                    "`PrivacyLens-Prompt` from Perturb Input runs."
+                )
+                for dir_name, app, method in non_ioc[:10]:
+                    st.caption(f"- `{dir_name}` — {app}, `{method}`")
             return
 
         # App filter
@@ -684,7 +772,7 @@ def main():
 
     app_name      = cfg.get("app_name", "unknown")
     dataset_name  = cfg.get("dataset_name", "SynthPAI")
-    modality      = cfg.get("modality", "text")
+    _, _, workflow = _workflow_from_config(cfg)
     unified_attrs = cfg.get("unified_attrs", [])
     if not unified_attrs and items:
         for item in items:
@@ -697,7 +785,7 @@ def main():
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("App",      app_name)
     c2.metric("Dataset",  dataset_name)
-    c3.metric("Modality", modality)
+    c3.metric("Workflow", workflow)
     c4.metric("Items",    len(items))
     if dirstr:
         st.caption(f"Cache: `{Path(dirstr).name}`")

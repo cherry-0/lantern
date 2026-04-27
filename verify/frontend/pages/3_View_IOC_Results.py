@@ -29,7 +29,7 @@ from verify.backend.evaluation_method.evaluator import (
     entry_to_verdict,
     get_aggregate_eval_entry,
     get_channel_eval_entries,
-    is_channelwise_eval_entry,
+    is_nested_eval_entry,
     verdict_to_icon,
 )
 from verify.backend.utils.config import load_color_palette
@@ -188,7 +188,7 @@ def _stage_table(
 
 
 def _has_prompt3_channel_data(ext_eval: Dict[str, Any]) -> bool:
-    return any(is_channelwise_eval_entry(entry) for entry in ext_eval.values())
+    return any(is_nested_eval_entry(entry) for entry in ext_eval.values())
 
 
 def _render_attribute_heatmap(
@@ -519,7 +519,7 @@ def _reasoning_expander(
                     reason = agg.get("reasoning", "—")
                     st.markdown(f'{icon} <span style="font-size:0.9em"><b>{attr}</b></span>',
                                 unsafe_allow_html=True)
-                    if is_channelwise_eval_entry(entry):
+                    if is_nested_eval_entry(entry):
                         st.caption(f"Aggregate: {reason}")
                         channels = get_channel_eval_entries(entry)
                         for channel, channel_entry in channels.items():
@@ -705,6 +705,21 @@ def _render_aggregated(all_results: List[Dict[str, Any]], unified_attrs: List[st
 _IOC_ITEM_KEYS = {"ext_eval", "input_labels", "ext_text", "output_eval_ok"}
 
 
+def _workflow_from_config(cfg: dict) -> tuple[str, str, str]:
+    input_modality = str(cfg.get("input_modality") or cfg.get("modality") or "?")
+    output_modality = str(
+        cfg.get("output_modality")
+        or cfg.get("generation_task")
+        or ("text" if input_modality != "text" else "text")
+    )
+    workflow = (
+        f"{input_modality}->{output_modality}"
+        if input_modality and output_modality
+        else input_modality or output_modality or "?"
+    )
+    return input_modality, output_modality, workflow
+
+
 def _sniff_ioc_item(cache_dir: Path) -> Optional[dict]:
     """
     Read the first item JSON in cache_dir and return it if it looks like an IOC
@@ -846,9 +861,9 @@ def main():
             def _label(cache_dir: Path, cfg: dict) -> str:
                 app      = cfg.get("app_name", "?")
                 dataset  = cfg.get("dataset_name", "?")
-                modality = cfg.get("modality", "?")
+                _, _, workflow = _workflow_from_config(cfg)
                 eval_prompt = cfg.get("eval_prompt", "prompt1")
-                return f"{app} / {dataset} / {modality} / {eval_prompt}  [{cache_dir.name}]"
+                return f"{app} / {dataset} / {workflow} / {eval_prompt}  [{cache_dir.name}]"
 
             options = {_label(d, c): (d, c) for d, c in available}
             selected_label = st.selectbox(
@@ -886,7 +901,7 @@ def main():
 
     app_name      = run_config.get("app_name", "unknown")
     dataset_name  = run_config.get("dataset_name", "unknown")
-    modality      = run_config.get("modality", "image")
+    input_modality, output_modality, workflow = _workflow_from_config(run_config)
     eval_prompt   = run_config.get("eval_prompt", "prompt1")
     unified_attrs = run_config.get("unified_attrs", [])
 
@@ -904,7 +919,7 @@ def main():
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("App",      app_name)
     c2.metric("Dataset",  dataset_name)
-    c3.metric("Modality", modality)
+    c3.metric("Workflow", workflow)
     c4.metric("Prompt",   eval_prompt)
     c5.metric("Items",    len(items))
     if unified_attrs:
@@ -930,7 +945,7 @@ def main():
     st.divider()
     n = len(items)
     st.subheader(
-        f"Results — {app_name} / {dataset_name} / {modality} / {eval_prompt} "
+        f"Results — {app_name} / {dataset_name} / {workflow} / {eval_prompt} "
         f"({n} item{'s' if n != 1 else ''})"
     )
     cache_dir_path = Path(cache_dir_str) if cache_dir_str else None

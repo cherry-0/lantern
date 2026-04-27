@@ -63,7 +63,7 @@ def _group_label(c: Dict) -> str:
     prompt_label = c.get("eval_prompt") or "-"
     in_mod = c.get("input_modality", "") or c.get("modality", "?")
     out_mod = c.get("output_modality", "") or c.get("modality", "?")
-    mod_display = f"{in_mod}->{out_mod}" if in_mod != out_mod else in_mod
+    mod_display = f"{in_mod}->{out_mod}"
     return (
         f"{c['app_name']} / {c['dataset_name']} / {mod_display} "
         f"[{mode_label}] / {prompt_label}"
@@ -302,14 +302,14 @@ def _build_table(
     mode: str,          # "ioc" or "perturb"
 ) -> pd.DataFrame:
     """
-    Return an (app, input_modality, output_modality) × dataset DataFrame with cell strings:
+    Return an (app, workflow) × dataset DataFrame with cell strings:
       "M / N"              — M successful items out of N total
       "M / N (S stale)"    — S items have outdated ext_eval scores
       "—"                  — combo not in batch config
     Failed items are excluded from M.
     
-    Rows are indexed by (app, input_modality, output_modality) to separate different
-    modality combinations (e.g., image->text vs text->text for the same app).
+    Rows are indexed by (app, workflow) to separate different modality
+    combinations (e.g., image->text vs text->text for the same app).
     """
     # (app, input_modality, output_modality, dataset) tuples from batch config
     combo_keys = {
@@ -350,10 +350,11 @@ def _build_table(
                 cache_lookup[key] = (success, max(stale, existing[1]), merged_counts)
 
     # Build DataFrame with MultiIndex for rows
-    data: Dict[Tuple[str, str, str], Dict[str, str]] = {}
+    data: Dict[Tuple[str, str], Dict[str, str]] = {}
     for row_id in row_ids:
         app, in_mod, out_mod = row_id
-        row: Dict[str, str] = {"input_modality": in_mod, "output_modality": out_mod}
+        workflow = f"{in_mod}->{out_mod}" if in_mod and out_mod else in_mod or out_mod
+        row: Dict[str, str] = {}
         for dataset in datasets:
             combo_key = (app, in_mod, out_mod, dataset)
             if combo_key not in combo_keys:
@@ -373,10 +374,10 @@ def _build_table(
                 if version_parts:
                     cell += " [" + ", ".join(version_parts) + "]"
                 row[dataset] = cell
-        data[row_id] = row
+        data[(app, workflow)] = row
 
     df = pd.DataFrame.from_dict(data, orient="index")
-    df.index.names = ["app", "input_modality", "output_modality"]
+    df.index.names = ["app", "workflow"]
     return df
 
 

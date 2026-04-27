@@ -15,6 +15,9 @@ Add --prompt3 to use the channel-wise threat prompt (prompt3.yaml), which
 evaluates each attribute for the full aggregate externalized result and for
 each individual labeled channel separately.
 
+Add --prompt4 to use the prompt3 channel-wise structure with 3-way leakage
+verdicts: confirmed leakage, possible leakage, or no evidence.
+
 Usage:
     python verify/reeval.py --init                              # stamp defaults
     python verify/reeval.py --model google/gemini-2.5-pro       # re-eval all
@@ -23,11 +26,12 @@ Usage:
     python verify/reeval.py --model MODEL --dataset PrivacyLens # filter by dataset
     python verify/reeval.py --model MODEL --prompt2             # MCQ prompt (adds prediction field)
     python verify/reeval.py --model MODEL --prompt3             # channel-wise + aggregate threat
+    python verify/reeval.py --model MODEL --prompt4             # 3-way leakage verdicts
     python verify/reeval.py --dry-run --model MODEL             # preview only
     python verify/reeval.py --dry-run --init                    # preview init
 
 --init and --model are mutually exclusive.
---prompt2 / --prompt3 only apply to --model mode (ignored with --init).
+--prompt1 / --prompt2 / --prompt3 / --prompt4 only apply to --model mode (ignored with --init).
 """
 from __future__ import annotations
 
@@ -58,7 +62,9 @@ from verify.backend.evaluation_method.evaluator import (
     evaluate_inferability,
     evaluate_inferability_v2,
     evaluate_inferability_v3,
+    evaluate_inferability_v4,
 )
+from verify.backend.utils.config import get_default_eval_prompt
 
 
 # ── Shared helpers ─────────────────────────────────────────────────────────────
@@ -205,6 +211,7 @@ def _reeval_one(
     dry_run: bool,
     prompt_v2: bool = False,
     prompt_v3: bool = False,
+    prompt_v4: bool = False,
 ) -> Tuple[str, Optional[str]]:
     """
     Re-evaluate a single item with *model*.
@@ -234,7 +241,9 @@ def _reeval_one(
     if dry_run:
         return "success", None   # would evaluate
 
-    if prompt_v3:
+    if prompt_v4:
+        _eval_fn = evaluate_inferability_v4
+    elif prompt_v3:
         _eval_fn = evaluate_inferability_v3
     elif prompt_v2:
         _eval_fn = evaluate_inferability_v2
@@ -246,7 +255,7 @@ def _reeval_one(
     item["ext_eval_ok"]     = ok
     item["ext_eval_error"]  = err
     item["eval_model"]      = model
-    item["eval_prompt"]     = "prompt3" if prompt_v3 else ("prompt2" if prompt_v2 else "prompt1")
+    item["eval_prompt"]     = "prompt4" if prompt_v4 else ("prompt3" if prompt_v3 else ("prompt2" if prompt_v2 else "prompt1"))
     item["ext_eval_stale"]  = False
 
     try:
@@ -267,6 +276,7 @@ def _process_dir_reeval(
     show_progress: bool,
     prompt_v2: bool = False,
     prompt_v3: bool = False,
+    prompt_v4: bool = False,
 ) -> Optional[Dict]:
     cfg = _read_cfg(d)
     if cfg is None:
@@ -292,6 +302,7 @@ def _process_dir_reeval(
                 dry_run=dry_run,
                 prompt_v2=prompt_v2,
                 prompt_v3=prompt_v3,
+                prompt_v4=prompt_v4,
             ))
     else:
         with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -303,6 +314,7 @@ def _process_dir_reeval(
                     dry_run=False,
                     prompt_v2=prompt_v2,
                     prompt_v3=prompt_v3,
+                    prompt_v4=prompt_v4,
                 ): f
                 for f in files
             }
@@ -314,11 +326,11 @@ def _process_dir_reeval(
                 _tally(*fut.result())
 
     if not dry_run:
-        _patch_summary(d, model, "prompt3" if prompt_v3 else ("prompt2" if prompt_v2 else "prompt1"))
+        _patch_summary(d, model, "prompt4" if prompt_v4 else ("prompt3" if prompt_v3 else ("prompt2" if prompt_v2 else "prompt1")))
 
     if verbose:
         mode   = cfg.get("perturbation_method") or "ioc"
-        prompt = "prompt3" if prompt_v3 else ("prompt2" if prompt_v2 else "prompt1")
+        prompt = "prompt4" if prompt_v4 else ("prompt3" if prompt_v3 else ("prompt2" if prompt_v2 else "prompt1"))
         _tqdm_write(
             f"  [{mode:>14s}]  {tag:<45s}  [{prompt}]  "
             f"success={counts['success']:3d}  failed={counts['failed']:3d}  "
@@ -328,7 +340,7 @@ def _process_dir_reeval(
         "dir": str(d), "app": app, "dataset": dataset,
         "cfg": cfg,
         "model": model,
-        "prompt": "prompt3" if prompt_v3 else ("prompt2" if prompt_v2 else "prompt1"),
+        "prompt": "prompt4" if prompt_v4 else ("prompt3" if prompt_v3 else ("prompt2" if prompt_v2 else "prompt1")),
         **counts,
     }
 
@@ -344,6 +356,7 @@ def _process_dir(
     workers: int = 1,
     prompt_v2: bool = False,
     prompt_v3: bool = False,
+    prompt_v4: bool = False,
 ) -> Optional[Dict]:
     """Dispatch one directory through init or re-eval mode."""
     if init_mode:
@@ -364,6 +377,7 @@ def _process_dir(
         show_progress=show_progress,
         prompt_v2=prompt_v2,
         prompt_v3=prompt_v3,
+        prompt_v4=prompt_v4,
     )
 
 
@@ -402,6 +416,13 @@ def main() -> None:
     )
     prompt_group = parser.add_mutually_exclusive_group()
     prompt_group.add_argument(
+        "--prompt1", action="store_true",
+        help=(
+            "Use the binary evaluation prompt (prompt1.yaml). "
+            "Only applies with --model; ignored with --init."
+        ),
+    )
+    prompt_group.add_argument(
         "--prompt2", action="store_true",
         help=(
             "Use the MCQ evaluation prompt (prompt2.yaml). "
@@ -414,6 +435,14 @@ def main() -> None:
         help=(
             "Use the channel-wise evaluation prompt (prompt3.yaml). "
             "Adds aggregate + per-channel threat results to each attribute in ext_eval. "
+            "Only applies with --model; ignored with --init."
+        ),
+    )
+    prompt_group.add_argument(
+        "--prompt4", action="store_true",
+        help=(
+            "Use the 3-way leakage verdict prompt (prompt4.yaml). "
+            "Adds aggregate + per-channel confirmed/possible/no-evidence verdicts. "
             "Only applies with --model; ignored with --init."
         ),
     )
@@ -475,9 +504,12 @@ def main() -> None:
         dirs = filtered
 
     # ── Header ────────────────────────────────────────────────────────────────
-    prompt_v2  = bool(args.prompt2) and not args.init
-    prompt_v3  = bool(args.prompt3) and not args.init
-    prompt_name = "prompt3" if prompt_v3 else ("prompt2" if prompt_v2 else "prompt1")
+    explicit_prompt = bool(args.prompt1 or args.prompt2 or args.prompt3 or args.prompt4)
+    default_prompt = "prompt1" if explicit_prompt else get_default_eval_prompt()
+    prompt_v2  = bool(args.prompt2 or default_prompt == "prompt2") and not args.init
+    prompt_v3  = bool(args.prompt3 or default_prompt == "prompt3") and not args.init
+    prompt_v4  = bool(args.prompt4 or default_prompt == "prompt4") and not args.init
+    prompt_name = "prompt4" if prompt_v4 else ("prompt3" if prompt_v3 else ("prompt2" if prompt_v2 else "prompt1"))
     prompt_tag = f"  prompt={prompt_name}" if not args.init and prompt_name != "prompt1" else ""
     mode_label = "INIT" if args.init else f"REEVAL  model={args.model}{prompt_tag}"
     if args.dry_run:
@@ -508,6 +540,7 @@ def main() -> None:
                 workers=args.workers,
                 prompt_v2=prompt_v2,
                 prompt_v3=prompt_v3,
+                prompt_v4=prompt_v4,
             )
             if r is not None:
                 results.append(r)
@@ -525,6 +558,7 @@ def main() -> None:
                     workers=args.workers,
                     prompt_v2=prompt_v2,
                     prompt_v3=prompt_v3,
+                    prompt_v4=prompt_v4,
                 ): d
                 for d in dirs
             }
