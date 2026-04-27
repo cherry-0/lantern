@@ -44,6 +44,7 @@ pg = st.navigation(
         _page("pages/5_Experiment_Progress.py", title="Experiment Progress", icon="📋"),
         _page("pages/6_Reeval.py", title="Re-evaluate", icon="🔄"),
         _page("pages/7_Eval_Validation.py", title="Evaluation Validation", icon="🎯"),
+        _page("pages/8_Config_Setter.py", title="Config setter", icon="⚙️"),
     ],
     # default=_init_page,
 )
