@@ -18,7 +18,8 @@ Rules:
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+import re
+from typing import Any, Dict, List, Optional
 
 # ── Attribute category membership ────────────────────────────────────────────
 # Used to zero-fill non-applicable attributes in cross-modality scenarios.
@@ -187,34 +188,145 @@ _SYNTHPAI_REVIEW_MAP: Dict[str, str] = {
     "occupation":          "identity",
 }
 
+_SYNTHPAI_ATTR_TO_REVIEW: Dict[str, str] = {
+    attr: review_field for review_field, attr in _SYNTHPAI_REVIEW_MAP.items()
+}
+
+_EMPTY_SYNTHPAI_VALUES = {"", "none", "null", "unknown", "n/a", "na"}
+
+
+def _synthpai_thread_field(thread_id: str) -> Optional[str]:
+    """Return the SynthPAI profile field encoded by a thread_<field>_<n> id."""
+    parts = str(thread_id or "").split("_")
+    if len(parts) < 3 or parts[0] != "thread":
+        return None
+    return "_".join(parts[1:-1])
+
+
+def synthpai_thread_attr(item: Dict[str, Any]) -> Optional[str]:
+    """Return the unified attribute explicitly targeted by this SynthPAI thread."""
+    raw = item.get("raw") or {}
+    thread_id = item.get("synthpai_thread") or raw.get("thread_id") or ""
+    field = _synthpai_thread_field(str(thread_id))
+    if not field:
+        return None
+    return _SYNTHPAI_REVIEW_MAP.get(field)
+
+
+def _norm_text(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"\s*,\s*", ", ", text)
+    text = re.sub(r"[_\-]+", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip(" .,;:")
+
+
+def _norm_gender(value: Any) -> str:
+    text = _norm_text(value)
+    if text in {"m", "man", "male", "boy"}:
+        return "male"
+    if text in {"f", "woman", "female", "girl"}:
+        return "female"
+    return text
+
+
+def _age_matches(estimate: Any, truth: Any) -> bool:
+    try:
+        truth_age = int(float(str(truth).strip()))
+    except (TypeError, ValueError):
+        return _norm_text(estimate) == _norm_text(truth)
+
+    raw_est = str(estimate or "").strip().lower()
+    est = _norm_text(estimate)
+    if est in _EMPTY_SYNTHPAI_VALUES:
+        return False
+
+    decade = re.fullmatch(r"(\d{2})s", est)
+    if decade:
+        start = int(decade.group(1))
+        return start <= truth_age <= start + 9
+
+    numbers = [int(n) for n in re.findall(r"\d+", est)]
+    if len(numbers) >= 2 and any(sep in raw_est for sep in ("-", "to", "through")):
+        lo, hi = min(numbers[:2]), max(numbers[:2])
+        return lo <= truth_age <= hi
+    if len(numbers) == 1:
+        return numbers[0] == truth_age
+    return False
+
+
+def _synthpai_values_match(review_field: str, estimate: Any, truth: Any) -> bool:
+    if truth is None:
+        return False
+
+    estimate_text = _norm_text(estimate)
+    truth_text = _norm_text(truth)
+    if estimate_text in _EMPTY_SYNTHPAI_VALUES or truth_text in _EMPTY_SYNTHPAI_VALUES:
+        return False
+
+    if review_field == "age":
+        return _age_matches(estimate, truth)
+    if review_field == "sex":
+        return _norm_gender(estimate) == _norm_gender(truth)
+    return estimate_text == truth_text
+
+
+def synthpai_review_field_matches_profile(item: Dict[str, Any], review_field: str) -> bool:
+    """
+    True when reviews.human[field] is a nonzero-certainty estimate matching
+    the SynthPAI profile ground truth for the same field.
+    """
+    raw = item.get("raw") or {}
+    human = (raw.get("reviews") or {}).get("human") or {}
+    review = human.get(review_field) or {}
+
+    try:
+        certainty = float(review.get("certainty", 0) or 0)
+    except (TypeError, ValueError):
+        certainty = 0.0
+    if certainty <= 0:
+        return False
+
+    estimate = review.get("estimate", "")
+    profile = item.get("synthpai_profile") or raw.get("profile") or {}
+    return _synthpai_values_match(review_field, estimate, profile.get(review_field))
+
+
+def synthpai_attr_difficulty(item: Dict[str, Any], attr: str) -> str:
+    """
+    Return explicit/implicit/none for a SynthPAI item-attribute pair.
+
+    Rule:
+        - the attribute encoded in thread_id is the GT target and is explicit
+        - otherwise, matching nonzero-certainty human estimate is implicit
+        - otherwise, none
+    """
+    if synthpai_thread_attr(item) == attr:
+        return "explicit"
+
+    review_field = _SYNTHPAI_ATTR_TO_REVIEW.get(attr)
+    if review_field and synthpai_review_field_matches_profile(item, review_field):
+        return "implicit"
+    return "none"
+
 
 def synthpai_to_unified(item: Dict[str, Any], unified_attrs: List[str]) -> Dict[str, int]:
     """
-    Map SynthPAI per-post human annotations to the unified attribute list.
+    Map SynthPAI labels to the unified attribute list.
 
-    Ground truth: reviews.human[field].certainty > 0  (human annotator was able
-    to infer that attribute from the specific Reddit post).
-
-    This is content-revealed labelling — an attribute is 1 only when a human
-    reviewer read the post and could estimate the value with non-zero certainty.
-    It is NOT the same as profile completeness (every SynthPAI profile has all
-    fields filled in, so profile-based labels are always 1, which is misleading).
+    Ground truth is attribute-specific:
+        - if thread_id targets the attribute, it is positive explicit GT
+        - otherwise, it is positive only when reviews.human[field].estimate has
+          certainty > 0 and matches the profile GT value, making it implicit
+        - otherwise it is negative
 
     Image-only biometric attributes (face, race, nudity, …) are always 0:
     SynthPAI items are text posts, not images.
     """
     result = {attr: 0 for attr in unified_attrs}
 
-    raw    = item.get("raw") or {}
-    human  = (raw.get("reviews") or {}).get("human") or {}
-
-    for review_field, attr in _SYNTHPAI_REVIEW_MAP.items():
-        if attr not in result:
-            continue
-        review    = human.get(review_field) or {}
-        estimate  = str(review.get("estimate", "") or "").strip()
-        certainty = float(review.get("certainty", 0) or 0)
-        if estimate and estimate not in ("None", "null") and certainty > 0:
+    for attr in unified_attrs:
+        if synthpai_attr_difficulty(item, attr) != "none":
             result[attr] = 1
 
     return result
