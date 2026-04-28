@@ -17,6 +17,7 @@ Each returned sample dict:
 from __future__ import annotations
 
 import sys
+import importlib
 from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional, Tuple
 
@@ -25,10 +26,11 @@ if str(LANTERN_ROOT) not in sys.path:
     sys.path.insert(0, str(LANTERN_ROOT))
 
 from verify.backend.datasets.loader import iter_dataset, get_dataset_path
-from verify.backend.datasets.label_mapper import (
-    get_input_labels,
-    _SYNTHPAI_REVIEW_MAP,
-)
+from verify.backend.datasets import label_mapper as _label_mapper
+
+_label_mapper = importlib.reload(_label_mapper)
+get_input_labels = _label_mapper.get_input_labels
+_SYNTHPAI_REVIEW_MAP = _label_mapper._SYNTHPAI_REVIEW_MAP
 
 # ── Attribute sets per dataset ────────────────────────────────────────────────
 
@@ -48,36 +50,7 @@ DATASET_ATTRS: Dict[str, List[str]] = {
     "OpenPII":  OPENPII_ATTRS,
 }
 
-# SynthPAI thread segment → unified attribute (same direction as _SYNTHPAI_REVIEW_MAP)
-_THREAD_SEGMENT_TO_ATTR: Dict[str, str] = {
-    "age":                 "age",
-    "sex":                 "gender",
-    "city_country":        "location",
-    "relationship_status": "marital status",
-    "occupation":          "identity",
-}
-
-
 # ── Difficulty helpers ────────────────────────────────────────────────────────
-
-def _synthpai_difficulty(thread_id: str, attr: str, gt: int) -> str:
-    """
-    Derive difficulty label for a SynthPAI (post, attribute) pair.
-
-    Thread IDs have the form: thread_<field>_<n>
-    where <field> is a key in _THREAD_SEGMENT_TO_ATTR.
-    """
-    if gt == 0:
-        return "none"
-    # Strip leading "thread_" and trailing "_<n>"
-    parts = thread_id.split("_")
-    if len(parts) >= 3 and parts[0] == "thread":
-        segment = "_".join(parts[1:-1])
-        primary_attr = _THREAD_SEGMENT_TO_ATTR.get(segment)
-        if primary_attr == attr:
-            return "explicit"
-    return "implicit"
-
 
 def _hrvispr_difficulty(gt: int) -> str:
     return "explicit" if gt == 1 else "none"
@@ -100,12 +73,10 @@ def _synthpai_samples(
         text = item.get("text_content", "") or ""
         if not text.strip():
             continue
-        labels = get_input_labels(item, attrs)
-        thread = item.get("synthpai_thread", "")
         item_id = item.get("filename", f"sp_{count:05d}")
         for attr in attrs:
-            gt = labels.get(attr, 0)
-            difficulty = _synthpai_difficulty(thread, attr, gt)
+            difficulty = _label_mapper.synthpai_attr_difficulty(item, attr)
+            gt = 0 if difficulty == "none" else 1
             yield {
                 "id":           f"{item_id}__{attr}",
                 "dataset":      "SynthPAI",
