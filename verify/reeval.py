@@ -67,6 +67,7 @@ from verify.backend.evaluation_method.evaluator import (
     evaluate_inferability_v4,
     evaluate_inferability_v5,
 )
+from verify.backend.utils.cache import normalize_eval_prompt
 from verify.backend.utils.config import get_default_eval_prompt
 
 
@@ -156,34 +157,66 @@ def _prompt_name(
     return "prompt1"
 
 
+def _item_eval_prompt(item: Dict) -> str:
+    """Return an item's stored eval prompt, falling back to prompt1."""
+    return normalize_eval_prompt(item.get("eval_prompt")) or "prompt1"
+
+
+def _item_eval_model(item: Dict) -> str:
+    """Return an item's stored eval model, falling back to the current default."""
+    return str(item.get("eval_model") or EVAL_MODEL)
+
+
 # ── Init mode ─────────────────────────────────────────────────────────────────
 
-def _init_one(f: Path, *, dry_run: bool) -> str:
+def _init_one(f: Path, *, dry_run: bool) -> Tuple[str, Optional[str], Optional[str]]:
     """
     Stamp eval provenance on an item that has ext_eval but lacks it.
-    Returns: "labeled" | "already" | "no_eval" | "skipped" | "error"
+    Returns: (status, prompt, model)
+        status: "labeled" | "already" | "no_eval" | "skipped" | "error"
+        prompt: item-level eval_prompt if available, otherwise prompt1 for
+                evaluable items
     """
     try:
         item = json.loads(f.read_text())
     except Exception:
-        return "error"
+        return "error", None, None
     if item.get("status") != "success":
-        return "skipped"
+        return "skipped", None, None
     if not item.get("ext_eval"):
-        return "no_eval"
+        return "no_eval", None, None
+
+    item_prompt = _item_eval_prompt(item)
+    item_model = _item_eval_model(item)
     has_model = bool(item.get("eval_model"))
     has_prompt = bool(item.get("eval_prompt"))
     if has_model and has_prompt:
-        return "already"
+        return "already", item_prompt, item_model
     if dry_run:
-        return "labeled"   # would label — counted as labeled for dry-run reporting
-    item["eval_model"] = item.get("eval_model") or EVAL_MODEL
-    item["eval_prompt"] = item.get("eval_prompt") or "prompt1"
+        return "labeled", item_prompt, item_model   # would label — counted as labeled for dry-run reporting
+    item["eval_model"] = item.get("eval_model") or item_model
+    item["eval_prompt"] = item.get("eval_prompt") or item_prompt
     try:
         f.write_text(json.dumps(item, indent=2, default=str))
     except Exception:
-        return "error"
-    return "labeled"
+        return "error", item_prompt, item_model
+    return "labeled", item_prompt, item_model
+
+
+def _summary_prompt(prompts: Set[str]) -> str:
+    if not prompts:
+        return "prompt1"
+    if len(prompts) == 1:
+        return next(iter(prompts))
+    return "mixed"
+
+
+def _summary_model(models: Set[str]) -> str:
+    if not models:
+        return EVAL_MODEL
+    if len(models) == 1:
+        return next(iter(models))
+    return "mixed"
 
 
 def _process_dir_init(
@@ -204,13 +237,19 @@ def _process_dir_init(
     counts: Dict[str, int] = {
         "labeled": 0, "already": 0, "no_eval": 0, "skipped": 0, "error": 0,
     }
+    prompts: Set[str] = set()
+    models: Set[str] = set()
     it = _tqdm(files, desc=tag, unit="item", leave=False, disable=not show_progress)
     for f in it:
-        r = _init_one(f, dry_run=dry_run)
+        r, item_prompt, item_model = _init_one(f, dry_run=dry_run)
         counts[r] = counts.get(r, 0) + 1
+        if item_prompt:
+            prompts.add(item_prompt)
+        if item_model:
+            models.add(item_model)
 
-    if not dry_run and counts["labeled"] > 0:
-        _patch_summary(d, EVAL_MODEL, "prompt1")
+    if not dry_run and (counts["labeled"] > 0 or counts["already"] > 0):
+        _patch_summary(d, _summary_model(models), _summary_prompt(prompts))
 
     if verbose:
         mode = cfg.get("perturbation_method") or "ioc"
@@ -243,7 +282,7 @@ def _reeval_one(
     channel-wise inferability results per attribute.
 
     Returns: (status, error_or_None)
-    status: "success" | "failed" | "skipped" | "no_data" | "error"
+    status: "success" | "failed" | "cached" | "skipped" | "no_data" | "error"
     """
     try:
         item = json.loads(f.read_text())
@@ -258,6 +297,16 @@ def _reeval_one(
 
     if not ext_text.strip() or not attrs:
         return "no_data", None
+
+    target_prompt = _prompt_name(prompt_v2, prompt_v3, prompt_v4, prompt_v5)
+    if (
+        item.get("eval_model") == model
+        and item.get("eval_prompt") == target_prompt
+        and item.get("ext_eval")
+        and item.get("ext_eval_ok") is True
+        and not item.get("ext_eval_stale", False)
+    ):
+        return "cached", None
 
     if dry_run:
         return "success", None   # would evaluate
@@ -278,7 +327,7 @@ def _reeval_one(
     item["ext_eval_ok"]     = ok
     item["ext_eval_error"]  = err
     item["eval_model"]      = model
-    item["eval_prompt"]     = _prompt_name(prompt_v2, prompt_v3, prompt_v4, prompt_v5)
+    item["eval_prompt"]     = target_prompt
     item["ext_eval_stale"]  = False
 
     try:
@@ -311,7 +360,7 @@ def _process_dir_reeval(
     files   = _item_files(d)
 
     counts: Dict[str, int] = {
-        "success": 0, "failed": 0, "skipped": 0, "no_data": 0, "error": 0,
+        "success": 0, "failed": 0, "cached": 0, "skipped": 0, "no_data": 0, "error": 0,
     }
 
     def _tally(status: str, _err: Optional[str]) -> None:
@@ -359,7 +408,8 @@ def _process_dir_reeval(
         prompt = _prompt_name(prompt_v2, prompt_v3, prompt_v4, prompt_v5)
         _tqdm_write(
             f"  [{mode:>14s}]  {tag:<45s}  [{prompt}]  "
-            f"success={counts['success']:3d}  failed={counts['failed']:3d}  "
+            f"success={counts['success']:3d}  cached={counts['cached']:3d}  "
+            f"failed={counts['failed']:3d}  "
             f"skipped={counts['skipped']:3d}  no_data={counts['no_data']:3d}"
         )
     return {
@@ -624,6 +674,7 @@ def main() -> None:
         print(f"  Skipped        : {sum(r.get('skipped',  0) for r in results)}")
     else:
         print(f"  Re-eval success: {sum(r.get('success',  0) for r in results)}")
+        print(f"  Cached / reused: {sum(r.get('cached',   0) for r in results)}")
         print(f"  Re-eval failed : {sum(r.get('failed',   0) for r in results)}")
         print(f"  Skipped        : {sum(r.get('skipped',  0) for r in results)}")
         print(f"  No data        : {sum(r.get('no_data',  0) for r in results)}")
