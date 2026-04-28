@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -32,6 +33,10 @@ from verify.backend.evaluation_method.evaluator import (
     VERDICT_CONFIRMED,
     VERDICT_NO_EVIDENCE,
     VERDICT_POSSIBLE,
+    _PROMPT5_SYSTEM,
+    _build_eval_prompt_v4,
+    _extract_channels_from_text,
+    _normalize_verdict_result,
     evaluate_inferability_v5,
     get_aggregate_eval_entry,
 )
@@ -58,7 +63,7 @@ from verify.backend.utils.config import get_openrouter_api_key, load_color_palet
 
 _CACHE_DIR  = VERIFY_ROOT / "outputs" / "judge_validation_cache"
 _RUNS_DIR   = VERIFY_ROOT / "outputs" / "judge_validation_runs"
-_EVALUATOR_VERSION = "v5"
+_EVALUATOR_VERSION = "v5-vision"
 _PALETTE    = load_color_palette()
 _VERDICT_COLORS = {
     LABEL_CONFIRMED: _PALETTE["verdict"][VERDICT_CONFIRMED],
@@ -67,6 +72,48 @@ _VERDICT_COLORS = {
 }
 
 _DIFFICULTY_ORDER = ["explicit", "implicit", "none"]
+
+
+# ── Model helpers ─────────────────────────────────────────────────────────────
+
+def _vision_model_for_family(model: str) -> str:
+    """
+    Pick a vision-capable model from the same provider/family as *model*.
+
+    HR-VISPR judge samples are images, so text-only evaluator models must be
+    upgraded to a same-family VLM. Models already known to support images are
+    kept unchanged.
+    """
+    m = (model or EVAL_MODEL).strip()
+    lower = m.lower()
+
+    if lower.startswith("google/"):
+        return m if "gemini" in lower else "google/gemini-2.0-flash-001"
+
+    if lower.startswith("openai/"):
+        if any(name in lower for name in ("gpt-4o", "gpt-4.1", "gpt-4.5")):
+            return m
+        return "openai/gpt-4o-mini"
+
+    if lower.startswith("anthropic/"):
+        return m if "claude-3" in lower else "anthropic/claude-3.5-haiku"
+
+    if lower.startswith("meta-llama/") or lower.startswith("meta/"):
+        return m if "vision" in lower else "meta-llama/llama-3.2-11b-vision-instruct"
+
+    if lower.startswith("qwen/"):
+        return m if "vl" in lower else "qwen/qwen2.5-vl-72b-instruct"
+
+    if lower.startswith("mistral") or lower.startswith("mistralai/"):
+        return m if "pixtral" in lower else "mistralai/pixtral-12b"
+
+    return "google/gemini-2.0-flash-001"
+
+
+def _sample_model(sample: Dict[str, Any], requested_model: str) -> str:
+    if sample.get("dataset") == "HR-VISPR" or sample.get("image_b64"):
+        return _vision_model_for_family(requested_model)
+    return requested_model
 
 
 # ── Caching helpers ───────────────────────────────────────────────────────────
@@ -117,39 +164,119 @@ def _save_run_results(results: List[Dict[str, Any]], run_info: Dict[str, Any]) -
 
 # ── Judge call (wraps evaluator) ──────────────────────────────────────────────
 
+def _evaluate_inferability_v5_image(
+    image_b64: str,
+    attr: str,
+    api_key: Optional[str],
+    model: str,
+) -> tuple[bool, Dict[str, Any], Optional[str]]:
+    """Run the v5 judge prompt with an actual image content part."""
+    key = api_key or get_openrouter_api_key()
+    if not key or key.startswith("your_"):
+        return False, {}, "No valid OpenRouter API key available for evaluation."
+    if not image_b64:
+        return False, {}, "No image data provided for HR-VISPR evaluation."
+
+    import requests
+
+    output_text = "[IMAGE] HR-VISPR sample image attached to this message."
+    prompt = _build_eval_prompt_v4(output_text, [attr], include_prediction=True)
+    detected_channels = _extract_channels_from_text(output_text)
+    last_error = ""
+
+    for _attempt in range(5):
+        try:
+            resp = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://github.com/Verify",
+                    "X-Title": "Verify",
+                },
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": _PROMPT5_SYSTEM},
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:image/jpeg;base64,{image_b64}",
+                                    },
+                                },
+                            ],
+                        },
+                    ],
+                    "max_tokens": 4096,
+                },
+                timeout=60,
+            )
+            resp.raise_for_status()
+            raw_content = resp.json()["choices"][0]["message"]["content"].strip()
+            raw_content = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", raw_content)
+
+            try:
+                parsed = json.loads(raw_content)
+            except json.JSONDecodeError:
+                match = re.search(r"\{.*\}", raw_content, re.DOTALL)
+                if not match:
+                    last_error = f"Could not parse JSON from v5 vision evaluator: {raw_content[:200]}"
+                    continue
+                parsed = json.loads(match.group())
+
+            entry = parsed.get(attr, {})
+            aggregate = _normalize_verdict_result(
+                entry.get("aggregate", entry if isinstance(entry, dict) else {})
+            )
+            channel_results: Dict[str, Dict[str, Any]] = {}
+            raw_channels = entry.get("channels", {}) if isinstance(entry, dict) else {}
+            if isinstance(raw_channels, dict):
+                for channel in detected_channels.keys():
+                    if channel in raw_channels and isinstance(raw_channels[channel], dict):
+                        channel_results[channel] = _normalize_verdict_result(raw_channels[channel])
+
+            return True, {attr: {"aggregate": aggregate, "channels": channel_results}}, None
+        except Exception as e:
+            last_error = f"v5 vision evaluation API call failed: {e}"
+
+    return False, {}, last_error
+
 def _judge_sample(
     sample: Dict[str, Any],
     model: str,
     api_key: Optional[str],
+    use_cache: bool = True,
 ) -> Dict[str, Any]:
     """
     Run evaluate_inferability_v5 on a single sample and return a result dict.
 
     For text samples the text_content is passed directly.
-    For image samples (HR-VISPR) the base64 image is embedded in a descriptor
-    string so the same text-based prompt can be used.  If a vision-capable model
-    is needed the caller should ensure *model* supports it.
+    For image samples (HR-VISPR), a same-family vision model is selected and the
+    base64 image is sent as an OpenRouter image_url content part.
     """
-    cached = _load_cached(sample["id"], model)
-    if cached is not None:
-        return {**sample, **cached, "from_cache": True}
+    effective_model = _sample_model(sample, model)
+    if use_cache:
+        cached = _load_cached(sample["id"], effective_model)
+        if cached is not None:
+            return {**sample, **cached, "from_cache": True}
 
     attr   = sample["attribute"]
     text   = sample.get("text_content", "")
     img_b64 = sample.get("image_b64", "")
 
-    # Build the output_text for the evaluator
     if img_b64:
-        # For image samples: embed the image as a data URI in the text so that
-        # vision-capable models (e.g. Gemini) can process it via the standard
-        # text prompt path used by evaluate_inferability_v5.
-        output_text = f"[IMAGE DATA URI]\ndata:image/jpeg;base64,{img_b64}"
+        ok, results, error = _evaluate_inferability_v5_image(
+            img_b64, attr, api_key=api_key, model=effective_model
+        )
     else:
         output_text = text
-
-    ok, results, error = evaluate_inferability_v5(
-        output_text, [attr], api_key=api_key, model=model
-    )
+        ok, results, error = evaluate_inferability_v5(
+            output_text, [attr], api_key=api_key, model=effective_model
+        )
 
     if not ok or attr not in results:
         result_fields = {
@@ -159,6 +286,7 @@ def _judge_sample(
             "prediction":  None,
             "judge_ok":    False,
             "judge_error": error,
+            "model":       effective_model,
         }
     else:
         agg     = get_aggregate_eval_entry(results[attr])
@@ -170,9 +298,11 @@ def _judge_sample(
             "prediction":  agg.get("prediction"),
             "judge_ok":    True,
             "judge_error": None,
+            "model":       effective_model,
         }
 
-    _save_cached(sample["id"], model, result_fields)
+    if result_fields["judge_ok"]:
+        _save_cached(sample["id"], effective_model, result_fields)
     return {**sample, **result_fields, "from_cache": False}
 
 
@@ -184,6 +314,7 @@ def run_evaluation(
     api_key: Optional[str],
     workers: int = 4,
     progress_bar=None,
+    use_cache: bool = True,
 ) -> List[Dict[str, Any]]:
     """Run judge on all samples with a thread pool.  Progress via Streamlit bar."""
     results: List[Optional[Dict[str, Any]]] = [None] * len(samples)
@@ -191,7 +322,7 @@ def run_evaluation(
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
-            pool.submit(_judge_sample, s, model, api_key): i
+            pool.submit(_judge_sample, s, model, api_key, use_cache): i
             for i, s in enumerate(samples)
         }
         for fut in as_completed(futures):
@@ -332,7 +463,8 @@ def _render_sample_viewer(results: List[Dict[str, Any]]) -> None:
                     f"**Ground truth:** {_gt_badge(gt)}  \n"
                     f"**Judge label:** {_verdict_badge(label)}  \n"
                     f"**Confidence:** {r.get('confidence', 0):.2f}  \n"
-                    f"**Difficulty:** {r.get('difficulty', '—')}",
+                    f"**Difficulty:** {r.get('difficulty', '—')}  \n"
+                    f"**Model:** {r.get('model', '—')}",
                     unsafe_allow_html=True,
                 )
                 st.markdown("**Explanation:**")
@@ -365,7 +497,7 @@ def _render_error_analysis(results: List[Dict[str, Any]]) -> None:
                 }
                 for r in fps[:100]
             ])
-            st.dataframe(df, use_container_width=False)
+            st.dataframe(df, width="content")
         else:
             st.success("No false positives.")
 
@@ -383,7 +515,7 @@ def _render_error_analysis(results: List[Dict[str, Any]]) -> None:
                 }
                 for r in fns[:100]
             ])
-            st.dataframe(df, use_container_width=False)
+            st.dataframe(df, width="content")
         else:
             st.success("No false negatives.")
 
@@ -406,6 +538,7 @@ def _export_button(results: List[Dict[str, Any]]) -> None:
             "prediction":   r.get("prediction", ""),
             "explanation":  r.get("explanation", ""),
             "judge_ok":     r.get("judge_ok", False),
+            "model":        r.get("model", ""),
             "from_cache":   r.get("from_cache", False),
         }
         for r in results
@@ -482,8 +615,16 @@ def main() -> None:
         )
 
         model = st.text_input("Model", value=EVAL_MODEL, key="jv_model")
+        if "HR-VISPR" in selected_datasets:
+            hrvispr_model = _vision_model_for_family(model)
+            if hrvispr_model != model:
+                st.caption(f"HR-VISPR will use vision model: `{hrvispr_model}`")
+            else:
+                st.caption(f"HR-VISPR will use selected vision-capable model: `{hrvispr_model}`")
 
         workers = st.slider("Parallel workers", 1, 8, 4, key="jv_workers")
+        use_cache = st.toggle("Use cache", value=True, key="jv_use_cache",
+                              help="Off: re-runs all samples and overwrites cached results")
 
         api_key_input = st.text_input(
             "OpenRouter API key (leave blank to use env var)",
@@ -493,8 +634,8 @@ def main() -> None:
         api_key = api_key_input.strip() or get_openrouter_api_key()
 
         st.divider()
-        run_btn = st.button("▶ Run evaluation", type="primary", use_container_width=True)
-        clear_btn = st.button("🗑 Clear results", use_container_width=True)
+        run_btn = st.button("▶ Run evaluation", type="primary", width="stretch")
+        clear_btn = st.button("🗑 Clear results", width="stretch")
 
         if clear_btn:
             for key in ("jv_results", "jv_samples_loaded", "jv_run_info"):
@@ -530,7 +671,7 @@ def main() -> None:
         pbar = st.progress(0.0, text="Starting…")
         t0   = time.time()
 
-        results = run_evaluation(all_samples, model, api_key, workers=int(workers), progress_bar=pbar)
+        results = run_evaluation(all_samples, model, api_key, workers=int(workers), progress_bar=pbar, use_cache=use_cache)
         elapsed = time.time() - t0
 
         pbar.empty()
@@ -538,6 +679,7 @@ def main() -> None:
             "datasets": selected_datasets,
             "n_samples": len(results),
             "model":     model,
+            "effective_models": sorted({r.get("model", model) for r in results}),
             "elapsed":   elapsed,
             "evaluator": _EVALUATOR_VERSION,
         }
@@ -590,7 +732,7 @@ def main() -> None:
                 "recall_lower_bound":   f"{m['recall_lower_bound']:.1%}" if m["recall_lower_bound"] is not None else "N/A",
             })
         if rows:
-            st.dataframe(pd.DataFrame(rows).set_index("attribute"), use_container_width=False)
+            st.dataframe(pd.DataFrame(rows).set_index("attribute"), width="content")
 
     # ── Distribution plots ────────────────────────────────────────────────────
     st.divider()
@@ -610,5 +752,5 @@ def main() -> None:
     st.subheader("Export")
     _export_button(results)
 
-
-main()
+if __name__ == "__main__":
+    main()
