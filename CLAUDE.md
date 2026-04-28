@@ -8,8 +8,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 > **Encountering an error in the `verify/` framework?**
 > See [`TROUBLESHOOTING.md`](/Users/sieun/Research/Lantern/lantern/TROUBLESHOOTING.md) — covers known runner failures, phase-drift bugs, Django config issues, conda env problems, and frontend quirks with fixes.
 
-> **Streamlit `use_container_width` is deprecated** (removed after 2025-12-31).
-> Use `width='stretch'` instead of `use_container_width=True`, and `width='content'` (or an integer) instead of `use_container_width=False`.
+> **Streamlit width API:** use `width='stretch'` for full-width elements and
+> `width='content'` or an integer for content-sized elements.
 
 ## Overview
 
