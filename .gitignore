@@ -38,6 +38,7 @@ target-apps/*/_split/
 
 # databases
 **/*.sqlite3
+verify/backend/runners/pocketpal_chats.json
 
 # reference
 reference/
