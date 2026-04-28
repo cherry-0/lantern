@@ -57,6 +57,7 @@ from verify.backend.adapters.base import BaseAdapter, AdapterResult
 from verify.backend.utils.config import get_env, get_openrouter_api_key, use_app_servers
 
 _DEFAULT_HOST = "http://localhost:3000"
+_DEFAULT_MAX_TOKENS = 2048
 
 # Mirrors financialQAPrompt in src/ai/flows/financial-qa.ts
 _QA_PROMPT = """\
@@ -161,6 +162,7 @@ class FiscalFlowAdapter(BaseAdapter):
 
     def __init__(self):
         self._host: str = (get_env("FISCAL_FLOW_HOST") or _DEFAULT_HOST).rstrip("/")
+        self._max_tokens: int = int(get_env("FISCAL_FLOW_MAX_TOKENS") or _DEFAULT_MAX_TOKENS)
 
     # ── Availability ──────────────────────────────────────────────────────────
 
@@ -274,7 +276,7 @@ class FiscalFlowAdapter(BaseAdapter):
         )
 
         try:
-            answer = self._call_openrouter(prompt=prompt, max_tokens=512)
+            answer = self._call_openrouter(prompt=prompt, max_tokens=self._max_tokens)
         except RuntimeError as e:
             return AdapterResult(success=False, error=str(e))
 

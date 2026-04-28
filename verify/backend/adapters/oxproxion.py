@@ -29,6 +29,8 @@ SERVERLESS (USE_APP_SERVERS=false):
 """
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
@@ -139,51 +141,26 @@ class OxproxionAdapter(BlackBoxAdapter):
         """
         Drive the real oxproxion UI via uiautomator2.
 
-        UI flow (resource IDs from fragment_chat.xml / item_message_ai.xml):
-          1. Clear any existing chat (resetChatButton) so we start fresh.
-          2. Tap chatEditText and type the user message.
-          3. Tap sendChatButton to submit.
-          4. Poll until the last messageTextView in chatRecyclerView stabilises
+        UI flow:
+          1. Start MainActivity with oxproxion's autosend intent extras.
+          2. The app clears the chat and sends the provided text internally.
+          3. Poll until the last messageTextView in chatRecyclerView stabilises
              (streaming responses update it in-place).
-          5. Return the final response text.
+          4. Return the final response text.
 
-        NOTE: Locators are derived from the layout XML but must be verified
-        against a live dump_hierarchy on the provisioned AVD before use.
-        Run:  adb shell uiautomator dump /sdcard/dump.xml && adb pull /sdcard/dump.xml
-        to confirm resource IDs match the installed build.
-
-        Known native failure mode:
-          If the run fails with
-            UiObjectNotFoundError: Selector [resourceId='...:id/chatEditText']
-          the provisioned emulator is typically not on the expected chat
-          screen, or the installed oxproxion build's runtime hierarchy does not
-          match the resource IDs assumed from source/layout XML. In that case,
-          re-verify the live hierarchy on the target AVD before trusting native
-          IOC results for oxproxion.
+        The autosend path is part of oxproxion itself and avoids brittle
+        keyboard/input-field automation when the emulator opens on a transient
+        permission, model, or navigation screen.
         """
         import time
 
         pkg = self.config.package_name
         text = str(input_item.get("data", "")).strip()
 
-        # 1. Clear previous conversation so we get a clean response.
-        try:
-            driver.tap({
-                "resourceId": f"{pkg}:id/resetChatButton",
-                "optional": True,
-            })
-            time.sleep(0.5)
-        except Exception:
-            pass  # not fatal — chat may already be empty
+        self._start_autosend_intent(driver.serial, text)
+        time.sleep(1.0)
 
-        # 2. Type the user message.
-        driver.tap({"resourceId": f"{pkg}:id/chatEditText"})
-        driver.type_into({"resourceId": f"{pkg}:id/chatEditText"}, text)
-
-        # 3. Send.
-        driver.tap({"resourceId": f"{pkg}:id/sendChatButton"})
-
-        # 4. Wait for a non-empty AI response and poll until text stabilises
+        # Wait for a non-empty AI response and poll until text stabilises
         #    (oxproxion supports streaming, so the bubble updates incrementally).
         ai_text_locator = {"resourceId": f"{pkg}:id/messageTextView"}
         prev = ""
@@ -205,6 +182,38 @@ class OxproxionAdapter(BlackBoxAdapter):
 
         # Timed out — return whatever we have.
         return prev
+
+    def _start_autosend_intent(self, serial: str, text: str) -> None:
+        adb = shutil.which("adb") or "adb"
+        component = f"{self.config.package_name}/{self.config.main_activity}"
+        proc = subprocess.run(
+            [
+                adb,
+                "-s",
+                serial,
+                "shell",
+                "am",
+                "start",
+                "-S",
+                "-n",
+                component,
+                "--es",
+                "shared_text",
+                text,
+                "--ez",
+                "autosend",
+                "true",
+                "--ez",
+                "clear_chat",
+                "true",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "").strip()
+            raise RuntimeError(f"Failed to start oxproxion autosend intent: {detail}")
 
     # ── Serverless fallback ───────────────────────────────────────────────────
 

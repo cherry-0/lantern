@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from verify.backend.adapters.base import BaseAdapter, AdapterResult, OPENROUTER_DEFAULT_MODEL
-from verify.backend.utils.config import TARGET_APPS_DIR, get_openrouter_api_key, use_app_servers, is_malicious_prompt_mode
+from verify.backend.utils.config import TARGET_APPS_DIR, get_env, get_openrouter_api_key, use_app_servers, is_malicious_prompt_mode
 from verify.backend.utils.conda_runner import CondaRunner, EnvSpec
 
 SNAPDO_SERVER = TARGET_APPS_DIR / "snapdo" / "server"
@@ -35,6 +35,7 @@ _RUNNER = Path(__file__).parent.parent / "runners" / "snapdo_runner.py"
 
 # Fallback used only when task generation itself fails
 DEFAULT_TASK = "Identify and describe all visible content in this image, including objects, text, people, and location cues."
+_DEFAULT_MAX_TOKENS = 2048
 
 
 def _encode_image_b64(data_or_path) -> str:
@@ -76,6 +77,7 @@ class SnapdoAdapter(BaseAdapter):
         self._malicious_task_cache: Dict[str, Dict[str, str]] = {}
         self._server_process = None
         self._server_port = None
+        self._max_tokens = int(get_env("SNAPDO_MAX_TOKENS") or _DEFAULT_MAX_TOKENS)
         atexit.register(self._cleanup_server)
 
     def _cleanup_server(self):
@@ -236,7 +238,7 @@ class SnapdoAdapter(BaseAdapter):
                 prompt,
                 image_b64=image_b64,
                 model="google/gemini-2.0-flash-001",
-                max_tokens=512,
+                max_tokens=self._max_tokens,
             )
             match = re.search(r"\{.*\}", raw, re.DOTALL)
             if match:
@@ -285,7 +287,7 @@ class SnapdoAdapter(BaseAdapter):
                 prompt,
                 image_b64=image_b64,
                 model="google/gemini-2.0-flash-001",
-                max_tokens=512,
+                max_tokens=self._max_tokens,
             )
             match = re.search(r"\{.*\}", raw, re.DOTALL)
             if match:
@@ -413,7 +415,9 @@ class SnapdoAdapter(BaseAdapter):
         )
 
         try:
-            raw_response = self._call_openrouter(prompt, image_b64=image_b64, max_tokens=256)
+            raw_response = self._call_openrouter(
+                prompt, image_b64=image_b64, max_tokens=self._max_tokens
+            )
         except RuntimeError as e:
             return AdapterResult(success=False, error=str(e))
 
@@ -439,7 +443,7 @@ class SnapdoAdapter(BaseAdapter):
         externalizations = self._build_serverless_externalizations(
             realistic_fallback={
                 "NETWORK": "[OpenRouter Fallback] Sending verification request for proof-of-work photo.",
-                "UI": f"Verification Banner: {verdict} - {explanation[:50]}...",
+                "UI": f"Verification Banner: {verdict} - {explanation}",
             }
         )
 

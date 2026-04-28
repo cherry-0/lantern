@@ -22,9 +22,10 @@ import sys
 from typing import Any, Dict, Tuple
 
 from verify.backend.adapters.base import BaseAdapter, AdapterResult
-from verify.backend.utils.config import get_openrouter_api_key, use_app_servers
+from verify.backend.utils.config import get_env, get_openrouter_api_key, use_app_servers
 
 _MODEL = "google/gemini-2.5-flash-preview-05-20"
+_DEFAULT_MAX_TOKENS = 2048
 _FOLLOW_UPS_DELIMITER = "SUGGESTED_FOLLOW_UPS:"
 
 _NUTRITION_GUIDELINES_SUMMARY = """
@@ -41,6 +42,9 @@ class NutriTrackAdapter(BaseAdapter):
     name = "nutri-track"
     supported_modalities = ["text"]
     env_spec = None
+
+    def __init__(self):
+        self._max_tokens = int(get_env("NUTRITRACK_MAX_TOKENS") or _DEFAULT_MAX_TOKENS)
 
     def check_availability(self) -> Tuple[bool, str]:
         api_key = get_openrouter_api_key()
@@ -80,7 +84,7 @@ class NutriTrackAdapter(BaseAdapter):
             raw_response = self._call_openrouter(
                 prompt=prompt,
                 model=_MODEL,
-                max_tokens=450,
+                max_tokens=self._max_tokens,
             )
         except RuntimeError as e:
             return AdapterResult(success=False, error=str(e))
@@ -95,10 +99,10 @@ class NutriTrackAdapter(BaseAdapter):
                 ),
                 "STORAGE": (
                     "[Room DB] chat_messages insert — "
-                    f"user message={text[:120]!r}; ai response={main_answer[:120]!r}"
+                    f"user message={text[:120]!r}; ai response={main_answer!r}"
                 ),
                 "UI": (
-                    f"NutriCoach displays answer={main_answer[:180]!r}; "
+                    f"NutriCoach displays answer={main_answer!r}; "
                     f"follow_ups={follow_ups}"
                 ),
             }

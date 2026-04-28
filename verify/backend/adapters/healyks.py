@@ -16,9 +16,10 @@ import sys
 from typing import Any, Dict, Tuple
 
 from verify.backend.adapters.base import AdapterResult, BaseAdapter
-from verify.backend.utils.config import get_openrouter_api_key, use_app_servers
+from verify.backend.utils.config import get_env, get_openrouter_api_key, use_app_servers
 
 _MODEL = "google/gemini-2.0-flash-001"
+_DEFAULT_MAX_TOKENS = 2048
 _BACKEND_BASE_URL = "http://ec2-13-232-188-167.ap-south-1.compute.amazonaws.com:5000/"
 _ANALYZE_ENDPOINT = "api/symptoms/analyze"
 
@@ -29,6 +30,9 @@ class HealyksAdapter(BaseAdapter):
     name = "healyks"
     supported_modalities = ["text"]
     env_spec = None
+
+    def __init__(self):
+        self._max_tokens = int(get_env("HEALYKS_MAX_TOKENS") or _DEFAULT_MAX_TOKENS)
 
     def check_availability(self) -> Tuple[bool, str]:
         api_key = get_openrouter_api_key()
@@ -67,7 +71,7 @@ class HealyksAdapter(BaseAdapter):
             raw_response = self._call_openrouter(
                 prompt=prompt,
                 model=_MODEL,
-                max_tokens=550,
+                max_tokens=self._max_tokens,
             )
         except RuntimeError as e:
             return AdapterResult(success=False, error=str(e))
@@ -83,9 +87,9 @@ class HealyksAdapter(BaseAdapter):
                 ),
                 "UI": (
                     "Analyze screen displays "
-                    f"condition={report.get('condition', '')[:120]!r}; "
-                    f"recommendation={report.get('recommendation', '')[:160]!r}; "
-                    f"homeRemedies={report.get('homeRemedies', '')[:160]!r}"
+                    f"condition={report.get('condition', '')!r}; "
+                    f"recommendation={report.get('recommendation', '')!r}; "
+                    f"homeRemedies={report.get('homeRemedies', '')!r}"
                 ),
             }
         )

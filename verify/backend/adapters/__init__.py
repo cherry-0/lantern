@@ -25,6 +25,8 @@ from verify.backend.adapters.edupal import EduPalAdapter
 from verify.backend.adapters.lira import LiraAdapter
 from verify.backend.adapters.nutritrack import NutriTrackAdapter
 from verify.backend.adapters.healyks import HealyksAdapter
+from verify.backend.adapters.sgpa import SGPAAdapter
+from verify.backend.adapters.waico import WaicoAdapter
 
 # Registry: name → adapter class
 ADAPTER_REGISTRY: Dict[str, Type[BaseAdapter]] = {
@@ -51,6 +53,8 @@ ADAPTER_REGISTRY: Dict[str, Type[BaseAdapter]] = {
     "lira": LiraAdapter,
     "nutri-track": NutriTrackAdapter,
     "healyks": HealyksAdapter,
+    "sgpa": SGPAAdapter,
+    "waico": WaicoAdapter,
 }
 
 

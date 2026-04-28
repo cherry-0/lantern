@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, Tuple
 
 from verify.backend.adapters.base import BaseAdapter, AdapterResult, OPENROUTER_DEFAULT_MODEL
-from verify.backend.utils.config import TARGET_APPS_DIR, get_openrouter_api_key, use_app_servers
+from verify.backend.utils.config import TARGET_APPS_DIR, get_env, get_openrouter_api_key, use_app_servers
 from verify.backend.utils.conda_runner import CondaRunner, EnvSpec
 
 LLMVTUBER_SRC = TARGET_APPS_DIR / "llm-vtuber" / "src"
@@ -33,6 +33,7 @@ _ENV_SPEC = EnvSpec(
     install_cmds=[["pip", "install", "-e", str(LLMVTUBER_ROOT), "fastapi", "uvicorn", "pydantic", "requests"]],
 )
 _RUNNER = Path(__file__).parent.parent / "runners" / "llmvtuber_runner.py"
+_DEFAULT_MAX_TOKENS = 2048
 
 # VTuber character system prompt — mirrors the default persona in llm-vtuber
 _VTUBER_SYSTEM = (
@@ -194,9 +195,10 @@ class LLMVTuberAdapter(BaseAdapter):
             return AdapterResult(success=False, error="Empty text input.")
 
         prompt = f"{_VTUBER_SYSTEM}\n\nUser: {user_message}"
+        max_tokens = int(get_env("LLMVTUBER_MAX_TOKENS") or _DEFAULT_MAX_TOKENS)
 
         try:
-            response = self._call_openrouter(prompt=prompt, max_tokens=512)
+            response = self._call_openrouter(prompt=prompt, max_tokens=max_tokens)
         except RuntimeError as e:
             return AdapterResult(success=False, error=str(e))
 

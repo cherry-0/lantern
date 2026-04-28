@@ -38,7 +38,9 @@ from datetime import date
 from typing import Any, Dict, List, Tuple
 
 from verify.backend.adapters.base import BaseAdapter, AdapterResult
-from verify.backend.utils.config import get_openrouter_api_key, use_app_servers
+from verify.backend.utils.config import get_env, get_openrouter_api_key, use_app_servers
+
+_DEFAULT_MAX_TOKENS = 2048
 
 # ── Prompts (mirrors geminiService.ts exactly) ────────────────────────────────
 
@@ -98,6 +100,9 @@ class SpendSenseAdapter(BaseAdapter):
     supported_modalities = ["image", "text"]
     env_spec = None
 
+    def __init__(self):
+        self._max_tokens = int(get_env("SPENDSENSE_MAX_TOKENS") or _DEFAULT_MAX_TOKENS)
+
     # ── Availability ──────────────────────────────────────────────────────────
 
     def check_availability(self) -> Tuple[bool, str]:
@@ -139,7 +144,7 @@ class SpendSenseAdapter(BaseAdapter):
             raw_response = self._call_openrouter(
                 prompt=_SCAN_RECEIPT_PROMPT,
                 image_b64=image_b64,
-                max_tokens=256,
+                max_tokens=self._max_tokens,
             )
         except RuntimeError as e:
             return AdapterResult(success=False, error=str(e))
@@ -202,7 +207,7 @@ class SpendSenseAdapter(BaseAdapter):
         )
 
         try:
-            answer = self._call_openrouter(prompt=prompt, max_tokens=256)
+            answer = self._call_openrouter(prompt=prompt, max_tokens=self._max_tokens)
         except RuntimeError as e:
             return AdapterResult(success=False, error=str(e))
 

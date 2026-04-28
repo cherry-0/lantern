@@ -47,6 +47,8 @@ from verify.backend.adapters.base import BaseAdapter, AdapterResult
 from verify.backend.utils.config import get_env, get_openrouter_api_key, use_app_servers
 
 _DEFAULT_HOST = "http://localhost:8000"
+_SERVERLESS_MODEL = "google/gemini-2.0-flash-001"
+_DEFAULT_MAX_TOKENS = 512
 
 # Mirrors SYSTEM_PROMPT in target-apps/lira/backend/app/services/llm.py
 _SYSTEM_PROMPT = (
@@ -78,8 +80,14 @@ class LiraAdapter(BaseAdapter):
 
     def __init__(self):
         self._host: str = (get_env("LIRA_HOST") or _DEFAULT_HOST).rstrip("/")
+        self._max_tokens: int = int(get_env("LIRA_MAX_TOKENS") or _DEFAULT_MAX_TOKENS)
 
     # ── Availability ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _has_serverless_fallback() -> bool:
+        api_key = get_openrouter_api_key()
+        return bool(api_key and not api_key.startswith("your_"))
 
     def check_availability(self) -> Tuple[bool, str]:
         if use_app_servers():
@@ -88,15 +96,24 @@ class LiraAdapter(BaseAdapter):
                 resp = requests.get(f"{self._host}/health", timeout=5)
                 if resp.ok:
                     return True, f"[NATIVE] Server reachable at {self._host}"
+                if self._has_serverless_fallback():
+                    return True, (
+                        f"[NATIVE] Server returned {resp.status_code} at {self._host}; "
+                        "falling back to serverless OpenRouter."
+                    )
                 return False, f"[NATIVE] Server returned {resp.status_code} at {self._host}"
             except Exception as e:
+                if self._has_serverless_fallback():
+                    return True, (
+                        f"[NATIVE] Cannot reach server at {self._host}: {e}; "
+                        "falling back to serverless OpenRouter."
+                    )
                 return False, (
                     f"[NATIVE] Cannot reach server at {self._host}: {e}\n"
                     "Start with: cd target-apps/lira/backend && "
                     "LLM_API_KEY=<key> uvicorn app.main:app --reload --port 8000"
                 )
-        api_key = get_openrouter_api_key()
-        if api_key and not api_key.startswith("your_"):
+        if self._has_serverless_fallback():
             return True, "[SERVERLESS] Using OpenRouter to replicate lira LLMService chat."
         return False, "[SERVERLESS] No OPENROUTER_API_KEY configured."
 
@@ -115,7 +132,18 @@ class LiraAdapter(BaseAdapter):
             return AdapterResult(success=False, error="Empty text input.")
 
         if use_app_servers():
-            return self._run_native(text)
+            native_result = self._run_native(text)
+            if native_result.success or not self._has_serverless_fallback():
+                return native_result
+
+            fallback_result = self._run_serverless(text)
+            fallback_result.metadata.update(
+                {
+                    "native_fallback_error": native_result.error,
+                    "native_host": self._host,
+                }
+            )
+            return fallback_result
         return self._run_serverless(text)
 
     # ── NATIVE mode ───────────────────────────────────────────────────────────
@@ -153,7 +181,7 @@ class LiraAdapter(BaseAdapter):
             return AdapterResult(success=False, error=f"HTTP request failed: {e}")
 
         reply = result.get("reply", "")
-        print(f"[lira] Reply: {reply[:120]!r}", file=sys.stderr, flush=True)
+        print(f"[lira] Reply: {reply!r}", file=sys.stderr, flush=True)
 
         externalizations = {
             "NETWORK": (
@@ -177,7 +205,7 @@ class LiraAdapter(BaseAdapter):
     def _run_serverless(self, text: str) -> AdapterResult:
         """Replicate LLMService.generate_reply() via OpenRouter with the same model and prompt."""
         print(
-            f"[lira] Calling OpenRouter (mistral-7b-instruct Lira persona)  "
+            f"[lira] Calling OpenRouter ({_SERVERLESS_MODEL} Lira persona)  "
             f"text={text[:80]!r}",
             file=sys.stderr, flush=True,
         )
@@ -188,12 +216,13 @@ class LiraAdapter(BaseAdapter):
         try:
             reply = self._call_openrouter(
                 prompt=prompt,
-                max_tokens=300,
+                model=_SERVERLESS_MODEL,
+                max_tokens=self._max_tokens,
             )
-        except RuntimeError as e:
+        except Exception as e:
             return AdapterResult(success=False, error=str(e))
 
-        print(f"[lira] Reply: {reply[:120]!r}", file=sys.stderr, flush=True)
+        print(f"[lira] Reply: {reply!r}", file=sys.stderr, flush=True)
 
         externalizations = self._build_serverless_externalizations(
             realistic_fallback={
@@ -211,5 +240,5 @@ class LiraAdapter(BaseAdapter):
             raw_output={"text": text, "reply": reply},
             structured_output={"reply": reply},
             externalizations=externalizations,
-            metadata={"method": "serverless_openrouter"},
+            metadata={"method": "serverless_openrouter", "model": _SERVERLESS_MODEL},
         )

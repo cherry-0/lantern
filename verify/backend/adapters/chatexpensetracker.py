@@ -66,6 +66,7 @@ Example: [{{"item": "groceries", "amount": 50, "category": "Food"}}]"""
 
 _DEFAULT_HOST = "http://localhost:8000"
 _SERVERLESS_MODEL = "google/gemini-2.0-flash-001"
+_DEFAULT_MAX_TOKENS = 2048
 
 
 def _parse_items_from_llm(raw: str) -> List[Dict[str, Any]]:
@@ -134,6 +135,9 @@ class ChatExpenseTrackerAdapter(BaseAdapter):
 
     def __init__(self):
         self._host: str = (get_env("CHAT_EXPENSE_TRACKER_HOST") or _DEFAULT_HOST).rstrip("/")
+        self._max_tokens: int = int(
+            get_env("CHAT_EXPENSE_TRACKER_MAX_TOKENS") or _DEFAULT_MAX_TOKENS
+        )
 
     # ── Availability ──────────────────────────────────────────────────────────
 
@@ -293,7 +297,7 @@ class ChatExpenseTrackerAdapter(BaseAdapter):
             raw_response = self._call_openrouter(
                 prompt=prompt,
                 model=_SERVERLESS_MODEL,
-                max_tokens=512,
+                max_tokens=self._max_tokens,
                 extra_body={"temperature": 0},
             )
         except Exception as e:

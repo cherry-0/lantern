@@ -31,11 +31,12 @@ import requests
 
 from verify.backend.adapters.base import BaseAdapter, AdapterResult, OPENROUTER_DEFAULT_MODEL
 from verify.backend.utils.config import (
-    TARGET_APPS_DIR, get_openrouter_api_key, use_app_servers,
+    TARGET_APPS_DIR, get_env, get_openrouter_api_key, use_app_servers,
 )
 from verify.backend.utils.conda_runner import CondaRunner, EnvSpec
 
 _CLONE_SERVER = TARGET_APPS_DIR / "clone" / "server"
+_DEFAULT_MAX_TOKENS = 2048
 
 _ENV_SPEC = EnvSpec(
     name="clone",
@@ -110,6 +111,7 @@ class CloneAdapter(BaseAdapter):
     def __init__(self):
         self._server_process = None
         self._server_port = None
+        self._max_tokens = int(get_env("CLONE_MAX_TOKENS") or _DEFAULT_MAX_TOKENS)
         atexit.register(self._cleanup_server)
 
     def _cleanup_server(self):
@@ -262,7 +264,9 @@ class CloneAdapter(BaseAdapter):
             # Route through _call_openrouter so the call is tracked for externalization capture.
             # For multi-frame inputs, use only the first frame (single image_b64 parameter).
             image_b64 = _encode_pil_b64(frames[0])
-            description = self._call_openrouter(_FRAME_PROMPT, image_b64=image_b64, max_tokens=512)
+            description = self._call_openrouter(
+                _FRAME_PROMPT, image_b64=image_b64, max_tokens=self._max_tokens
+            )
         except Exception as e:
             return AdapterResult(success=False, error=str(e))
 
@@ -314,7 +318,7 @@ class CloneAdapter(BaseAdapter):
             json={
                 "model": OPENROUTER_DEFAULT_MODEL,
                 "messages": [{"role": "user", "content": content}],
-                "max_tokens": 512,
+                "max_tokens": self._max_tokens,
             },
             timeout=60,
         )

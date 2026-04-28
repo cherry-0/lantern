@@ -64,7 +64,7 @@ _DEFAULT_SYSTEM = (
     "Respond clearly and concisely to the user's questions."
 )
 
-_DEFAULT_MAX_TOKENS = 512
+_DEFAULT_MAX_TOKENS = 2048
 _DEFAULT_CTX_SIZE = 4096
 
 
@@ -207,10 +207,11 @@ class PocketPalAdapter(BaseAdapter):
             return AdapterResult(success=False, error="Empty text input.")
 
         system_prompt = get_env("POCKETPAL_SYSTEM_PROMPT") or _DEFAULT_SYSTEM
+        max_tokens = _get_max_tokens()
         prompt = f"{system_prompt}\n\nUser: {text}"
 
         try:
-            response = self._call_openrouter(prompt=prompt, max_tokens=512)
+            response = self._call_openrouter(prompt=prompt, max_tokens=max_tokens)
         except RuntimeError as e:
             return AdapterResult(success=False, error=str(e))
 

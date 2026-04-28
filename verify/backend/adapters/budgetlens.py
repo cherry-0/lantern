@@ -24,10 +24,11 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from verify.backend.adapters.base import BaseAdapter, AdapterResult
-from verify.backend.utils.config import TARGET_APPS_DIR, get_openrouter_api_key, use_app_servers
+from verify.backend.utils.config import TARGET_APPS_DIR, get_env, get_openrouter_api_key, use_app_servers
 from verify.backend.utils.conda_runner import CondaRunner, EnvSpec
 
 BUDGETLENS_DJANGO_ROOT = TARGET_APPS_DIR / "budget-lens" / "budgetlens"
+_DEFAULT_MAX_TOKENS = 2048
 
 _ENV_SPEC = EnvSpec(
     name="budget-lens",
@@ -102,6 +103,7 @@ class BudgetLensAdapter(BaseAdapter):
     def __init__(self):
         self._server_process = None
         self._server_port = None
+        self._max_tokens = int(get_env("BUDGET_LENS_MAX_TOKENS") or _DEFAULT_MAX_TOKENS)
         atexit.register(self._cleanup_server)
 
     def _cleanup_server(self):
@@ -257,7 +259,9 @@ class BudgetLensAdapter(BaseAdapter):
         )
 
         try:
-            raw_response = self._call_openrouter(prompt, image_b64=image_b64, max_tokens=512)
+            raw_response = self._call_openrouter(
+                prompt, image_b64=image_b64, max_tokens=self._max_tokens
+            )
         except RuntimeError as e:
             return AdapterResult(success=False, error=str(e))
 

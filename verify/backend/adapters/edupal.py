@@ -33,7 +33,9 @@ import sys
 from typing import Any, Dict, Tuple
 
 from verify.backend.adapters.base import BaseAdapter, AdapterResult
-from verify.backend.utils.config import get_openrouter_api_key, use_app_servers
+from verify.backend.utils.config import get_env, get_openrouter_api_key, use_app_servers
+
+_DEFAULT_MAX_TOKENS = 2048
 
 # Mirrors generate_bot_response() system prompt for the default character
 _SYSTEM_PROMPT = (
@@ -55,6 +57,9 @@ class EduPalAdapter(BaseAdapter):
     name = "edupal"
     supported_modalities = ["text"]
     env_spec = None
+
+    def __init__(self):
+        self._max_tokens = int(get_env("EDUPAL_MAX_TOKENS") or _DEFAULT_MAX_TOKENS)
 
     # ── Availability ──────────────────────────────────────────────────────────
 
@@ -99,7 +104,7 @@ class EduPalAdapter(BaseAdapter):
         try:
             response = self._call_openrouter(
                 prompt=prompt,
-                max_tokens=256,
+                max_tokens=self._max_tokens,
                 model="openai/gpt-3.5-turbo",
             )
         except RuntimeError as e:
@@ -117,11 +122,11 @@ class EduPalAdapter(BaseAdapter):
                 "STORAGE": (
                     f"[Firestore] messages collection write — "
                     f"{{message: {text[:80]!r}, side: 'user', character: 'Shiba Inu'}}; "
-                    f"{{message: {response[:80]!r}, side: 'bot', character: 'Shiba Inu'}}"
+                    f"{{message: {response!r}, side: 'bot', character: 'Shiba Inu'}}"
                 ),
                 "NETWORK:TTS": (
                     f"[ElevenLabs API] POST https://api.elevenlabs.io/v1/text-to-speech/<voice_id> — "
-                    f"model=eleven_multilingual_v2, text={response[:120]!r}"
+                    f"model=eleven_multilingual_v2, text={response!r}"
                 ),
             }
         )

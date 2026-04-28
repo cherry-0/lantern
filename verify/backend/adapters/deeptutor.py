@@ -229,7 +229,7 @@ class DeepTutorAdapter(BaseAdapter):
         externalizations = self._build_serverless_externalizations(
             realistic_fallback={
                 "NETWORK": "[OpenRouter Fallback] Sending query + persona prompt to API.",
-                "UI": f"Tutor response displayed: {response[:100]}...",
+                "UI": f"Tutor response displayed: {response}",
             }
         )
 

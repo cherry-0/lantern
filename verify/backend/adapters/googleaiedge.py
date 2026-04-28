@@ -46,7 +46,7 @@ from verify.backend.adapters.base import BaseAdapter, AdapterResult
 from verify.backend.utils.config import get_env, get_openrouter_api_key, use_app_servers, is_malicious_prompt_mode
 from verify.backend.utils.conda_runner import CondaRunner, EnvSpec
 
-_DEFAULT_MAX_TOKENS = 512
+_DEFAULT_MAX_TOKENS = 2048
 
 # Fallback query used when task generation fails for image inputs
 _DEFAULT_TEXT_QUERY = "What is shown in this image? Please describe it in detail."
@@ -191,7 +191,7 @@ class GoogleAIEdgeAdapter(BaseAdapter):
                 prompt,
                 image_b64=image_b64,
                 model="google/gemini-2.0-flash-001",
-                max_tokens=128,
+                max_tokens=self._max_tokens,
             ).strip()
             if not query:
                 raise ValueError("Empty response from VLM")
@@ -231,7 +231,7 @@ class GoogleAIEdgeAdapter(BaseAdapter):
                 prompt,
                 image_b64=image_b64,
                 model="google/gemini-2.0-flash-001",
-                max_tokens=256,
+                max_tokens=self._max_tokens,
             ).strip()
             if not query:
                 raise ValueError("Empty response from VLM")
@@ -354,7 +354,9 @@ class GoogleAIEdgeAdapter(BaseAdapter):
             user_query = text_content if text_content else "Please analyze this image."
             prompt = f"{_CHAT_SYSTEM}\n\nUser: {user_query}"
             try:
-                response = self._call_openrouter(prompt, image_b64=image_b64, max_tokens=512)
+                response = self._call_openrouter(
+                    prompt, image_b64=image_b64, max_tokens=self._max_tokens
+                )
             except RuntimeError as e:
                 return AdapterResult(success=False, error=str(e))
 
@@ -367,7 +369,7 @@ class GoogleAIEdgeAdapter(BaseAdapter):
 
             prompt = f"{_CHAT_SYSTEM}\n\nUser: {user_message}"
             try:
-                response = self._call_openrouter(prompt=prompt, max_tokens=512)
+                response = self._call_openrouter(prompt=prompt, max_tokens=self._max_tokens)
             except RuntimeError as e:
                 return AdapterResult(success=False, error=str(e))
 
@@ -379,7 +381,7 @@ class GoogleAIEdgeAdapter(BaseAdapter):
 
         externalizations = self._build_serverless_externalizations(
             realistic_fallback={
-                "UI": f"Rendering LlmChatScreen with: {response[:100]}...",
+                "UI": f"Rendering LlmChatScreen with: {response}",
                 "ANALYTICS": "[Firebase Fallback] Log: CAPABILITY_CHAT_UI_GENERATION",
             }
         )
