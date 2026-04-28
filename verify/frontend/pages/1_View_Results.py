@@ -69,9 +69,9 @@ def _display_image(b64_str: str | None, data=None, caption: str = ""):
         if b64_str:
             import base64
             img_data = base64.b64decode(b64_str)
-            st.image(img_data, caption=caption, width="stretch")
+            st.image(img_data, caption=caption, use_container_width=True)
         elif data is not None:
-            st.image(data, caption=caption, width="stretch")
+            st.image(data, caption=caption, use_container_width=True)
         else:
             st.warning("No image data available.")
     except Exception as e:
@@ -111,7 +111,7 @@ def _display_frames(frames: list, caption_prefix: str = "Frame"):
     cols = st.columns(min(len(frames), 4))
     for i, (col, frame) in enumerate(zip(cols, frames)):
         with col:
-            st.image(frame, caption=f"{caption_prefix} {i+1}", width="stretch")
+            st.image(frame, caption=f"{caption_prefix} {i+1}", use_container_width=True)
 
 
 def _eval_chart(eval_results: dict, stage_label: str, key_suffix: str = ""):
@@ -156,7 +156,7 @@ def _eval_chart(eval_results: dict, stage_label: str, key_suffix: str = ""):
         )
         .properties(height=200)
     )
-    st.altair_chart(chart, width="stretch")
+    st.altair_chart(chart, use_container_width=True)
 
 
 
@@ -211,7 +211,7 @@ def _render_eval_heatmap(eval_results: dict, stage_label: str, key_suffix: str =
         .mark_text(text="●", fontSize=12, fontWeight="bold", color="#2f2f2f")
         .encode(x=alt.X("Attribute:N", sort=attrs), y=alt.Y("Stage:N", sort=stage_order))
     )
-    st.altair_chart((rect + text).properties(height=max(180, 34 * len(stage_order))), width="stretch")
+    st.altair_chart((rect + text).properties(height=max(180, 34 * len(stage_order))), use_container_width=True)
     st.caption("Red = confirmed leakage, yellow = possible leakage, green = no evidence, grey = channel not available in this evaluation.")
 
 
@@ -276,7 +276,7 @@ def _render_channel_aggregated_chart(all_results: list[dict], attributes: list[s
         )
         .properties(height=320, title=f"Attribute-wise positive rate across {len(success)} item(s)")
     )
-    st.altair_chart(chart, width="stretch")
+    st.altair_chart(chart, use_container_width=True)
     st.caption("Aggregate bars use all successful items. Channel bars use only items where that channel exists in the saved evaluation.")
 
 
@@ -782,6 +782,20 @@ def _list_output_dirs() -> list[Path]:
     return sorted(dirs, key=lambda d: d.stat().st_mtime, reverse=True)
 
 
+def _evaluation_only_failure_count(items: list[dict]) -> int:
+    """Count successful pipeline items whose privacy evaluation failed."""
+    count = 0
+    for item in items:
+        if item.get("status") != "success":
+            continue
+        evaluation = item.get("evaluation") or {}
+        original_failed = evaluation.get("original_success") is False
+        perturbed_failed = evaluation.get("perturbed_success") is False
+        if original_failed or perturbed_failed:
+            count += 1
+    return count
+
+
 # ─── Main UI ──────────────────────────────────────────────────────────────────
 
 def main():
@@ -824,7 +838,7 @@ def main():
         else:
             run_dir_str = ""
 
-        load_clicked = st.button("📂 Load", type="primary", width="stretch")
+        load_clicked = st.button("📂 Load", type="primary", use_container_width=True)
 
     # ── Load on button click ───────────────────────────────────────────────
     if load_clicked:
@@ -916,11 +930,13 @@ def main():
     st.divider()
     st.subheader("Summary")
     statuses = [r.get("status", "") for r in items]
-    m1, m2, m3, m4 = st.columns(4)
+    eval_failed = _evaluation_only_failure_count(items)
+    m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Total", len(items))
     m2.metric("Successful", statuses.count("success"))
     m3.metric("Skipped", statuses.count("skipped"))
     m4.metric("Failed", statuses.count("failed"))
+    m5.metric("Eval-only failures", eval_failed)
 
     # Average scores table
     if success_items and attributes:
@@ -950,7 +966,7 @@ def main():
             })
         if rows:
             st.markdown("**Average inferability scores:**")
-            st.dataframe(pd.DataFrame(rows), width="stretch")
+            st.dataframe(pd.DataFrame(rows), use_container_width=True)
 
     # Download buttons
     report_dir = Path(run_dir_loaded) if run_dir_loaded else None
@@ -966,7 +982,7 @@ def main():
                     data=json_path.read_text(),
                     file_name="verify_report.json",
                     mime="application/json",
-                    width="stretch",
+                    use_container_width=True,
                 )
         with col_csv:
             csv_path = report_dir / "report.csv"
@@ -976,7 +992,7 @@ def main():
                     data=csv_path.read_text(),
                     file_name="verify_report.csv",
                     mime="text/csv",
-                    width="stretch",
+                    use_container_width=True,
                 )
 
     # ── Per-item results ───────────────────────────────────────────────────

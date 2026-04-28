@@ -36,6 +36,7 @@ from verify.backend.utils.config import (
     get_default_eval_prompt,
     load_color_palette,
 )
+from verify.backend.datasets.label_mapper import get_input_labels
 
 
 # ─── Constants ────────────────────────────────────────────────────────────────
@@ -95,6 +96,16 @@ VERDICT_COLORS = {
     VERDICT_NO_EVIDENCE: _PALETTE["verdict"][VERDICT_NO_EVIDENCE],
     "na": _PALETTE["verdict"]["na"],
 }
+
+
+def _current_input_labels(result: Dict[str, Any], unified_attrs: List[str]) -> Dict[str, int]:
+    """Return labels using current mapper logic for stored SynthPAI IOC items."""
+    stored = result.get("input_labels", {}) or {}
+    input_item = result.get("input_item", {}) or {}
+    if input_item.get("label_source") == "synthpai":
+        attrs = list(stored.keys()) or unified_attrs
+        return get_input_labels(input_item, attrs)
+    return stored
 
 
 def _binary_verdict(flag: bool) -> str:
@@ -436,9 +447,9 @@ def _display_image(b64_str: str | None, data=None):
     try:
         if b64_str:
             import base64
-            st.image(base64.b64decode(b64_str), width="stretch")
+            st.image(base64.b64decode(b64_str), use_container_width=True)
         elif data is not None:
-            st.image(data, width="stretch")
+            st.image(data, use_container_width=True)
         else:
             st.warning("No image available.")
     except Exception as e:
@@ -577,7 +588,7 @@ def _render_attribute_heatmap(
         )
     )
     chart = rect.properties(width=alt.Step(44), height=alt.Step(44))
-    st.altair_chart(chart, width="stretch")
+    st.altair_chart(chart, use_container_width=True)
     st.caption("Red = confirmed leakage/present, yellow = possible leakage, green = no evidence, grey = channel not captured or not evaluated.")
 
 
@@ -616,7 +627,7 @@ def _render_channel_aggregated(all_results: List[Dict[str, Any]], unified_attrs:
         for stage_key in stage_keys:
             if stage_key == "INPUT":
                 support = len(success)
-                positive = sum(r.get("input_labels", {}).get(attr, 0) for r in success)
+                positive = sum(_current_input_labels(r, unified_attrs).get(attr, 0) for r in success)
             elif stage_key == "OUTPUT":
                 support = len(success)
                 positive = sum(
@@ -670,7 +681,7 @@ def _render_channel_aggregated(all_results: List[Dict[str, Any]], unified_attrs:
         )
         .properties(height=320, title=f"Attribute-wise positive rate across {len(success)} item(s)")
     )
-    st.altair_chart(chart, width="stretch")
+    st.altair_chart(chart, use_container_width=True)
     st.caption(
         "Input/Raw Output/Aggregate use all successful items. Channel bars use only items where that channel was captured and evaluated."
     )
@@ -702,7 +713,7 @@ def _render_channel_aggregated_heatmap(all_results: List[Dict[str, Any]], unifie
         for stage_key in stage_keys:
             if stage_key == "INPUT":
                 support = len(success)
-                positive = sum(r.get("input_labels", {}).get(attr, 0) for r in success)
+                positive = sum(_current_input_labels(r, unified_attrs).get(attr, 0) for r in success)
             elif stage_key == "OUTPUT":
                 support = len(success)
                 positive = sum(
@@ -797,7 +808,7 @@ def _render_channel_aggregated_heatmap(all_results: List[Dict[str, Any]], unifie
         chart = layers[0]
         for layer in layers[1:]:
             chart = chart + layer
-        st.altair_chart(chart, width="stretch")
+        st.altair_chart(chart, use_container_width=True)
     st.caption(
         "Heatmap cells show attribute-inferred accuracy / exposure rate by stage or channel. "
         "Absent channels remain blank light gray for layout consistency."
@@ -864,9 +875,10 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
 
     status_icon = {"success": "✅", "failed": "❌"}.get(status, "")
     from_cache = " (cached)" if result.get("from_cache") else ""
+    input_labels = _current_input_labels(result, unified_attrs)
 
     # Build expander title suffix from input labels
-    positives = [a for a in unified_attrs if result.get("input_labels", {}).get(a, 0) == 1]
+    positives = [a for a in unified_attrs if input_labels.get(a, 0) == 1]
     label_suffix = f"  —  🏷 {', '.join(positives)}" if positives else ""
     # Also show data_type for PrivacyLens items
     data_type = input_item.get("data_type", "")
@@ -881,7 +893,7 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
         detail_key = f"ioc_render_details_{idx}"
         show_details = bool(st.session_state.get(detail_key, False))
         if not show_details:
-            if st.button("Load details", key=f"ioc_load_details_{idx}", width="stretch"):
+            if st.button("Load details", key=f"ioc_load_details_{idx}", use_container_width=True):
                 st.session_state[detail_key] = True
                 st.rerun()
             st.caption("Details are not rendered until requested. Click `Load details` to render this item.")
@@ -915,11 +927,10 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
                     cols = st.columns(min(len(frames), 2))
                     for c, f in zip(cols, frames[:2]):
                         with c:
-                            st.image(f, width="stretch")
+                            st.image(f, use_container_width=True)
                 else:
                     st.info("No media available.")
 
-            input_labels = result.get("input_labels", {})
             positives = [a for a in unified_attrs if input_labels.get(a, 0) == 1]
             if positives:
                 st.caption("**Annotated attributes:**")
@@ -957,7 +968,7 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
             st.warning(f"Externalization evaluation error: {result['ext_eval_error']}")
 
         _render_attribute_heatmap(
-            result.get("input_labels", {}),
+            input_labels,
             result.get("output_eval", {}),
             result.get("ext_eval", {}),
             unified_attrs,
@@ -1140,7 +1151,7 @@ def main():
             "▶ Run Comparison",
             type="primary",
             disabled=not (app_available and unified_attrs),
-            width="stretch",
+            use_container_width=True,
         )
         if not app_available:
             st.caption(f"App '{selected_app}' is not available.")

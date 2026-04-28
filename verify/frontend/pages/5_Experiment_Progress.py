@@ -140,37 +140,53 @@ def _scan_outputs() -> List[Dict]:
       prompt_success_counts, has_summary, dirs (list of directory paths for this key)
 
     Counts are aggregated across all directories for the same
-    (app_name, dataset_name, input_modality, output_modality, perturbation_method, eval_prompt) key by
+    (app_name, dataset_name, input_modality, output_modality, perturbation_method) key by
     deduplicating item filenames. This avoids dropping coverage when a run was
-    split across multiple output directories.
+    split across multiple output directories, or when a directory was only
+    partially re-evaluated with a newer eval_prompt/model.  Prompt versions are
+    counted per item and shown as annotations, but they do not define coverage.
     """
     if not _OUTPUTS_DIR.exists():
         return []
 
     def _merge_item_state(
-        existing: Optional[Tuple[str, bool]],
+        existing: Optional[Tuple[str, bool, str, bool]],
         incoming_status: str,
         incoming_stale: bool,
-    ) -> Tuple[str, bool]:
+        incoming_prompt: str,
+        incoming_eval_failed: bool,
+    ) -> Tuple[str, bool, str, bool]:
         if existing is None:
-            return incoming_status, incoming_stale
+            return incoming_status, incoming_stale, incoming_prompt, incoming_eval_failed
 
         status_rank = {"success": 3, "failed": 2, "error": 1}
-        existing_status, existing_stale = existing
+        existing_status, existing_stale, existing_prompt, existing_eval_failed = existing
         if status_rank.get(incoming_status, 0) > status_rank.get(existing_status, 0):
-            return incoming_status, incoming_stale
+            return incoming_status, incoming_stale, incoming_prompt, incoming_eval_failed
         if incoming_status == existing_status == "success":
-            return "success", existing_stale or incoming_stale
-        return existing_status, existing_stale
+            # Preserve coverage, mark stale if any copy is stale, and prefer the
+            # prompt from a non-stale successful item when partial re-eval exists.
+            prompt = existing_prompt
+            if existing_stale and not incoming_stale:
+                prompt = incoming_prompt
+            elif not prompt and incoming_prompt:
+                prompt = incoming_prompt
+            return (
+                "success",
+                existing_stale or incoming_stale,
+                prompt,
+                existing_eval_failed or incoming_eval_failed,
+            )
+        return existing_status, existing_stale, existing_prompt, existing_eval_failed
 
-    # Per-key state. key = (app, dataset, input_modality, output_modality, method, eval_prompt)
+    # Per-key state. key = (app, dataset, input_modality, output_modality, method)
     key_input_modality: Dict[tuple, str] = {}
     key_output_modality: Dict[tuple, str] = {}
-    key_prompt: Dict[tuple, str] = {}
     key_dirs: Dict[tuple, List[str]] = defaultdict(list)
-    key_items: Dict[tuple, Dict[str, Tuple[str, bool]]] = defaultdict(dict)
+    key_items: Dict[tuple, Dict[str, Tuple[str, bool, str, bool]]] = defaultdict(dict)
+    key_summary_prompts: Dict[tuple, set] = defaultdict(set)
     key_summary_fallback: Dict[tuple, Dict[str, int]] = defaultdict(
-        lambda: {"success": 0, "failed": 0, "stale": 0, "total": 0}
+        lambda: {"success": 0, "failed": 0, "stale": 0, "eval_failed": 0, "total": 0}
     )
 
     for d in _OUTPUTS_DIR.iterdir():
@@ -192,10 +208,9 @@ def _scan_outputs() -> List[Dict]:
                 eval_prompt = normalize_eval_prompt(eval_prompt)
             if not app or not dataset:
                 continue
-            key = (app, dataset, input_modality, output_modality, method, eval_prompt)
+            key = (app, dataset, input_modality, output_modality, method)
             key_input_modality[key] = input_modality
             key_output_modality[key] = output_modality
-            key_prompt[key] = eval_prompt
             key_dirs[key].append(str(d))
 
             summary_path = d / _DIR_SUMMARY
@@ -203,6 +218,8 @@ def _scan_outputs() -> List[Dict]:
             if summary_path.exists():
                 try:
                     summary = json.loads(summary_path.read_text())
+                    if summary.get("eval_prompt"):
+                        key_summary_prompts[key].add(normalize_eval_prompt(summary.get("eval_prompt")))
                 except Exception:
                     summary = None
 
@@ -213,15 +230,24 @@ def _scan_outputs() -> List[Dict]:
                 saw_item_json = True
                 try:
                     data = json.loads(f.read_text())
-                    if method == "ioc_comparison":
-                        item_prompt = normalize_eval_prompt(data.get("eval_prompt"))
-                        if item_prompt != eval_prompt:
-                            continue
+                    item_prompt = normalize_eval_prompt(data.get("eval_prompt") or eval_prompt)
+                    evaluation = data.get("evaluation") or {}
+                    eval_failed = (
+                        data.get("status") == "success"
+                        and (
+                            data.get("output_eval_ok") is False
+                            or data.get("ext_eval_ok") is False
+                            or evaluation.get("original_success") is False
+                            or evaluation.get("perturbed_success") is False
+                        )
+                    )
                     item_name = str(data.get("filename") or f.stem)
                     merged = _merge_item_state(
                         key_items[key].get(item_name),
                         str(data.get("status", "")),
                         bool(data.get("ext_eval_stale", False)),
+                        item_prompt,
+                        eval_failed,
                     )
                     key_items[key][item_name] = merged
                 except Exception:
@@ -230,6 +256,8 @@ def _scan_outputs() -> List[Dict]:
                         key_items[key].get(item_name),
                         "error",
                         False,
+                        eval_prompt,
+                        False,
                     )
 
             if not saw_item_json and summary is not None:
@@ -237,6 +265,7 @@ def _scan_outputs() -> List[Dict]:
                 fb["success"] += int(summary.get("success", 0) or 0)
                 fb["failed"] += int(summary.get("failed", 0) or 0)
                 fb["stale"] += int(summary.get("stale", 0) or 0)
+                fb["eval_failed"] += int(summary.get("eval_failed", 0) or 0)
                 fb["total"] += int(summary.get("total", 0) or 0)
 
         except Exception:
@@ -247,23 +276,36 @@ def _scan_outputs() -> List[Dict]:
     result: List[Dict] = []
 
     for key in all_keys:
-        app, dataset, input_modality, output_modality, method, eval_prompt = key
+        app, dataset, input_modality, output_modality, method = key
         input_modality = key_input_modality.get(key, "")
         output_modality = key_output_modality.get(key, "")
-        eval_prompt = key_prompt.get(key, eval_prompt)
         dirs = key_dirs.get(key, [])
         items = key_items.get(key, {})
 
         if items:
-            success_count = sum(1 for st, _ in items.values() if st == "success")
-            failed_count = sum(1 for st, _ in items.values() if st == "failed")
-            stale_count = sum(1 for st, stl in items.values() if st == "success" and stl)
+            success_count = sum(1 for st, _, _, _ in items.values() if st == "success")
+            failed_count = sum(1 for st, _, _, _ in items.values() if st == "failed")
+            stale_count = sum(1 for st, stl, _, _ in items.values() if st == "success" and stl)
+            eval_failed_count = sum(
+                1 for st, _, _, eval_failed in items.values()
+                if st == "success" and eval_failed
+            )
+            prompt_success_counts: Dict[str, int] = defaultdict(int)
+            for st, _stale, prompt, _eval_failed in items.values():
+                if st == "success" and prompt:
+                    prompt_success_counts[prompt] += 1
+            prompts = sorted(prompt_success_counts)
+            eval_prompt = prompts[0] if len(prompts) == 1 else ("mixed" if prompts else "")
             has_summary = False
         else:
             fb = key_summary_fallback.get(key, {})
             success_count = int(fb.get("success", 0) or 0)
             failed_count = int(fb.get("failed", 0) or 0)
             stale_count = int(fb.get("stale", 0) or 0)
+            eval_failed_count = int(fb.get("eval_failed", 0) or 0)
+            prompt_success_counts = {}
+            prompts = sorted(key_summary_prompts.get(key, set()))
+            eval_prompt = prompts[0] if len(prompts) == 1 else ("mixed" if prompts else "")
             has_summary = True
 
         result.append({
@@ -277,7 +319,8 @@ def _scan_outputs() -> List[Dict]:
             "success_count": success_count,
             "failed_count": failed_count,
             "stale_count": stale_count,
-            "prompt_success_counts": {eval_prompt: success_count} if eval_prompt else {},
+            "eval_failed_count": eval_failed_count,
+            "prompt_success_counts": dict(prompt_success_counts),
             "has_summary": has_summary,
             "dirs": dirs,
         })
@@ -499,8 +542,9 @@ def main() -> None:
     n_combos   = len(enabled_rows)
     total_stale  = sum(c.get("stale_count",  0) for c in caches)
     total_failed = sum(c.get("failed_count", 0) for c in caches)
+    total_eval_failed = sum(c.get("eval_failed_count", 0) for c in caches)
 
-    c1, c2, c3, c4, c5 = st.columns(5)
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("Apps",        n_apps)
     c2.metric("Datasets",    n_datasets)
     c3.metric("Combos",      n_combos)
@@ -508,6 +552,7 @@ def main() -> None:
     c5.metric("Stale items", total_stale,
               delta=f"{total_failed} failed" if total_failed else None,
               delta_color="inverse")
+    c6.metric("Eval-only failures", total_eval_failed)
 
     st.divider()
 

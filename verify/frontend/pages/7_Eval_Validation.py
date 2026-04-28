@@ -2,9 +2,9 @@
 Evaluation Validation — compare evaluator predictions against SynthPAI ground truth.
 
 Loads SynthPAI text-modality IOC results and displays, for each item:
-  1. Binary accuracy table  — does ext_eval[attr].inferable agree with reviews.human certainty?
+  1. Binary accuracy table  — does ext_eval[attr].inferable agree with SynthPAI GT?
   2. Profile prediction table — does ext_eval[attr].prediction match the person's actual
-     SynthPAI profile value (age, gender, location, marital status)?
+     SynthPAI profile value (age, gender, location, marital status, identity)?
 
 Green  = evaluator agrees with ground truth
 Red    = evaluator disagrees
@@ -28,6 +28,7 @@ if str(LANTERN_ROOT) not in sys.path:
 import streamlit as st
 from verify.backend.utils.cache import normalize_eval_prompt
 from verify.backend.evaluation_method.evaluator import get_aggregate_eval_entry
+from verify.backend.datasets.label_mapper import get_input_labels, _SYNTHPAI_REVIEW_MAP
 
 # st.set_page_config(
 #     page_title="Evaluation Validation — Verify",
@@ -38,19 +39,15 @@ from verify.backend.evaluation_method.evaluator import get_aggregate_eval_entry
 
 # ── SynthPAI content-label helper ────────────────────────────────────────────
 
-# Mirrors _SYNTHPAI_REVIEW_MAP in label_mapper.py
-_REVIEW_MAP: Dict[str, str] = {
-    "age":                 "age",
-    "sex":                 "gender",
-    "city_country":        "location",
-    "relationship_status": "marital status",
-    "occupation":          "identity",
-}
-
 
 def _content_labels(result: Dict[str, Any]) -> Dict[str, int]:
-    """Return binary content-revealed labels from the stored input_labels."""
-    return result.get("input_labels", {})
+    """Return SynthPAI labels using the current thread-GT + matching-review rule."""
+    stored = result.get("input_labels", {}) or {}
+    input_item = result.get("input_item", {}) or {}
+    if input_item.get("label_source") == "synthpai":
+        attrs = list(stored.keys()) or list(_SYNTHPAI_REVIEW_MAP.values())
+        return get_input_labels(input_item, attrs)
+    return stored
 
 
 # ── SynthPAI profile → attribute mapping ─────────────────────────────────────
@@ -60,7 +57,7 @@ SYNTHPAI_ATTR_MAP: Dict[str, str] = {
     "gender":        "sex",
     "location":      "city_country",
     "marital status": "relationship_status",
-    "identity":      "username",
+    "identity":      "occupation",
 }
 
 # SynthPAI profile fields displayed even without an MCQ prediction
@@ -278,7 +275,7 @@ def _profile_table(
 
 def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
     input_item   = result.get("input_item", {})
-    input_labels = _content_labels(result)          # reviews.human-based for SynthPAI
+    input_labels = _content_labels(result)
     profile      = input_item.get("synthpai_profile", {})
     filename     = result.get("filename", "unknown")
     status       = result.get("status", "")
@@ -512,8 +509,8 @@ def _aggregate_section(items: List[Dict[str, Any]], unified_attrs: List[str]):
                 .properties(height=220, title="Precision / Recall / F1 per attribute")
             )
 
-            st.altair_chart(bar,   width="stretch")
-            st.altair_chart(lines, width="stretch")
+            st.altair_chart(bar, use_container_width=True)
+            st.altair_chart(lines, use_container_width=True)
             st.caption(
                 "Stacked bar: **green** = TP · **red** = FP · **amber** = FN · **blue-grey** = TN  |  "
                 "Lines: **blue** = Precision · **orange** = Recall · **green** = F1  |  "
@@ -536,7 +533,7 @@ def _aggregate_section(items: List[Dict[str, Any]], unified_attrs: List[str]):
             "Accuracy":  _fmt(r["Accuracy"]),
         } for r in rows])
 
-        st.dataframe(display_df, hide_index=True, width="stretch")
+        st.dataframe(display_df, hide_index=True, use_container_width=True)
 
         # Macro-average summary (skip undefined)
         valid_p  = [r["Precision"] for r in rows if r["Precision"] is not None]
@@ -679,20 +676,39 @@ def _load_items(dir_path: str) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     except Exception:
         pass
 
-    items = []
-    expected_eval_prompt = normalize_eval_prompt(cfg.get("eval_prompt")) if cfg.get("perturbation_method") == "ioc_comparison" else None
-    for f in sorted(d.iterdir()):
-        if f.suffix == ".json" and f.name not in ("run_config.json", "dir_summary.json"):
-            try:
-                item = json.loads(f.read_text())
-                if expected_eval_prompt is not None:
-                    item_prompt = normalize_eval_prompt(item.get("eval_prompt"))
-                    if item_prompt != expected_eval_prompt:
-                        continue
-                    item["eval_prompt"] = item_prompt
-                items.append(item)
-            except Exception:
-                pass
+    summary = {}
+    try:
+        summary = json.loads((d / "dir_summary.json").read_text())
+    except Exception:
+        pass
+
+    expected_eval_prompt = None
+    if cfg.get("perturbation_method") == "ioc_comparison":
+        expected_eval_prompt = normalize_eval_prompt(
+            summary.get("eval_prompt") or cfg.get("eval_prompt")
+        )
+
+    def _read_items(prompt_filter: Optional[str]) -> List[Dict[str, Any]]:
+        loaded: List[Dict[str, Any]] = []
+        for f in sorted(d.iterdir()):
+            if f.suffix == ".json" and f.name not in ("run_config.json", "dir_summary.json"):
+                try:
+                    item = json.loads(f.read_text())
+                    if prompt_filter is not None:
+                        item_prompt = normalize_eval_prompt(item.get("eval_prompt"))
+                        if item_prompt != prompt_filter:
+                            continue
+                        item["eval_prompt"] = item_prompt
+                    loaded.append(item)
+                except Exception:
+                    pass
+        return loaded
+
+    items = _read_items(expected_eval_prompt)
+    if not items and expected_eval_prompt is not None:
+        items = _read_items(None)
+        if items:
+            cfg["_eval_prompt_filter_fallback"] = expected_eval_prompt
     return items, cfg
 
 
@@ -741,7 +757,7 @@ def main():
         selected_label = st.selectbox("Pick a run", list(options.keys()))
         selected_path  = options[selected_label]
 
-        load_btn = st.button("📂 Load", type="primary", width="stretch")
+        load_btn = st.button("📂 Load", type="primary", use_container_width=True)
 
         st.divider()
         st.caption(

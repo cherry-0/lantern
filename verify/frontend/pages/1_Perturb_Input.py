@@ -140,9 +140,9 @@ def _display_image(b64_str: str | None, data=None, caption: str = ""):
             import io
             img_data = base64.b64decode(b64_str)
             img = PILImage.open(io.BytesIO(img_data))
-            st.image(img, caption=caption, width="stretch")
+            st.image(img, caption=caption, use_container_width=True)
         elif data is not None:
-            st.image(data, caption=caption, width="stretch")
+            st.image(data, caption=caption, use_container_width=True)
         else:
             st.warning("No image data available.")
     except Exception as e:
@@ -189,7 +189,7 @@ def _display_frames(frames: list, caption_prefix: str = "Frame"):
     cols = st.columns(min(len(frames), 4))
     for i, (col, frame) in enumerate(zip(cols, frames)):
         with col:
-            st.image(frame, caption=f"{caption_prefix} {i+1}", width="stretch")
+            st.image(frame, caption=f"{caption_prefix} {i+1}", use_container_width=True)
 
 
 def _eval_chart(eval_results: dict, stage_label: str):
@@ -238,7 +238,7 @@ def _eval_chart(eval_results: dict, stage_label: str):
         )
         .properties(height=200)
     )
-    st.altair_chart(chart, width="stretch")
+    st.altair_chart(chart, use_container_width=True)
 
 
 def _has_channelwise_eval(eval_results: dict) -> bool:
@@ -304,7 +304,7 @@ def _render_eval_heatmap(eval_results: dict, stage_label: str):
         .mark_text(text="●", fontSize=12, fontWeight="bold", color="#2f2f2f")
         .encode(x=alt.X("Attribute:N", sort=attrs), y=alt.Y("Stage:N", sort=stage_order))
     )
-    st.altair_chart((rect + text).properties(height=max(180, 34 * len(stage_order))), width="stretch")
+    st.altair_chart((rect + text).properties(height=max(180, 34 * len(stage_order))), use_container_width=True)
     st.caption("Red = confirmed leakage, yellow = possible leakage, green = no evidence, grey = channel not available in this evaluation.")
 
 
@@ -376,7 +376,7 @@ def _render_channel_aggregated_chart(all_results: list[dict], attributes: list[s
         )
         .properties(height=320, title=f"Attribute-wise positive rate across {len(success)} item(s)")
     )
-    st.altair_chart(chart, width="stretch")
+    st.altair_chart(chart, use_container_width=True)
     st.caption("Aggregate bars use all successful items. Channel bars use only items where that channel exists in the saved evaluation.")
 
 
@@ -642,7 +642,7 @@ def _render_aggregated_chart(all_results: list, attributes: list):
         )
         .properties(height=250)
     )
-    st.altair_chart(chart, width="stretch")
+    st.altair_chart(chart, use_container_width=True)
     st.caption("Average inferability score across all items (lower is better after perturbation).")
 
 
@@ -796,7 +796,7 @@ def main():
             "▶ Verify",
             type="primary",
             disabled=not (app_available and selected_attributes),
-            width="stretch",
+            use_container_width=True,
         )
 
         if not selected_attributes:
@@ -986,7 +986,7 @@ def main():
                     ),
                 })
             if rows:
-                st.dataframe(pd.DataFrame(rows), width="stretch")
+                st.dataframe(pd.DataFrame(rows), use_container_width=True)
 
         # Download buttons
         st.subheader("Download Report")
@@ -1001,7 +1001,7 @@ def main():
                     data=json_path.read_text(),
                     file_name="verify_report.json",
                     mime="application/json",
-                    width="stretch",
+                    use_container_width=True,
                 )
             else:
                 st.info("JSON report not available.")
@@ -1014,7 +1014,7 @@ def main():
                     data=csv_path.read_text(),
                     file_name="verify_report.csv",
                     mime="text/csv",
-                    width="stretch",
+                    use_container_width=True,
                 )
             else:
                 st.info("CSV report not available.")

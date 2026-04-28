@@ -80,7 +80,7 @@ def _display_image(b64_str: str | None, caption: str = ""):
     try:
         if b64_str:
             import base64
-            st.image(base64.b64decode(b64_str), caption=caption, width="stretch")
+            st.image(base64.b64decode(b64_str), caption=caption, use_container_width=True)
         else:
             st.info("Image not available in cache.")
     except Exception as e:
@@ -258,7 +258,7 @@ def _render_attribute_heatmap(
         )
     )
     chart = rect.properties(width=alt.Step(44), height=alt.Step(44))
-    st.altair_chart(chart, width="stretch")
+    st.altair_chart(chart, use_container_width=True)
     st.caption("Red = confirmed leakage/present, yellow = possible leakage, green = no evidence, grey = channel not captured or not evaluated.")
 
 
@@ -351,7 +351,7 @@ def _render_channel_aggregated(all_results: List[Dict[str, Any]], unified_attrs:
         )
         .properties(height=320, title=f"Attribute-wise positive rate across {len(success)} item(s)")
     )
-    st.altair_chart(chart, width="stretch")
+    st.altair_chart(chart, use_container_width=True)
     st.caption(
         "Input/Raw Output/Aggregate use all successful items. Channel bars use only items where that channel was captured and evaluated."
     )
@@ -478,7 +478,7 @@ def _render_channel_aggregated_heatmap(all_results: List[Dict[str, Any]], unifie
         chart = layers[0]
         for layer in layers[1:]:
             chart = chart + layer
-        st.altair_chart(chart, width="stretch")
+        st.altair_chart(chart, use_container_width=True)
     st.caption(
         "Heatmap cells show attribute-inferred accuracy / exposure rate by stage or channel. "
         "Absent channels remain blank light gray for layout consistency."
@@ -581,7 +581,7 @@ def _render_item(
         detail_key = f"vioc_render_details_{idx}"
         show_details = bool(st.session_state.get(detail_key, False))
         if not show_details:
-            if st.button("Load details", key=f"vioc_load_details_{idx}", width="stretch"):
+            if st.button("Load details", key=f"vioc_load_details_{idx}", use_container_width=True):
                 st.session_state[detail_key] = True
                 st.rerun()
             st.caption("Details are not rendered until requested. Click `Load details` to render this item.")
@@ -718,6 +718,19 @@ def _workflow_from_config(cfg: dict) -> tuple[str, str, str]:
         else input_modality or output_modality or "?"
     )
     return input_modality, output_modality, workflow
+
+
+def _evaluation_only_failure_count(items: List[Dict[str, Any]]) -> int:
+    """Count successful pipeline items whose output or ext evaluation failed."""
+    count = 0
+    for item in items:
+        if item.get("status") != "success":
+            continue
+        output_failed = item.get("output_eval_ok") is False
+        ext_failed = item.get("ext_eval_ok") is False
+        if output_failed or ext_failed:
+            count += 1
+    return count
 
 
 def _sniff_ioc_item(cache_dir: Path) -> Optional[dict]:
@@ -877,7 +890,7 @@ def main():
             selected_dir = None
             selected_cfg = {}
 
-        load_clicked = st.button("📂 Load", type="primary", width="stretch",
+        load_clicked = st.button("📂 Load", type="primary", use_container_width=True,
                                  disabled=selected_dir is None)
 
     # ── Load ──────────────────────────────────────────────────────────────────
@@ -936,10 +949,12 @@ def main():
     st.divider()
     st.subheader("Summary")
     statuses = [r.get("status", "") for r in items]
-    m1, m2, m3 = st.columns(3)
+    eval_failed = _evaluation_only_failure_count(items)
+    m1, m2, m3, m4 = st.columns(4)
     m1.metric("Total",      len(items))
     m2.metric("Successful", statuses.count("success"))
     m3.metric("Failed",     statuses.count("failed"))
+    m4.metric("Eval-only failures", eval_failed)
 
     # ── Per-item results ──────────────────────────────────────────────────────
     st.divider()
