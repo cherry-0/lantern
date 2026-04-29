@@ -47,6 +47,7 @@ pg = st.navigation(
         _page("pages/8_Config_Setter.py", title="Config setter", icon="⚙️"),
         _page("pages/9_Judge_Validator.py", title="Judge Validator", icon="🧪"),
         _page("pages/10_View_Judge_Validation.py", title="View Judge Validation Results", icon="🔬"),
+        _page("pages/11_Human_Judge_Validation.py", title="Human Judge Validation", icon="👤"),
     ],
     # default=_init_page,
 )
