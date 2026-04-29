@@ -24,6 +24,7 @@ Output JSON:
   error            str | null
 """
 import json
+import gc
 import sys
 import traceback
 from pathlib import Path
@@ -125,18 +126,25 @@ def main(data: dict) -> dict:
     print("[pocketpal-ai] Model loaded. Running inference...", file=sys.stderr, flush=True)
 
     # Inference — DURING phase; captured by _runtime_capture but filtered from externalizations.
-    output = llm.create_chat_completion(
-        messages=[
-            {"role": "system",    "content": system},
-            {"role": "user",      "content": text},
-        ],
-        max_tokens=max_tokens,
-        stream=False,
-    )
+    try:
+        output = llm.create_chat_completion(
+            messages=[
+                {"role": "system",    "content": system},
+                {"role": "user",      "content": text},
+            ],
+            max_tokens=max_tokens,
+            stream=False,
+        )
 
-    response: str = output["choices"][0]["message"]["content"] or ""
-    tokens_predicted: int = output.get("usage", {}).get("completion_tokens", 0)
-    print(f"[pocketpal-ai] Inference complete ({tokens_predicted} tokens).", file=sys.stderr, flush=True)
+        response: str = output["choices"][0]["message"]["content"] or ""
+        tokens_predicted: int = output.get("usage", {}).get("completion_tokens", 0)
+        print(f"[pocketpal-ai] Inference complete ({tokens_predicted} tokens).", file=sys.stderr, flush=True)
+    finally:
+        close = getattr(llm, "close", None)
+        if callable(close):
+            close()
+        del llm
+        gc.collect()
 
     # Switch to POST phase — everything below is captured as post-inference externalizations.
     _runtime_capture.set_phase("POST")

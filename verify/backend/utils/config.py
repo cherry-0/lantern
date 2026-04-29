@@ -167,6 +167,15 @@ def get_openrouter_api_key() -> Optional[str]:
     return get_env("OPENROUTER_API_KEY") or get_env("OPENROUTER_KEY")
 
 
+def get_default_eval_model() -> str:
+    """Return the default OpenRouter model ID for evaluator calls."""
+    return (
+        get_env("VERIFY_EVAL_MODEL")
+        or get_env("EVAL_MODEL")
+        or "google/gemini-2.0-flash-001"
+    )
+
+
 def get_default_eval_prompt() -> str:
     """
     Return the default IOC externalization evaluator prompt.
@@ -194,7 +203,20 @@ def is_debug() -> bool:
     return val.strip().lower() in ("1", "true", "yes")
 
 
-# ── Per-app mode overrides ────────────────────────────────────────────────────
+# ── Per-app mode defaults and overrides ───────────────────────────────────────
+# Apps here default away from the global USE_APP_SERVERS value because their
+# native path is not directly automatable or requires a separately managed app
+# server. The Streamlit Initialization page mirrors these defaults.
+_APP_DEFAULT_MODES: Dict[str, str] = {
+    "chat-driven-expense-tracker": "serverless",
+    "oxproxion": "serverless",
+    "edupal": "serverless",
+    "spendsense": "serverless",
+    "fiscal-flow": "serverless",
+    "sgpa": "serverless",
+    "waico": "serverless",
+}
+
 # Maps app_name → "native" | "serverless".
 # Set by the Streamlit Settings page; overrides USE_APP_SERVERS for that app only.
 _APP_MODE_OVERRIDES: Dict[str, str] = {}
@@ -233,7 +255,8 @@ def use_app_servers() -> bool:
 
     Resolution order:
       1. Per-app override set via Streamlit Settings page (_APP_MODE_OVERRIDES)
-      2. Global USE_APP_SERVERS value from .env / environment
+      2. Built-in per-app default mode (_APP_DEFAULT_MODES)
+      3. Global USE_APP_SERVERS value from .env / environment
 
     Controls the adapter execution mode:
       True  → HTTP / native pipeline  (requires target app servers to be running)
@@ -242,6 +265,8 @@ def use_app_servers() -> bool:
     _current_app_context = getattr(_app_context_local, "name", "")
     if _current_app_context and _current_app_context in _APP_MODE_OVERRIDES:
         return _APP_MODE_OVERRIDES[_current_app_context] == "native"
+    if _current_app_context and _current_app_context in _APP_DEFAULT_MODES:
+        return _APP_DEFAULT_MODES[_current_app_context] == "native"
     val = get_env("USE_APP_SERVERS", "false") or "false"
     return val.strip().lower() in ("1", "true", "yes")
 
