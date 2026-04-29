@@ -24,6 +24,7 @@ Usage pattern in an adapter
 
 import json
 import os
+import signal
 import subprocess
 import tempfile
 import threading
@@ -245,31 +246,45 @@ class CondaRunner:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                start_new_session=True,
             )
 
             # Relay stderr line-by-line to the terminal in real time so
             # database-creation and inference-module logs are immediately visible.
+            # Read stdout on its own thread too: a blocking stdout.read() before
+            # wait(timeout=...) prevents the timeout from ever firing if a runner
+            # hangs during model load or inference.
             stderr_lines: List[str] = []
+            stdout_chunks: List[str] = []
 
             def _relay_stderr() -> None:
                 for line in proc.stderr:
                     print(line, end="", flush=True)
                     stderr_lines.append(line)
 
+            def _capture_stdout() -> None:
+                stdout_chunks.append(proc.stdout.read())
+
             stderr_thread = threading.Thread(target=_relay_stderr, daemon=True)
+            stdout_thread = threading.Thread(target=_capture_stdout, daemon=True)
             stderr_thread.start()
+            stdout_thread.start()
 
             try:
-                stdout_raw = proc.stdout.read()
                 proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.communicate()
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                proc.wait(timeout=10)
                 return False, {}, f"Runner timed out after {timeout}s."
             finally:
+                stdout_thread.join(timeout=5)
                 stderr_thread.join(timeout=5)
 
             stderr = "".join(stderr_lines)
+            stdout_raw = "".join(stdout_chunks)
             stdout = stdout_raw.strip()
 
             # Extract JSON from stdout.
