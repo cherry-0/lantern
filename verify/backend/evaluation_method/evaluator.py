@@ -16,10 +16,10 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from verify.backend.utils.config import get_openrouter_api_key
+from verify.backend.utils.config import get_default_eval_model, get_openrouter_api_key
 
 # Model to use for evaluation
-EVAL_MODEL = "google/gemini-2.0-flash-001"
+EVAL_MODEL = get_default_eval_model()
 
 # Load EVAL_SYSTEM_PROMPT from prompts/prompt1.yaml
 PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
