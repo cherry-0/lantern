@@ -31,9 +31,19 @@ SKIP_FILES   = {"run_config.json", "dir_summary.json", "report.json", "report.cs
 
 # ── Style ──────────────────────────────────────────────────────────────────────
 sns.set_theme(style="whitegrid", font_scale=1.15)
+# Stage colors kept as-is (blue/orange/red for input/raw-output/externalized)
 BLUE   = "#3A7DC9"; ORANGE = "#E8762C"; GREEN  = "#2CA463"
 RED    = "#C93A3A"; GRAY   = "#AAAAAA"; PURPLE = "#8A4DC9"
 YELLOW = "#D4A017"; TEAL   = "#2AADAD"
+
+# ── Custom palette (Adobe swatches) ───────────────────────────────────────────
+P_TEAL   = "#7ADBC4"   # teal-green
+P_YELLOW = "#FAD765"   # golden yellow
+P_ORANGE = "#FA9F5C"   # warm orange
+P_GREEN  = "#98D198"   # sage green
+P_BLUE   = "#6C80FC"   # periwinkle blue
+P_MAUVE  = "#ACA4B3"   # muted purple-gray
+P_SLATE  = "#687692"   # slate blue-gray
 
 VERDICT_COLORS = {
     "confirmed leakage": RED,
@@ -41,9 +51,13 @@ VERDICT_COLORS = {
     "no evidence":       GREEN,
     "na":                "#DDDDDD",
 }
+# Channels use new palette
 CHANNEL_COLORS = {
-    "NETWORK": BLUE, "STORAGE": ORANGE, "UI": PURPLE,
-    "LOGGING": TEAL, "AGGREGATE": RED,
+    "NETWORK":   P_BLUE,
+    "STORAGE":   P_ORANGE,
+    "UI":        P_TEAL,
+    "LOGGING":   P_SLATE,
+    "AGGREGATE": RED,
 }
 
 # ── Attribute taxonomy (from paper appendix) ───────────────────────────────────
@@ -58,51 +72,66 @@ ATTR_FAMILIES: Dict[str, List[str]] = {
     "Activity &\nLifestyle":         ["sports"],
 }
 FAMILY_COLORS = {
-    "Identity &\nIdentifiability": "#C93A3A",
-    "Demographic":                  "#E8762C",
-    "Health &\nMedical":            "#8A4DC9",
-    "Location &\nSpatial":          "#3A7DC9",
-    "Religion &\nCultural":         "#D4A017",
-    "Appearance &\nBody":           "#2CA463",
-    "Attire, Role &\nGroup":        "#2AADAD",
-    "Activity &\nLifestyle":        "#AA6644",
+    "Identity &\nIdentifiability": P_BLUE,
+    "Demographic":                  P_ORANGE,
+    "Health &\nMedical":            P_MAUVE,
+    "Location &\nSpatial":          P_TEAL,
+    "Religion &\nCultural":         P_YELLOW,
+    "Appearance &\nBody":           P_GREEN,
+    "Attire, Role &\nGroup":        P_SLATE,
+    "Activity &\nLifestyle":        "#D4A017",
 }
 ALL_ATTRS = [a for fam in ATTR_FAMILIES.values() for a in fam]
 ATTR_TO_FAMILY = {a: fam for fam, attrs in ATTR_FAMILIES.items() for a in attrs}
 CHANNELS = ["NETWORK", "STORAGE", "UI", "LOGGING"]
 
-# ── App category mapping (from project taxonomy) ──────────────────────────────
+# ── App category mapping (from paper Table~\ref{tab:app-workflows} / fig:apps) ─
 APP_CATEGORY = {
+    # Photo/Camera
+    "momentag":                     "Photo/Camera",
+    "tool-neuron":                  "Photo/Camera",
+    # Health/Fitness
+    "skin-disease-detection":       "Health/Fitness",
+    "waico":                        "Health/Fitness",
+    "healyks":                      "Health/Fitness",
+    "nutri-track":                  "Health/Fitness",
+    # Productivity/Assistant
+    "clone":                        "Productivity",
+    "google-ai-edge-gallery":       "Productivity",
+    "klyr":                         "Productivity",
+    "snapdo":                       "Productivity",
+    "pocketpal-ai":                 "Productivity",
+    # Finance
     "budget-lens":                  "Finance",
-    "spendsense":                   "Finance",
     "fiscal-flow":                  "Finance",
+    "spendsense":                   "Finance",
     "finchain":                     "Finance",
     "chat-driven-expense-tracker":  "Finance",
-    "google-ai-edge-gallery":       "Photo/Camera",
-    "tool-neuron":                  "Photo/Camera",
-    "momentag":                     "Photo/Camera",
-    "clone":                        "Productivity",
-    "snapdo":                       "Productivity",
-    "xend":                         "Productivity",
-    "pocketpal-ai":                 "Productivity",
-    "klyr":                         "Productivity",
+    # Social/Communication
+    "lira":                         "Social/Comm.",
+    "llm-vtuber":                   "Social/Comm.",
+    "xend":                         "Social/Comm.",
+    # Education
     "deeptutor":                    "Education",
     "edupal":                       "Education",
     "sgpa":                         "Education",
-    "llm-vtuber":                   "Social/Comm.",
-    "lira":                         "Social/Comm.",
-    "waico":                        "Social/Comm.",
-    "skin-disease-detection":       "Health/Fitness",
-    "nutri-track":                  "Health/Fitness",
-    "healyks":                      "Health/Fitness",
 }
+# Ordered to match the paper grouping in fig:apps.
+CATEGORY_ORDER = [
+    "Photo/Camera",
+    "Health/Fitness",
+    "Productivity",
+    "Finance",
+    "Social/Comm.",
+    "Education",
+]
 CATEGORY_COLORS = {
-    "Finance":       "#2CA463",
-    "Photo/Camera":  "#E8762C",
-    "Productivity":  "#8A4DC9",
-    "Education":     "#E868B0",
-    "Social/Comm.":  "#D4A017",
-    "Health/Fitness":"#3A7DC9",
+    "Photo/Camera":   P_ORANGE,
+    "Health/Fitness": P_MAUVE,
+    "Productivity":   P_BLUE,
+    "Finance":        P_GREEN,
+    "Social/Comm.":   P_TEAL,
+    "Education":      P_YELLOW,
 }
 
 # Dataset modality classification
@@ -112,7 +141,7 @@ DATASET_INPUT_TYPE = {
     "MIMIC-CXR": "image",
     "PrivacyLens": "text",
     "SynthPAI": "text",
-    "GretelSyntheticPII": "text",
+    "GretelSyntheticPII": "docs",
     "ASAP-AES": "text",
     "MultiCaRe": "text",
     "OpenPII": "text",
@@ -208,12 +237,23 @@ def load_all_data() -> pd.DataFrame:
                 out_verdict   = get_output_verdict(out_entry)
                 ch_verdicts   = get_channel_verdicts(ext_entry)
                 inp_label     = int(input_labels.get(attr, 0))
+                # Was output_eval actually populated for this attribute?
+                out_present = 1 if (
+                    isinstance(out_entry, dict)
+                    and (
+                        out_entry.get("verdict") in ("confirmed leakage","possible leakage","no evidence")
+                        or "inferable" in out_entry
+                    )
+                ) else 0
 
                 rec = {**base,
                     "attr": attr,
                     "family": ATTR_TO_FAMILY.get(attr, "Other"),
                     "input_label":      inp_label,
                     "output_verdict":   out_verdict,
+                    "output_present":   out_present,
+                    "out_leakage":      1 if (out_present and out_verdict in ("confirmed leakage","possible leakage")) else 0,
+                    "out_confirmed":    1 if (out_present and out_verdict == "confirmed leakage") else 0,
                     "agg_verdict":      agg_verdict,
                     "agg_score":        entry_to_score(ext_entry),
                     "agg_leakage":      1 if agg_verdict in ("confirmed leakage","possible leakage") else 0,
@@ -253,10 +293,44 @@ def save(fig, name):
     fig.savefig(path, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
     plt.close(fig)
     print(f"  Saved: {path.name}")
+
+
+# ── Category helpers ──────────────────────────────────────────────────────────
+def _cat_index(app: str) -> int:
+    cat = APP_CATEGORY.get(app, "Other")
+    return CATEGORY_ORDER.index(cat) if cat in CATEGORY_ORDER else len(CATEGORY_ORDER)
+
+
+def apps_sorted_by_category(apps_iter, value_dict: Optional[Dict[str, float]] = None,
+                            ascending: bool = False) -> List[str]:
+    """Return apps grouped by paper category order; within a category, sort by value or name."""
+    apps = list(apps_iter)
+    def key(a):
+        ci = _cat_index(a)
+        if value_dict is not None:
+            v = value_dict.get(a, 0)
+            return (ci, v if ascending else -v, a)
+        return (ci, a)
+    return sorted(apps, key=key)
+
+
+def color_ticks_by_category(ax, app_order: List[str], axis: str = "x") -> None:
+    """Color tick labels by app category."""
+    labels = ax.get_xticklabels() if axis == "x" else ax.get_yticklabels()
+    for label, app in zip(labels, app_order):
+        cat = APP_CATEGORY.get(app, "Other")
+        color = CATEGORY_COLORS.get(cat, "#444444")
+        label.set_color(color)
+        label.set_fontweight("bold")
+
+
+def category_legend_handles():
+    """List of mpatches.Patch entries for the app-category legend."""
+    return [mpatches.Patch(color=CATEGORY_COLORS[c], label=c) for c in CATEGORY_ORDER]
     return path.name
 
 def fig_bg():
-    return "#F0F4FA"
+    return "white"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # FIGURE GENERATION
@@ -270,14 +344,14 @@ def fig1_overall_verdict_distribution(df: pd.DataFrame) -> str:
     total = agg.groupby("app")["n"].transform("sum")
     agg["pct"] = agg["n"] / total
 
-    apps = (df.groupby("app")["agg_confirmed"].mean()
-              .sort_values(ascending=False).index.tolist())
+    conf_by_app = df.groupby("app")["agg_confirmed"].mean().to_dict()
+    apps = apps_sorted_by_category(conf_by_app.keys(), conf_by_app, ascending=False)
     agg = agg.set_index(["app","agg_verdict"])["pct"].unstack(fill_value=0)
     for v in order:
         if v not in agg.columns: agg[v] = 0
     agg = agg.reindex(apps)[order]
 
-    fig, ax = plt.subplots(figsize=(13, 5), facecolor=fig_bg())
+    fig, ax = plt.subplots(figsize=(13, 5.6), facecolor=fig_bg())
     ax.set_facecolor(fig_bg())
     bottom = np.zeros(len(agg))
     for v in order:
@@ -294,38 +368,67 @@ def fig1_overall_verdict_distribution(df: pd.DataFrame) -> str:
 
     ax.set_ylim(0, 1.05)
     ax.set_ylabel("Fraction of attribute-item pairs")
-    ax.set_title("Fig 1 — Overall Externalization Verdict Distribution by App\n(Aggregate across all channels, all attributes)", fontsize=12)
+    ax.set_title("Fig 1 — Overall Externalization Verdict Distribution by App\n(grouped by app category from Table~app-workflows; tick label color = category)", fontsize=12)
+    ax.set_xticks(range(len(agg.index)))
     ax.set_xticklabels(agg.index, rotation=35, ha="right")
-    ax.legend(loc="upper right", framealpha=0.9)
+    color_ticks_by_category(ax, list(agg.index), axis="x")
+    leg1 = ax.legend(loc="upper right", framealpha=0.9, title="Verdict")
+    ax.add_artist(leg1)
+    ax.legend(handles=category_legend_handles(), loc="upper left",
+              fontsize=8, title="App category", framealpha=0.9)
     ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
     return save(fig, "leakage_fig1_overall_verdict_by_app.png")
 
 
 def fig2_verdict_by_attr_family(df: pd.DataFrame) -> str:
-    """Grouped bar: confirmed/possible leakage rate per attribute family."""
+    """Grouped bar: per-family confirmed/any leakage at BOTH raw-output and externalization stages."""
     fam_order = list(ATTR_FAMILIES.keys())
-    agg = df.groupby("family").agg(
-        confirmed=("agg_confirmed", "mean"),
-        possible=("agg_leakage", "mean"),
-    ).reindex(fam_order).fillna(0)
-    agg["possible_only"] = agg["possible"] - agg["confirmed"]
+    rows = []
+    for fam in fam_order:
+        sub = df[df["family"] == fam]
+        if len(sub) == 0:
+            rows.append({"family": fam, "conf_raw": 0, "any_raw": 0, "conf_ext": 0, "any_ext": 0})
+            continue
+        raw_sub = sub[sub["output_present"] == 1]
+        if len(raw_sub) > 0:
+            ov = raw_sub["output_verdict"].astype(str)
+            conf_raw = (ov == "confirmed leakage").mean()
+            any_raw  = ov.isin(["confirmed leakage", "possible leakage"]).mean()
+        else:
+            conf_raw = any_raw = 0
+        rows.append({
+            "family":   fam,
+            "conf_raw": conf_raw,
+            "any_raw":  any_raw,
+            "conf_ext": sub["agg_confirmed"].mean(),
+            "any_ext":  sub["agg_leakage"].mean(),
+        })
+    agg = pd.DataFrame(rows).set_index("family").reindex(fam_order).fillna(0)
 
-    fig, ax = plt.subplots(figsize=(12, 5), facecolor=fig_bg())
+    fig, ax = plt.subplots(figsize=(13, 5.5), facecolor=fig_bg())
     ax.set_facecolor(fig_bg())
     x = np.arange(len(fam_order))
-    w = 0.35
-    b1 = ax.bar(x - w/2, agg["confirmed"], w, label="Confirmed leakage", color=RED, edgecolor="white")
-    b2 = ax.bar(x + w/2, agg["possible"],  w, label="Any leakage (conf+possible)", color=ORANGE, edgecolor="white")
-    for b, vals in [(b1, agg["confirmed"]), (b2, agg["possible"])]:
-        for bar, v in zip(b, vals):
-            if v > 0.01:
+    w = 0.26
+    # Raw-output evaluator is binary (inferable / not), so confirmed_raw == any_raw — show one bar.
+    metrics = [
+        ("any_raw",  "Inferable in raw output\n(binary judge)",       PURPLE, 0.95),
+        ("any_ext",  "Any leakage (externalization)",                  ORANGE, 0.85),
+        ("conf_ext", "Confirmed leakage (externalization)",            RED,    1.0),
+    ]
+    for i, (col, label, color, alpha) in enumerate(metrics):
+        offset = (i - 1) * w
+        bars = ax.bar(x + offset, agg[col], w, label=label,
+                      color=color, alpha=alpha, edgecolor="white", linewidth=0.4)
+        for bar, v in zip(bars, agg[col]):
+            if v > 0.015:
                 ax.text(bar.get_x()+bar.get_width()/2, bar.get_height()+0.005,
-                        f"{v:.0%}", ha="center", fontsize=8, va="bottom")
+                        f"{v:.0%}", ha="center", fontsize=7, va="bottom")
     ax.set_xticks(x)
     ax.set_xticklabels([f.replace("\n"," ") for f in fam_order], rotation=30, ha="right", fontsize=9)
     ax.set_ylabel("Leakage rate"); ax.set_ylim(0, 1.05)
-    ax.set_title("Fig 2 — Leakage Rate by Attribute Family (Aggregate Externalization)", fontsize=12)
-    ax.legend(); ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+    ax.set_title("Fig 2 — Leakage Rate by Attribute Family — Raw Output vs Externalization\n(Raw output: binary inferable judge from `output_eval`; Externalization: 3-class judge from `ext_eval` aggregate)", fontsize=11)
+    ax.legend(fontsize=8, ncol=3, loc="upper right")
+    ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
     return save(fig, "leakage_fig2_family_leakage_rate.png")
 
 
@@ -334,18 +437,23 @@ def fig3_attr_heatmap_by_app(df: pd.DataFrame) -> str:
     pivot = (df.pivot_table(index="attr", columns="app",
                             values="agg_confirmed", aggfunc="mean") * 100)
     attr_order = (pivot.mean(axis=1).sort_values(ascending=False).index.tolist())
-    app_order  = (pivot.mean(axis=0).sort_values(ascending=False).index.tolist())
+    col_means  = pivot.mean(axis=0).to_dict()
+    app_order  = apps_sorted_by_category(pivot.columns.tolist(), col_means, ascending=False)
     pivot = pivot.loc[attr_order, app_order]
 
-    fig, ax = plt.subplots(figsize=(max(10, len(app_order)*1.1), max(8, len(attr_order)*0.45)), facecolor=fig_bg())
+    fig, ax = plt.subplots(figsize=(max(11, len(app_order)*1.1), max(8, len(attr_order)*0.45)), facecolor=fig_bg())
     cmap = LinearSegmentedColormap.from_list("leak", [GREEN, "#FFFACC", ORANGE, RED])
     sns.heatmap(pivot, ax=ax, cmap=cmap, annot=True, fmt=".0f", linewidths=0.4,
                 linecolor="#e0e0e0", vmin=0, vmax=100,
                 cbar_kws={"label": "Confirmed leakage %", "shrink": 0.8})
-    ax.set_title("Fig 3 — Confirmed Leakage Rate (%) per Attribute × App\n(sorted by mean leakage)", fontsize=12)
+    ax.set_title("Fig 3 — Confirmed Leakage Rate (%) per Attribute × App\n(apps grouped by paper category; tick label color = category)", fontsize=12)
     ax.set_xlabel(""); ax.set_ylabel("")
     ax.set_xticklabels(ax.get_xticklabels(), rotation=35, ha="right", fontsize=9)
     ax.set_yticklabels(ax.get_yticklabels(), rotation=0, fontsize=9)
+    color_ticks_by_category(ax, app_order, axis="x")
+    ax.legend(handles=category_legend_handles(), loc="upper left",
+              bbox_to_anchor=(1.18, 1.0), fontsize=8, title="App category",
+              framealpha=0.9)
     return save(fig, "leakage_fig3_attr_app_heatmap.png")
 
 
@@ -395,10 +503,11 @@ def fig4_channel_distribution(df: pd.DataFrame) -> str:
     ax.legend(handles=legend_patches, loc="upper right", framealpha=0.9)
     ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
 
-    # Add n= labels below x-axis
+    # Add n= labels below x-axis (well clear of the channel tick labels above)
     for j, ch in enumerate(cdf.index):
-        ax.text(j, -0.06, f"n={cdf.loc[ch,'n']:,}", ha="center", fontsize=7.5,
+        ax.text(j, -0.14, f"n={cdf.loc[ch,'n']:,}", ha="center", fontsize=7.5,
                 transform=ax.get_xaxis_transform(), color="#555")
+    fig.subplots_adjust(bottom=0.18)
     return save(fig, "leakage_fig4_channel_distribution.png")
 
 
@@ -418,17 +527,22 @@ def fig5_channel_heatmap_by_app(df: pd.DataFrame) -> str:
     if cdf.empty:
         return ""
     pivot = cdf.pivot_table(index="channel", columns="app", values="confirmed", aggfunc="mean").fillna(0)
-    app_order = pivot.mean(axis=0).sort_values(ascending=False).index.tolist()
+    col_means = pivot.mean(axis=0).to_dict()
+    app_order = apps_sorted_by_category(pivot.columns.tolist(), col_means, ascending=False)
     pivot = pivot[app_order]
 
-    fig, ax = plt.subplots(figsize=(max(10, len(app_order)*1.1), 5), facecolor=fig_bg())
+    fig, ax = plt.subplots(figsize=(max(11, len(app_order)*1.1), 5), facecolor=fig_bg())
     cmap = LinearSegmentedColormap.from_list("ch", ["#FFFFFF", BLUE, RED])
     sns.heatmap(pivot, ax=ax, cmap=cmap, annot=True, fmt=".0f", linewidths=0.5,
                 linecolor="#e0e0e0", vmin=0, vmax=100,
                 cbar_kws={"label": "Confirmed leakage %", "shrink": 0.7})
-    ax.set_title("Fig 5 — Confirmed Leakage Rate (%) by Channel × App", fontsize=12)
+    ax.set_title("Fig 5 — Confirmed Leakage Rate (%) by Channel × App\n(apps grouped by paper category; tick label color = category)", fontsize=12)
     ax.set_xlabel(""); ax.set_ylabel("Channel")
     ax.set_xticklabels(ax.get_xticklabels(), rotation=35, ha="right", fontsize=9)
+    color_ticks_by_category(ax, app_order, axis="x")
+    ax.legend(handles=category_legend_handles(), loc="upper left",
+              bbox_to_anchor=(1.20, 1.0), fontsize=8, title="App category",
+              framealpha=0.9)
     return save(fig, "leakage_fig5_channel_app_heatmap.png")
 
 
@@ -451,10 +565,12 @@ def fig6_background_vs_ui_leakage(df: pd.DataFrame) -> str:
             })
 
     rdf = pd.DataFrame(rows)
-    # Sort apps by confirmed total
-    sort_order = (rdf[rdf["metric"]=="confirmed"]
+    # Group by category (paper order); sort ascending within category so highest sits on top per group.
+    conf_total = (rdf[rdf["metric"]=="confirmed"]
                   .assign(total=lambda d: d["Background\n(STORAGE+LOGGING)"] + d["Foreground\n(UI+NETWORK)"])
-                  .sort_values("total", ascending=True)["app"].tolist())
+                  .set_index("app")["total"].to_dict())
+    # ascending=True puts large values at top of each category band on the horizontal bar (matplotlib draws first item at bottom)
+    sort_order = list(reversed(apps_sorted_by_category(conf_total.keys(), conf_total, ascending=False)))
 
     fig, axes = plt.subplots(1, 2, figsize=(14, max(5, len(sort_order)*0.55)),
                              facecolor=fig_bg(), sharey=True)
@@ -479,10 +595,14 @@ def fig6_background_vs_ui_leakage(df: pd.DataFrame) -> str:
         ax.set_xlabel("Leakage rate"); ax.set_xlim(0, 1.05)
         ax.set_title(titles[metric], fontsize=10)
         ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+        color_ticks_by_category(ax, sort_order, axis="y")
         if ax_idx == 0:
             ax.legend(loc="lower right", fontsize=8)
+        if ax_idx == 1:
+            ax.legend(handles=category_legend_handles(), loc="lower right",
+                      fontsize=7.5, title="App category", framealpha=0.9)
 
-    fig.suptitle("Fig 6 — Background vs Foreground Leakage by App\n(Background=STORAGE+LOGGING, Foreground=UI+NETWORK)", fontsize=11, y=1.02)
+    fig.suptitle("Fig 6 — Background vs Foreground Leakage by App\n(grouped by paper category; tick label color = category)", fontsize=11, y=1.02)
     plt.tight_layout()
     return save(fig, "leakage_fig6_background_vs_ui.png")
 
@@ -580,15 +700,18 @@ def fig9_inference_expansion(df: pd.DataFrame) -> str:
     idf = pd.DataFrame(rows)
     if idf.empty: return ""
 
-    # Per-app mean
+    # Per-app mean — group by paper category
     app_agg = idf.groupby("app").agg(
         mean_input=("n_input","mean"),
         mean_ext=("n_ext","mean"),
         mean_new=("n_new","mean"),
         mean_lost=("n_lost","mean"),
-    ).sort_values("mean_new", ascending=False)
+    )
+    new_by_app = app_agg["mean_new"].to_dict()
+    app_order = apps_sorted_by_category(app_agg.index.tolist(), new_by_app, ascending=False)
+    app_agg = app_agg.reindex(app_order)
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6), facecolor=fig_bg())
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6.4), facecolor=fig_bg())
     for ax in axes: ax.set_facecolor(fig_bg())
 
     # Left: mean attribute counts
@@ -600,7 +723,9 @@ def fig9_inference_expansion(df: pd.DataFrame) -> str:
     ax.set_xticks(x); ax.set_xticklabels(app_agg.index, rotation=35, ha="right", fontsize=9)
     ax.set_ylabel("Mean # attributes per item")
     ax.set_title("Mean Attribute Count:\nInput GT vs Externalized", fontsize=10)
-    ax.legend(); ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+    ax.legend(loc="upper left", bbox_to_anchor=(1.0, 1.0), fontsize=8)
+    ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+    color_ticks_by_category(ax, app_order, axis="x")
 
     # Right: new vs lost attributes
     ax = axes[1]
@@ -609,9 +734,14 @@ def fig9_inference_expansion(df: pd.DataFrame) -> str:
     ax.set_xticks(x); ax.set_xticklabels(app_agg.index, rotation=35, ha="right", fontsize=9)
     ax.set_ylabel("Mean # attributes per item")
     ax.set_title("Inference Transformation:\nNew vs Lost Attributes", fontsize=10)
-    ax.legend(); ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+    leg_data = ax.legend(loc="upper left", fontsize=8)
+    ax.add_artist(leg_data)
+    ax.legend(handles=category_legend_handles(), loc="upper left",
+              bbox_to_anchor=(1.0, 1.0), fontsize=7.5, title="App category", framealpha=0.9)
+    ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+    color_ticks_by_category(ax, app_order, axis="x")
 
-    fig.suptitle("Fig 9 — Inference Expansion: How Attribute Sets Transform from Input to Externalization", fontsize=12, y=1.02)
+    fig.suptitle("Fig 9 — Inference Expansion: How Attribute Sets Transform from Input to Externalization\n(apps grouped by paper category; tick label color = category)", fontsize=12, y=1.02)
     plt.tight_layout()
     return save(fig, "leakage_fig9_inference_expansion.png")
 
@@ -659,7 +789,7 @@ def fig11_modality_comparison(df: pd.DataFrame) -> str:
 
     pairs_sorted = (df.groupby("modality_pair")["agg_confirmed"].mean()
                     .sort_values(ascending=False).index.tolist())
-    pair_colors = {p: c for p, c in zip(pairs_sorted, [RED, BLUE, ORANGE, GREEN, PURPLE])}
+    pair_colors = {p: c for p, c in zip(pairs_sorted, [P_BLUE, P_ORANGE, P_TEAL, P_GREEN, P_MAUVE])}
 
     fig, axes = plt.subplots(1, 2, figsize=(15, 6), facecolor=fig_bg())
     for ax in axes: ax.set_facecolor(fig_bg())
@@ -710,7 +840,7 @@ def fig12_input_type_comparison(df: pd.DataFrame) -> str:
     families = [f.replace("\n"," ") for f in fam_order]
     x = np.arange(len(families))
     w = 0.25
-    type_colors = {"docs": ORANGE, "image": BLUE, "text": GREEN}
+    type_colors = {"docs": P_YELLOW, "image": P_BLUE, "text": P_TEAL}
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 5), facecolor=fig_bg())
     for ax in axes: ax.set_facecolor(fig_bg())
@@ -743,7 +873,7 @@ def fig13_semantic_crystallization(df: pd.DataFrame) -> str:
     ).reset_index()
 
     fig, axes = plt.subplots(1, 3, figsize=(16, 5), facecolor=fig_bg(), sharey=True)
-    type_colors = {"docs": ORANGE, "image": BLUE, "text": GREEN}
+    type_colors = {"docs": P_YELLOW, "image": P_BLUE, "text": P_TEAL}
     for ax in axes: ax.set_facecolor(fig_bg())
 
     for ax_idx, (it, title) in enumerate([
@@ -810,12 +940,15 @@ def fig14_profile_consolidation(df: pd.DataFrame) -> str:
     ax.set_title("Distribution of Co-Occurring\nConfirmed Leakage Attributes", fontsize=10)
     ax.legend(); ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
 
-    # Right: input vs confirmed per app
+    # Right: input vs confirmed per app — grouped by paper category
     ax = axes[1]
     app_agg = per_item.groupby("app").agg(
         mean_in=("n_input","mean"),
         mean_conf=("n_confirmed","mean"),
-    ).sort_values("mean_conf", ascending=False)
+    )
+    conf_by_app = app_agg["mean_conf"].to_dict()
+    app_order = apps_sorted_by_category(app_agg.index.tolist(), conf_by_app, ascending=False)
+    app_agg = app_agg.reindex(app_order)
     x = np.arange(len(app_agg))
     w = 0.35
     b1 = ax.bar(x-w/2, app_agg["mean_in"],   w, color=BLUE,  label="Input GT attrs", edgecolor="white")
@@ -823,9 +956,14 @@ def fig14_profile_consolidation(df: pd.DataFrame) -> str:
     ax.set_xticks(x); ax.set_xticklabels(app_agg.index, rotation=35, ha="right", fontsize=9)
     ax.set_ylabel("Mean # attributes per item")
     ax.set_title("Mean Attribute Profile Density\n(Input vs Confirmed Leaked)", fontsize=10)
-    ax.legend(); ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+    leg_metric = ax.legend(loc="upper right", fontsize=8)
+    ax.add_artist(leg_metric)
+    ax.legend(handles=category_legend_handles(), loc="upper left",
+              bbox_to_anchor=(1.0, 1.0), fontsize=7.5, title="App category", framealpha=0.9)
+    ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+    color_ticks_by_category(ax, app_order, axis="x")
 
-    fig.suptitle("Fig 14 — Profile Consolidation: How Many Attributes Are Simultaneously Leaked", fontsize=12, y=1.02)
+    fig.suptitle("Fig 14 — Profile Consolidation: How Many Attributes Are Simultaneously Leaked\n(right panel: apps grouped by paper category)", fontsize=12, y=1.02)
     plt.tight_layout()
     return save(fig, "leakage_fig14_profile_consolidation.png")
 
@@ -929,7 +1067,7 @@ def fig17_modality_text_vs_image_radar(df: pd.DataFrame) -> str:
     angles += angles[:1]
 
     type_data = {}
-    type_colors2 = {"docs": ORANGE, "image": BLUE, "text": GREEN}
+    type_colors2 = {"docs": P_YELLOW, "image": P_BLUE, "text": P_TEAL}
     for it in ["docs","image","text"]:
         sub = df[df["in_type"]==it]
         vals = []
@@ -958,36 +1096,76 @@ def fig17_modality_text_vs_image_radar(df: pd.DataFrame) -> str:
 
 
 def fig18_app_leakage_summary(df: pd.DataFrame) -> str:
-    """Summary: per-app confirmed leakage rate with confidence intervals, sorted."""
-    apps = df["app"].unique()
+    """Per-app: confirmed/any leakage from raw output AND externalization (4 bars per app).
+
+    Raw-output rates use `output_verdict` (raw model output stage); externalization
+    rates use the aggregate over channels (`agg_*`). Per-(app, dataset) groups for
+    which output_eval was not run yield raw rates of zero for those items, so the
+    raw bars only reflect apps/datasets where output_eval is populated.
+    """
     rows = []
-    for app in apps:
-        sub = df[df["app"]==app]
+    for app, sub in df.groupby("app"):
         n = len(sub)
-        mean = sub["agg_confirmed"].mean()
-        std  = sub["agg_confirmed"].std()
-        se   = std / np.sqrt(n) if n > 1 else 0
-        in_type = sub["in_type"].mode()[0] if len(sub) > 0 else "text"
-        rows.append({"app": app, "mean": mean, "se": se, "n": n, "in_type": in_type})
+        raw_sub = sub[sub["output_present"] == 1]
+        n_raw = len(raw_sub)
+        if n_raw > 0:
+            ov = raw_sub["output_verdict"].astype(str)
+            any_raw = ov.isin(["confirmed leakage","possible leakage"]).mean()
+            conf_raw = (ov == "confirmed leakage").mean()
+        else:
+            any_raw = conf_raw = 0
+        any_ext  = sub["agg_leakage"].mean()
+        conf_ext = sub["agg_confirmed"].mean()
+        rows.append({
+            "app": app, "n": n, "n_raw": n_raw,
+            "conf_raw": conf_raw, "any_raw": any_raw,
+            "conf_ext": conf_ext, "any_ext": any_ext,
+        })
 
-    adf = pd.DataFrame(rows).sort_values("mean", ascending=True)
-    type_colors3 = {"docs": ORANGE, "image": BLUE, "text": GREEN}
+    adf = pd.DataFrame(rows)
+    if adf.empty:
+        return ""
+    conf_ext_dict = adf.set_index("app")["conf_ext"].to_dict()
+    # ascending=True for horizontal bars: highest at top of each category band
+    app_order = list(reversed(apps_sorted_by_category(adf["app"].tolist(), conf_ext_dict, ascending=False)))
+    adf = adf.set_index("app").reindex(app_order)
 
-    fig, ax = plt.subplots(figsize=(8, max(5, len(adf)*0.5)), facecolor=fig_bg())
+    fig, ax = plt.subplots(figsize=(10, max(5.5, len(adf)*0.55)), facecolor=fig_bg())
     ax.set_facecolor(fig_bg())
-    colors = [type_colors3.get(r["in_type"], GRAY) for _, r in adf.iterrows()]
-    bars = ax.barh(adf["app"], adf["mean"], color=colors, edgecolor="white", alpha=0.85)
-    ax.errorbar(adf["mean"], range(len(adf)), xerr=adf["se"]*1.96, fmt="none",
-                color="black", capsize=3, capthick=1, lw=1)
-    for bar, (_, row) in zip(bars, adf.iterrows()):
-        ax.text(row["mean"] + row["se"]*2 + 0.005, bar.get_y() + bar.get_height()/2,
-                f"{row['mean']:.0%} (n={row['n']:,})", va="center", fontsize=8)
 
-    patches = [mpatches.Patch(color=c, label=t.capitalize()) for t, c in type_colors3.items()]
-    ax.legend(handles=patches, title="Input type", fontsize=9, loc="lower right")
-    ax.set_xlabel("Confirmed leakage rate (aggregate)")
-    ax.set_title("Fig 18 — Per-App Confirmed Leakage Rate (±95% CI)\nsorted by leakage rate", fontsize=12)
+    y = np.arange(len(adf))
+    h = 0.26
+    # Raw-output evaluator is binary (inferable / not), so a single "any_raw" bar is enough.
+    metrics = [
+        ("any_raw",  "Inferable in raw output (binary judge)",  PURPLE, 0.95),
+        ("any_ext",  "Any leakage (externalization)",           ORANGE, 0.85),
+        ("conf_ext", "Confirmed leakage (externalization)",     RED,    1.0),
+    ]
+    for i, (col, label, color, alpha) in enumerate(metrics):
+        offset = (i - 1) * h
+        vals = adf[col].values
+        bars = ax.barh(y + offset, vals, h, color=color, alpha=alpha,
+                       edgecolor="white", linewidth=0.5, label=label)
+        for bar, v in zip(bars, vals):
+            if v > 0.01:
+                ax.text(v + 0.005, bar.get_y() + bar.get_height()/2,
+                        f"{v:.0%}", va="center", fontsize=7)
+
+    ax.set_yticks(y)
+    def _ylabel(a):
+        n = int(adf.loc[a, "n"])
+        nr = int(adf.loc[a, "n_raw"])
+        marker = "" if nr > 0 else "  *"
+        return f"{a}  (n={n:,}, raw n={nr:,}){marker}"
+    ax.set_yticklabels([_ylabel(a) for a in adf.index], fontsize=9)
+    color_ticks_by_category(ax, list(adf.index), axis="y")
+    ax.set_xlabel("Leakage rate")
     ax.set_xlim(0, 1.05)
+    ax.set_title("Fig 18 — Per-App Leakage Rate: Raw Output vs Externalization\n(solid = raw output stage; light = aggregate externalization;  * = no output_eval data)", fontsize=12)
+    leg_metric = ax.legend(loc="lower right", fontsize=7.5, title="Metric / stage")
+    ax.add_artist(leg_metric)
+    ax.legend(handles=category_legend_handles(), loc="upper right", bbox_to_anchor=(1.02, 1.0),
+              fontsize=7.5, title="App category", framealpha=0.9)
     ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
     return save(fig, "leakage_fig18_app_summary.png")
 
@@ -1006,10 +1184,11 @@ def fig19_channel_presence_by_app(df: pd.DataFrame) -> str:
     cdf = pd.DataFrame(rows)
     if cdf.empty: return ""
     pivot = cdf.pivot_table(index="app", columns="channel", values="presence", aggfunc="mean").fillna(0)
-    app_order = pivot.sum(axis=1).sort_values(ascending=False).index.tolist()
+    sum_by_app = pivot.sum(axis=1).to_dict()
+    app_order = apps_sorted_by_category(pivot.index.tolist(), sum_by_app, ascending=False)
     pivot = pivot.loc[app_order]
 
-    fig, ax = plt.subplots(figsize=(13, 5), facecolor=fig_bg())
+    fig, ax = plt.subplots(figsize=(13, 5.4), facecolor=fig_bg())
     ax.set_facecolor(fig_bg())
     bottom = np.zeros(len(pivot))
     for ch in CHANNELS:
@@ -1024,9 +1203,14 @@ def fig19_channel_presence_by_app(df: pd.DataFrame) -> str:
         bottom += vals
 
     ax.set_ylabel("Fraction of items with channel captured")
-    ax.set_title("Fig 19 — Channel Capture Rate per App\n(what fraction of items have each externalization channel)", fontsize=11)
+    ax.set_title("Fig 19 — Channel Capture Rate per App\n(apps grouped by paper category; tick label color = category)", fontsize=11)
+    ax.set_xticks(range(len(pivot.index)))
     ax.set_xticklabels(pivot.index, rotation=35, ha="right")
-    ax.legend(title="Channel", bbox_to_anchor=(1.01, 1), loc="upper left")
+    color_ticks_by_category(ax, list(pivot.index), axis="x")
+    leg_ch = ax.legend(title="Channel", bbox_to_anchor=(1.01, 1), loc="upper left")
+    ax.add_artist(leg_ch)
+    ax.legend(handles=category_legend_handles(), bbox_to_anchor=(1.01, 0.45),
+              loc="upper left", fontsize=7.5, title="App category", framealpha=0.9)
     ax.set_ylim(0, max(3.5, bottom.max()*1.1))
     ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
     return save(fig, "leakage_fig19_channel_presence.png")
@@ -1252,12 +1436,26 @@ def compute_stats(df: pd.DataFrame) -> dict:
     stats["n_apps"]     = df["app"].nunique()
     stats["n_datasets"] = df["dataset"].nunique()
 
-    # Overall verdict distribution
+    # Overall verdict distribution — externalization (post channel projection)
     vc = df["agg_verdict"].value_counts(normalize=True)
     stats["overall_confirmed"] = vc.get("confirmed leakage", 0)
     stats["overall_possible"]  = vc.get("possible leakage", 0)
     stats["overall_no_ev"]     = vc.get("no evidence", 0)
     stats["overall_any_leak"]  = stats["overall_confirmed"] + stats["overall_possible"]
+
+    # Overall verdict distribution — raw model output stage (only over rows where output_eval was actually run)
+    raw_sub = df[df["output_present"] == 1] if "output_present" in df.columns else df.iloc[0:0]
+    if len(raw_sub) > 0:
+        ov = raw_sub["output_verdict"].astype(str)
+        vc_raw = ov.value_counts(normalize=True)
+        stats["overall_confirmed_raw"] = vc_raw.get("confirmed leakage", 0)
+        stats["overall_possible_raw"]  = vc_raw.get("possible leakage", 0)
+        stats["overall_any_leak_raw"]  = stats["overall_confirmed_raw"] + stats["overall_possible_raw"]
+    else:
+        stats["overall_confirmed_raw"] = 0
+        stats["overall_possible_raw"]  = 0
+        stats["overall_any_leak_raw"]  = 0
+    stats["n_rows_with_raw"] = int(len(raw_sub))
 
     # Per-attribute top confirmed
     attr_conf = df.groupby("attr")["agg_confirmed"].mean().sort_values(ascending=False)
@@ -1337,7 +1535,7 @@ REPORT_TEMPLATE = """\
 # Inference-Induced Privacy Leakage Landscape
 
 > **Status:** Analysis of prompt4/prompt5 evaluation results — {n_items:,} items across {n_apps} apps, {n_datasets} datasets.
-> Generated: 2026-04-28.
+> Generated: {gen_date}.
 
 ---
 
@@ -1360,6 +1558,8 @@ REPORT_TEMPLATE = """\
 | **No evidence** | No meaningful signal for this attribute (score=0) |
 | **Any leakage rate** | (confirmed + possible) / total attribute-item pairs |
 | **Confirmed leakage rate** | confirmed / total attribute-item pairs |
+| **Raw-output stage** | Computed from `output_eval` — judges whether the raw model output makes the attribute *inferable*. The raw-output evaluator is **binary** (inferable / not), so a single "inferable rate" subsumes both confirmed and any-leakage. |
+| **Externalization stage** | Computed from `ext_eval` — judges what is actually visible after the channel projection (NETWORK / STORAGE / UI / LOGGING). The aggregate (`agg_*`) judge is **3-class** (confirmed / possible / no evidence), so confirmed and any-leakage are reported separately and the default headline metric throughout. |
 | **Inference expansion** | # attributes in externalized set but NOT in input GT set |
 | **Background leakage** | Leakage through STORAGE or LOGGING (non-user-visible) |
 
@@ -1373,12 +1573,16 @@ REPORT_TEMPLATE = """\
 | Unique items | {n_items:,} |
 | Apps covered | {n_apps} |
 | Datasets covered | {n_datasets} |
-| **Overall confirmed leakage rate** | **{overall_confirmed:.1%}** |
-| **Overall any-leakage rate** | **{overall_any_leak:.1%}** |
-| No evidence rate | {overall_no_ev:.1%} |
+| **Inferable in raw model output (binary judge)** | **{overall_any_leak_raw:.1%}** |
+| **Confirmed leakage — externalization (aggregate, 3-class)** | **{overall_confirmed:.1%}** |
+| **Any leakage — externalization (aggregate, 3-class)** | **{overall_any_leak:.1%}** |
+| No-evidence rate (externalization) | {overall_no_ev:.1%} |
+| Attribute-item pairs with `output_eval` populated | {n_rows_with_raw:,} |
 | Mean GT input attributes per item | {mean_input_attrs:.2f} |
 | Mean externalized (any-leak) attributes per item | {mean_ext_attrs:.2f} |
 | Items with inference expansion (new attrs ≥1) | {pct_expansion:.1%} |
+
+> The two judges report different metrics by design. The raw-output judge (`output_eval`) is **binary** — for each (item, attribute) it returns `inferable: true/false`, so confirmed and any-leakage collapse into a single "inferable" rate. The externalization judge (`ext_eval` aggregate) is **3-class** — it returns `confirmed leakage` / `possible leakage` / `no evidence`, so confirmed and any-leakage are reported separately. Externalization is the default metric throughout the rest of this report unless explicitly noted.
 
 ![Fig 1 — Overall Verdict Distribution by App](attachments/leakage_fig1_overall_verdict_by_app.png)
 
@@ -1386,9 +1590,9 @@ REPORT_TEMPLATE = """\
 
 ## 4. Key Findings
 
-### Finding 1: Identity and Location are the Most Persistently Leaked Attribute Families
+### Finding 1: Identity, Demographic, and Location Attributes Show the Highest Confirmed Leakage
 
-Across all apps and datasets, the **Identity & Identifiability** family (face, identity) shows the highest confirmed leakage rate, followed by **Location & Spatial** and **Demographic** attributes.
+Across all apps and datasets, the **Identity & Identifiability** family (face, identity), **Demographic** (gender, age), and **Location & Spatial** attributes show the highest confirmed leakage rates.
 
 {top_attrs_text}
 
@@ -1401,7 +1605,7 @@ The top-5 confirmed attributes are: {top_attr_str}. These attributes appear cons
 
 ---
 
-### Finding 2: NETWORK Channel Dominates, but STORAGE Creates Hidden Background Leakage
+### Finding 2: UI Carries the Most Volume; STORAGE Creates Hidden Background Leakage at Comparable Rates
 
 {channel_text}
 
@@ -1523,8 +1727,8 @@ Apps are grouped into six functional categories: **Finance**, **Photo/Camera**, 
 ### D. Data Quality Notes
 
 - prompt4/5 items with failed `ext_eval` (no verdict) are excluded from all analyses.
-- `spendsense|SROIE2019` (n=1) and `tool-neuron|HR-VISPR` image→image (n=1) excluded as statistically insignificant.
-- `output_eval` (raw app output stage) is only available for PrivacyLens text→text runs (deeptutor, waico, llm-vtuber, tool-neuron).
+- Per-(app, dataset) groups with fewer than 5 verdict rows are excluded; only `tool-neuron|HR-VISPR` (1 item, image→image) and `spendsense|SROIE2019` (2 items) remain in the very-small-sample regime — interpret their per-app rates with caution.
+- `output_eval` (raw app output stage) is only available for PrivacyLens text→text runs (deeptutor, waico, llm-vtuber, tool-neuron, xend).
 - Channel-level statistics are conditioned on the channel being present in that item's externalization record.
 """
 
@@ -1642,13 +1846,17 @@ def render_report(df: pd.DataFrame, stats: dict, fig_names: dict) -> str:
         )
     category_text = "\n".join(cat_lines)
 
+    from datetime import datetime
     text = REPORT_TEMPLATE.format(
+        gen_date=datetime.now().strftime("%Y-%m-%d"),
         n_items=stats["n_items"],
         n_apps=stats["n_apps"],
         n_datasets=stats["n_datasets"],
         total_rows=stats["total_rows"],
         overall_confirmed=stats["overall_confirmed"],
         overall_any_leak=stats["overall_any_leak"],
+        overall_any_leak_raw=stats["overall_any_leak_raw"],
+        n_rows_with_raw=stats["n_rows_with_raw"],
         overall_no_ev=stats["overall_no_ev"],
         mean_input_attrs=stats["mean_input_attrs"],
         mean_ext_attrs=stats["mean_ext_attrs"],
@@ -1728,7 +1936,9 @@ if __name__ == "__main__":
     print(f"Total attr-item pairs: {stats['total_rows']:,}")
     print(f"Unique items:          {stats['n_items']:,}")
     print(f"Apps:                  {stats['n_apps']}")
-    print(f"Confirmed leakage:     {stats['overall_confirmed']:.1%}")
-    print(f"Any leakage:           {stats['overall_any_leak']:.1%}")
+    print(f"Confirmed leakage (ext, 3-class):  {stats['overall_confirmed']:.1%}")
+    print(f"Any leakage       (ext, 3-class):  {stats['overall_any_leak']:.1%}")
+    print(f"Inferable          (raw output, binary): {stats['overall_any_leak_raw']:.1%}")
+    print(f"  (raw-output verdict populated for {stats['n_rows_with_raw']:,} of {stats['total_rows']:,} pairs)")
     print(f"Inference expansion:   {stats['pct_expansion']:.1%} of items")
     print(f"Top attrs: {list(stats['top_attr'].keys())[:5]}")

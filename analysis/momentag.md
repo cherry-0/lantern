@@ -1,5 +1,45 @@
 # AI Inference Privacy Audit: momentag
 
+
+## momentag/
+
+Photo management app with AI semantic search, tag recommendations, and Celery-based GPU processing.
+
+### Architecture
+
+- **`backend/`** — Django REST API (uv, Python ≥3.13, MySQL + Qdrant + Redis)
+  - `accounts/` — JWT auth (sign up/in/out, token refresh)
+  - `gallery/` — Photo upload (batch 8), GPS metadata, Qdrant embedding storage, S3 storage, Celery tasks (`tasks.py` CPU, `gpu_tasks.py` GPU)
+  - `search/` — Semantic & hybrid search via Qdrant; `search_strategies.py` implements strategy pattern
+  - `config/` — Django settings, Celery config (`compose.yml` for local dev)
+- **`android/`** — Android client
+- **`tag-search/`** — Standalone ML scripts: `Image_Preprocessing/`, `Image_Recommendation/`, `Tag_Recommendation/`, `NL_Search/`
+
+### Commands
+
+```bash
+cd momentag/backend
+
+# Install dependencies
+uv sync
+
+# Migrate & run CPU server
+uv run manage.py migrate
+uv run manage.py runserver 0.0.0.0:8080
+
+# Run Celery workers (GPU server, separate terminals)
+uv run celery -A config worker -Q gpu -l info --pool=threads -c4
+uv run celery -A config worker -Q interactive -l info --pool=threads -c4
+
+# Run tests
+uv run pytest
+uv run coverage run manage.py test
+```
+
+### Required env vars
+`SECRET_KEY`, `QDRANT_CLIENT_URL`, `QDRANT_API_KEY`, `DJANGO_ALLOWED_HOSTS`, `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `REDIS_URL`
+
+
 ## A. Externalization Channels
 
 | ID | Channel Type | File | Line(s) | Function | What is externalized | Evidence / code clue | Confidence |

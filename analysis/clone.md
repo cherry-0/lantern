@@ -1,5 +1,57 @@
 # AI Inference Privacy Audit: clone
 
+
+## clone/
+
+A desktop Electron app that records digital activities and enables chat against a personal knowledge base.
+
+### Architecture
+
+- **`frontend/`** — Electron app (main + renderer processes)
+  - `src/main.ts` — Electron main process; manages IPC, Ollama/OpenAI integration, model downloads
+  - `src/renderer.tsx` — React entry point
+  - `src/recording/` — Screen/audio capture providers
+  - `src/llm/` — LLM abstraction layer (Ollama local models, OpenAI, embedding manager)
+  - `src/services/` — API clients for auth, chat, collection, memory, embeddings
+  - `src/components/` — React UI components (each paired with a `.test.tsx`)
+  - `src/embedding/` — ONNX-based local embedding worker (runs in a separate worker thread via `embedding-worker.ts`)
+- **`server/`** — Django REST API (MySQL)
+  - Apps: `user/`, `chat/`, `collection/`
+  - Settings split: `config/settings/base.py`, `local.py`, `test.py`
+- **`vectordb/`** — Separate Django service with pluggable VectorDB backends (`vectordb/vectordb/`: `naive_vectordb.py`, `milvus_vectordb.py`)
+
+### Commands
+
+```bash
+# Frontend (Electron)
+cd clone/frontend
+npm install
+npm run dev            # Start dev app
+npm run lint           # ESLint
+npm run test:unit      # Vitest unit tests
+npm run test:e2e       # Playwright e2e tests
+npm run test:all       # Both unit + e2e
+
+# Run a single Vitest test file
+npm run test -- src/components/ChatInterface.test.tsx
+
+# Server (Django)
+cd clone/server
+pip install -r requirements.txt
+python manage.py migrate --settings=config.settings.local
+python manage.py runserver --settings=config.settings.local
+
+# Run tests
+pytest                            # All tests with coverage
+pytest user/tests/                # Specific app
+pytest -m unit                    # Only unit tests
+pytest -m integration             # Only integration tests
+pytest -n auto                    # Parallel execution
+pytest user/tests/test_models.py::TestUserModel::test_create_user_with_email_and_username
+```
+
+
+
 ## A. Externalization Channels
 
 | ID | Channel Type | File | Line(s) | Function | What is externalized | Evidence / code clue | Confidence |

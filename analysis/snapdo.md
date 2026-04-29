@@ -1,5 +1,36 @@
 # AI Inference Privacy Audit: snapdo
 
+
+## snapdo/
+
+Django todo app where tasks are verified by submitting photo evidence analyzed by a Vision Language Model.
+
+### Architecture
+
+- **`server/`** — Django REST API (Python 3.10, conda, SQLite default)
+  - `snapdo/` app — models, views, serializers, permissions
+  - `snapdo/services/vlm_service.py` — calls OpenRouter VLM API to verify evidence images
+  - Local file storage (`media/`) by default; S3 via `USE_AWS=true`
+- **`client/`** — Android client (MVVM architecture, see `client/MVVM.md`)
+
+### Commands
+
+```bash
+conda create -n django python=3.10 && conda activate django
+pip install -r requirements.txt
+cd server
+python manage.py migrate
+python manage.py runserver
+
+# Tests
+python manage.py test snapdo.tests
+python manage.py test new_challengers.test_aws -v 2   # AWS/S3 tests (mocked with moto)
+```
+
+### Env file: `server/snapdo/.env`
+`API_KEY`, `USE_AWS`, `S3_BUCKET`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `VLM_API_URL`, `VLM_API_KEY`, `VLM_API_TIMEOUT`
+
+
 ## A. Externalization Channels
 
 | ID | Channel Type | File | Line(s) | Function | What is externalized | Evidence / code clue | Confidence |

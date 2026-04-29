@@ -1,5 +1,45 @@
 # AI Inference Privacy Audit: xend
 
+
+## xend/
+
+AI email drafting assistant integrated with Gmail, featuring real-time streaming via WebSocket (draft composition) and SSE (smart replies).
+
+### Architecture
+
+- **`backend/`** — Django + Django Channels (poetry, Python ≥3.12, PostgreSQL + Redis)
+  - `apps/ai/` — LangChain/LangGraph chains for email generation; `consumers.py` handles WebSocket; `services/` contains `chains.py`, `graph.py`, `mail_generation.py`, `reply.py`, `analysis.py`, `pii_masker.py`
+  - `apps/mail/` — Gmail OAuth2 sync, incremental fetch, email CRUD
+  - `apps/contact/` — Contact & group management with custom AI prompt rules
+  - `apps/user/` — JWT auth + Gmail OAuth, user profile (language preference)
+  - `apps/core/` — Shared mixins, base models, renderers
+  - Celery for background sync tasks; Django Channels + Redis for WebSocket
+- **`gpu-server/`** — FastAPI app (`app/main.py`, `app/llm.py`, `app/models.py`) for LLM inference; runs separately with uvicorn
+- **`frontend/`** — Android client
+
+### Commands
+
+```bash
+# Backend
+cd xend/backend
+cp .env_example .env   # fill in credentials
+poetry install
+python manage.py migrate
+python manage.py runserver
+
+# GPU server (optional, for AI features)
+cd xend/gpu-server
+pip install -r requirements.txt
+uvicorn app.main:app --host 0.0.0.0 --port 8001
+
+# Docker (dev)
+docker compose -f docker-compose_dev.yml up -d
+
+# Android: open xend/frontend in Android Studio
+# Create local.properties with sdk.dir, base.url, ws.url
+```
+
+
 ## A. Externalization Channels
 
 | ID | Channel Type | File | Line(s) | Function | What is externalized | Evidence / code clue | Confidence |
