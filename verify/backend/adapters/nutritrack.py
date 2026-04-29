@@ -24,7 +24,7 @@ from typing import Any, Dict, Tuple
 from verify.backend.adapters.base import BaseAdapter, AdapterResult
 from verify.backend.utils.config import get_env, get_openrouter_api_key, use_app_servers
 
-_MODEL = "google/gemini-2.5-flash-preview-05-20"
+_DEFAULT_MODEL = "google/gemini-2.5-flash"
 _DEFAULT_MAX_TOKENS = 2048
 _FOLLOW_UPS_DELIMITER = "SUGGESTED_FOLLOW_UPS:"
 
@@ -44,6 +44,7 @@ class NutriTrackAdapter(BaseAdapter):
     env_spec = None
 
     def __init__(self):
+        self._model = get_env("NUTRITRACK_MODEL") or _DEFAULT_MODEL
         self._max_tokens = int(get_env("NUTRITRACK_MAX_TOKENS") or _DEFAULT_MAX_TOKENS)
 
     def check_availability(self) -> Tuple[bool, str]:
@@ -52,7 +53,7 @@ class NutriTrackAdapter(BaseAdapter):
             mode = "NATIVE (serverless equivalent)" if use_app_servers() else "SERVERLESS"
             return True, (
                 f"[{mode}] Using OpenRouter to replicate NutriTrack NutriCoach "
-                f"Gemini chat ({_MODEL}). Native Android UI automation is not wired."
+                f"Gemini chat ({self._model}). Native Android UI automation is not wired."
             )
         return False, "[SERVERLESS] No OPENROUTER_API_KEY configured."
 
@@ -75,7 +76,7 @@ class NutriTrackAdapter(BaseAdapter):
         prompt = self._build_nutricoach_prompt(text, user_stats_json)
 
         print(
-            f"[nutri-track] Calling OpenRouter ({_MODEL} NutriCoach) text={text[:80]!r}",
+            f"[nutri-track] Calling OpenRouter ({self._model} NutriCoach) text={text[:80]!r}",
             file=sys.stderr,
             flush=True,
         )
@@ -83,10 +84,10 @@ class NutriTrackAdapter(BaseAdapter):
         try:
             raw_response = self._call_openrouter(
                 prompt=prompt,
-                model=_MODEL,
+                model=self._model,
                 max_tokens=self._max_tokens,
             )
-        except RuntimeError as e:
+        except Exception as e:
             return AdapterResult(success=False, error=str(e))
 
         main_answer, follow_ups = self._parse_follow_ups(raw_response)
@@ -94,7 +95,7 @@ class NutriTrackAdapter(BaseAdapter):
             realistic_fallback={
                 "NETWORK": (
                     "[Gemini API] generateContentStream — "
-                    f"model=gemini-2.5-flash-preview-05-20, "
+                    f"model={self._model}, "
                     f"user_query={text[:160]!r}, user_stats={user_stats_json[:240]!r}"
                 ),
                 "STORAGE": (
@@ -121,7 +122,11 @@ class NutriTrackAdapter(BaseAdapter):
                 "suggested_follow_ups": follow_ups,
             },
             externalizations=externalizations,
-            metadata={"method": "serverless_openrouter", "workflow": "nutricoach_chat"},
+            metadata={
+                "method": "serverless_openrouter",
+                "workflow": "nutricoach_chat",
+                "model": self._model,
+            },
         )
 
     @staticmethod

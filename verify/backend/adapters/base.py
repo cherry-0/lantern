@@ -208,6 +208,7 @@ class BaseAdapter(ABC):
         Raises:
             RuntimeError: if no API key is configured or the request fails.
         """
+        import time
         import requests
         from verify.backend.utils.config import get_openrouter_api_key
 
@@ -239,18 +240,59 @@ class BaseAdapter(ABC):
         if extra_body:
             body.update(extra_body)
 
-        resp = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://github.com/Verify",
-                "X-Title": "Verify",
-            },
-            json=body,
-            timeout=timeout,
-        )
-        resp.raise_for_status()
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/Verify",
+            "X-Title": "Verify",
+        }
+        transient_statuses = {408, 409, 425, 429, 500, 502, 503, 504}
+        last_error: Optional[BaseException] = None
+        resp = None
+        for attempt in range(4):
+            try:
+                resp = requests.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers=headers,
+                    json=body,
+                    timeout=timeout,
+                )
+                if resp.status_code not in transient_statuses:
+                    resp.raise_for_status()
+                    break
+                last_error = requests.HTTPError(
+                    f"{resp.status_code} Server Error: {resp.text[:500]}",
+                    response=resp,
+                )
+            except (requests.Timeout, requests.ConnectionError) as exc:
+                last_error = exc
+            except requests.HTTPError as exc:
+                response = getattr(exc, "response", None)
+                status = getattr(response, "status_code", "unknown")
+                detail = (getattr(response, "text", "") or "").strip()[:1000]
+                if detail:
+                    raise RuntimeError(
+                        f"OpenRouter request failed ({status}): {detail}"
+                    ) from exc
+                raise RuntimeError(f"OpenRouter request failed ({status}): {exc}") from exc
+
+            if attempt == 3:
+                if isinstance(last_error, requests.HTTPError):
+                    response = getattr(last_error, "response", None)
+                    status = getattr(response, "status_code", "unknown")
+                    detail = (getattr(response, "text", "") or "").strip()[:1000]
+                    if detail:
+                        raise RuntimeError(
+                            f"OpenRouter request failed after retries ({status}): {detail}"
+                        )
+                    raise RuntimeError(
+                        f"OpenRouter request failed after retries ({status}): {last_error}"
+                    )
+                raise RuntimeError(f"OpenRouter request failed after retries: {last_error}")
+            time.sleep(min(2 ** attempt, 8))
+
+        if resp is None:
+            raise RuntimeError(f"OpenRouter request failed: {last_error}")
         response_text = resp.json()["choices"][0]["message"]["content"]
 
         # Record this call for externalization capture

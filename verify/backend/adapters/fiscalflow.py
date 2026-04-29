@@ -32,7 +32,7 @@ Execution mode is controlled by USE_APP_SERVERS in .env:
     Start the server first:
       cd target-apps/fiscal-flow
       npm install
-      GOOGLE_GENAI_API_KEY=<key> npx next dev
+      GOOGLE_GENAI_API_KEY=<key> npm run dev
     Requires in the server's environment:
       GOOGLE_GENAI_API_KEY  — Google GenAI API key
       DATABASE_URL          — PostgreSQL connection string (or omit to use
@@ -45,7 +45,7 @@ Execution mode is controlled by USE_APP_SERVERS in .env:
 Configuration (.env)
 --------------------
 USE_APP_SERVERS     — "true" / "false"  (default: false)
-FISCAL_FLOW_HOST    — Next.js base URL  (default: http://localhost:3000)
+FISCAL_FLOW_HOST    — Next.js base URL  (default: http://localhost:9002)
 """
 
 import json
@@ -56,7 +56,7 @@ from typing import Any, Dict, List, Tuple
 from verify.backend.adapters.base import BaseAdapter, AdapterResult
 from verify.backend.utils.config import get_env, get_openrouter_api_key, use_app_servers
 
-_DEFAULT_HOST = "http://localhost:3000"
+_DEFAULT_HOST = "http://localhost:9002"
 _DEFAULT_MAX_TOKENS = 2048
 
 # Mirrors financialQAPrompt in src/ai/flows/financial-qa.ts
@@ -178,7 +178,7 @@ class FiscalFlowAdapter(BaseAdapter):
                 return False, (
                     f"[NATIVE] Cannot reach server at {self._host}: {e}\n"
                     "Start with: cd target-apps/fiscal-flow && "
-                    "GOOGLE_GENAI_API_KEY=<key> npx next dev"
+                    "GOOGLE_GENAI_API_KEY=<key> npm run dev"
                 )
         api_key = get_openrouter_api_key()
         if api_key and not api_key.startswith("your_"):
