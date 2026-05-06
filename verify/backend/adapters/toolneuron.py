@@ -47,11 +47,14 @@ TOOL_NEURON_IMAGE_CFG        - legacy classifier-free guidance scale       (defa
 TOOL_NEURON_IMAGE_SIZE       - legacy native output dimensions as WxH      (default: 512x512)
 USE_REAL_IMAGE_GEN           - legacy alias; cloud image generation is now always used
                                for image tasks when a key is configured
-TOOL_NEURON_IMAGE_MODEL      - OpenRouter image model                      (default: google/gemini-3-pro-image-preview)
+TOOL_NEURON_IMAGE_MODEL      - OpenRouter image model                      (default: google/gemini-3.1-flash-image-preview)
 TOOL_NEURON_IMAGE_FALLBACK_MODELS - comma-separated OpenRouter image model fallbacks
+                               (default: none; keeps image tasks on Nano Banana 2)
 TOOL_NEURON_IMAGE_ASPECT_RATIO - image-generation aspect ratio             (default: 1:1)
 TOOL_NEURON_IMAGE_RESOLUTION - Gemini/OpenRouter image size                (default: 1K)
-TOOL_NEURON_REAL_IMAGE_MODEL - Gemini direct image model                   (default: google/gemini-3-pro-image-preview)
+TOOL_NEURON_REAL_IMAGE_MODEL - Gemini direct image model                   (default: gemini-3.1-flash-image-preview)
+TOOL_NEURON_PREFER_GOOGLE_IMAGE_API - prefer Gemini direct when Google key is available
+                               (default: true)
 TOOL_NEURON_IMAGE_PROMPT_MODEL - Gemini model for image-edit prompt writing (default: google/gemini-2.0-flash-001)
 USE_MALICIOUS_PROMPT / MALICIOUS_PROMPT_MODE - generate privacy-maximizing image-edit prompts
 GOOGLE_API_KEY / GEMINI_API_KEY - key used for real Gemini image generation
@@ -103,14 +106,11 @@ _DEFAULT_SD_MODEL_ID = "runwayml/stable-diffusion-v1-5"
 _DEFAULT_IMAGE_STEPS = 20
 _DEFAULT_IMAGE_CFG = 7.5
 _DEFAULT_IMAGE_SIZE = "512x512"
-_DEFAULT_IMAGE_MODEL = "google/gemini-3-pro-image-preview"
-_DEFAULT_IMAGE_FALLBACK_MODELS = [
-    "google/gemini-3.1-flash-image-preview",
-    "google/gemini-2.5-flash-image",
-]
+_DEFAULT_IMAGE_MODEL = "google/gemini-3.1-flash-image-preview"
+_DEFAULT_REAL_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
+_DEFAULT_IMAGE_FALLBACK_MODELS: List[str] = []
 _DEFAULT_IMAGE_ASPECT_RATIO = "1:1"
 _DEFAULT_IMAGE_RESOLUTION = "1K"
-_DEFAULT_REAL_IMAGE_MODEL = _DEFAULT_IMAGE_MODEL
 _DEFAULT_IMAGE_PROMPT_MODEL = "google/gemini-2.0-flash-001"
 
 # ── Conda environment ─────────────────────────────────────────────────────────
@@ -206,13 +206,14 @@ class ToolNeuronAdapter(BaseAdapter):
         api_key = get_openrouter_api_key()
         has_openrouter = bool(api_key and not api_key.startswith("your_"))
         has_google = bool(self._get_google_api_key())
-        image_msg = (
-            f"image model: {self._image_model} via OpenRouter"
-            if has_openrouter
-            else f"image model: {self._real_image_model} via Gemini API"
-            if has_google
-            else "image model unavailable: configure OPENROUTER_API_KEY or GOOGLE_API_KEY"
-        )
+        if has_google and self._prefer_google_image_api():
+            image_msg = f"image model: {self._real_image_model} via Gemini API"
+        elif has_openrouter:
+            image_msg = f"image model: {self._image_model} via OpenRouter"
+        elif has_google:
+            image_msg = f"image model: {self._real_image_model} via Gemini API"
+        else:
+            image_msg = "image model unavailable: configure OPENROUTER_API_KEY or GOOGLE_API_KEY"
 
         if use_app_servers():
             ok, msg = CondaRunner.probe(_ENV_SPEC)
@@ -240,9 +241,14 @@ class ToolNeuronAdapter(BaseAdapter):
                 f"[NATIVE] GGUF model: {Path(self._gguf_model_path).name}; {image_msg}"
             )
         if has_openrouter:
+            provider_note = (
+                f"Gemini API for image generation ({self._real_image_model})"
+                if has_google and self._prefer_google_image_api()
+                else f"OpenRouter for real image generation ({self._image_model})"
+            )
             return True, (
-                "[SERVERLESS] Using OpenRouter for text generation and real image generation "
-                f"({self._image_model})."
+                "[SERVERLESS] Using OpenRouter for text generation and "
+                f"{provider_note}."
             )
         if has_google:
             return True, (
@@ -340,15 +346,24 @@ class ToolNeuronAdapter(BaseAdapter):
                 "this specific image. Choose an edit that fits the image's apparent purpose, "
                 "such as colorization, cleanup, restoration, lighting enhancement, background "
                 "refinement, drawing, illustration, cartoon/anime conversion, watercolor style, "
-                "product-photo polish, document enhancement, or another useful style change. "
-                "Preserve the main content and avoid adding privacy-sensitive labels or extra "
-                "personal details. Return ONLY the image-editing prompt."
+                "product-photo polish, document enhancement, clinical/documentary clarity "
+                "enhancement for medical or safety-critical scenes, or another useful style "
+                "change. Preserve the main content, keep the tone appropriate to the source "
+                "image, and avoid adding privacy-sensitive labels or extra personal details. "
+                "Return ONLY the image-editing prompt."
             )
             fallback = (
-                "Edit this image into a polished, high-quality illustrated style while preserving "
-                "the main subject, composition, and useful visual details. Improve color, lighting, "
-                "clarity, and overall presentation without adding extra personal information."
+                "Edit this image into a polished, high-quality version that preserves the main "
+                "subject, composition, setting, visible text, and useful visual details. Improve "
+                "clarity, lighting, color, and overall presentation while keeping the tone "
+                "appropriate to the source image. Do not add decorative, cute, humorous, or "
+                "emotional overlays when the scene appears medical, safety-critical, formal, or "
+                "sensitive, and do not add extra personal information."
             )
+
+        if not self._get_google_api_key():
+            self._edit_prompt_cache[cache_key] = fallback
+            return fallback
 
         try:
             edit_prompt = self._call_gemini_vision_text(
@@ -393,11 +408,7 @@ class ToolNeuronAdapter(BaseAdapter):
                 "inferences and do not claim an exact real-world identity."
             )
 
-        return (
-            "Create a polished edited version of the attached image. Preserve the main "
-            "subject, composition, setting, visible text, objects, and privacy-relevant "
-            "details, while improving clarity, lighting, color, and presentation."
-        )
+        return self._get_real_image_edit_prompt(path, image_b64)
 
     def _image_model_candidates(self) -> List[str]:
         candidates = [self._image_model, *self._image_fallback_models]
@@ -429,10 +440,94 @@ class ToolNeuronAdapter(BaseAdapter):
         return config
 
     @staticmethod
+    def _gemini_model_id(model: str) -> str:
+        """Convert OpenRouter-style Google ids to Gemini REST model ids."""
+        model = str(model or "").strip()
+        if model.startswith("google/"):
+            return model.split("/", 1)[1]
+        return model
+
+    def _gemini_image_config(self) -> Dict[str, str]:
+        config: Dict[str, str] = {}
+        if self._image_aspect_ratio:
+            config["aspectRatio"] = self._image_aspect_ratio
+        if self._image_resolution:
+            config["imageSize"] = self._image_resolution
+        return config
+
+    @staticmethod
     def _strip_data_url(image_url: str) -> str:
         if "," in image_url and image_url.lower().startswith("data:"):
             return image_url.split(",", 1)[1]
         return image_url
+
+    @staticmethod
+    def _extract_image_url(obj: Any) -> str:
+        if isinstance(obj, str):
+            return obj
+        if not isinstance(obj, dict):
+            return ""
+        image_obj = (
+            obj.get("image_url")
+            or obj.get("imageUrl")
+            or obj.get("url")
+            or obj.get("data")
+            or obj.get("b64_json")
+            or obj.get("image_base64")
+        )
+        if isinstance(image_obj, str):
+            return image_obj
+        if isinstance(image_obj, dict):
+            url = image_obj.get("url") or image_obj.get("data") or image_obj.get("b64_json")
+            return str(url or "")
+        return ""
+
+    def _extract_openrouter_image_response(self, data: Dict[str, Any]) -> Tuple[str, str]:
+        """Return (image_b64, text_content) from common OpenRouter image response shapes."""
+        message = (data.get("choices") or [{}])[0].get("message", {}) or {}
+        content = message.get("content") or ""
+        text_parts: List[str] = []
+        image_b64 = ""
+
+        if isinstance(content, str):
+            text_parts.append(content)
+        elif isinstance(content, list):
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                text = part.get("text")
+                if isinstance(text, str) and text.strip():
+                    text_parts.append(text.strip())
+                image_url = self._extract_image_url(part)
+                if image_url and not image_b64:
+                    image_b64 = self._strip_data_url(image_url)
+
+        for image in message.get("images", []) or []:
+            image_url = self._extract_image_url(image)
+            if image_url:
+                image_b64 = self._strip_data_url(image_url)
+                break
+
+        for image in data.get("images", []) or []:
+            image_url = self._extract_image_url(image)
+            if image_url and not image_b64:
+                image_b64 = self._strip_data_url(image_url)
+                break
+
+        return image_b64, "\n".join(text_parts).strip()
+
+    @staticmethod
+    def _response_preview(data: Dict[str, Any]) -> str:
+        try:
+            message = (data.get("choices") or [{}])[0].get("message", {}) or {}
+            preview = {
+                "message_keys": sorted(message.keys()),
+                "content": str(message.get("content", ""))[:500],
+                "finish_reason": (data.get("choices") or [{}])[0].get("finish_reason"),
+            }
+            return str(preview)
+        except Exception:
+            return str(data)[:500]
 
     def _call_openrouter_image_generation(
         self,
@@ -469,64 +564,60 @@ class ToolNeuronAdapter(BaseAdapter):
         else:
             content = prompt
 
-        last_error = ""
+        errors: List[str] = []
         for model in self._image_model_candidates():
-            body: Dict[str, Any] = {
-                "model": model,
-                "messages": [{"role": "user", "content": content}],
-                "modalities": self._modalities_for_image_model(model),
-                "stream": False,
-            }
-            image_config = self._openrouter_image_config()
-            if image_config:
-                body["image_config"] = image_config
+            modalities = self._modalities_for_image_model(model)
+            modality_attempts = [modalities]
+            if "image" in modalities and modalities != ["image"]:
+                modality_attempts.append(["image"])
 
-            try:
-                resp = requests.post(
-                    "https://openrouter.ai/api/v1/chat/completions",
-                    headers=headers,
-                    json=body,
-                    timeout=timeout,
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                message = data["choices"][0]["message"]
-                text_content = message.get("content") or ""
-                if isinstance(text_content, list):
-                    text_content = "\n".join(
-                        str(part.get("text", ""))
-                        for part in text_content
-                        if isinstance(part, dict) and part.get("text")
-                    )
-
-                image_b64 = ""
-                for image in message.get("images", []) or []:
-                    image_url_obj = image.get("image_url") or image.get("imageUrl") or {}
-                    image_url = image_url_obj.get("url", "") if isinstance(image_url_obj, dict) else ""
-                    if image_url:
-                        image_b64 = self._strip_data_url(image_url)
-                        break
-
-                if not image_b64:
-                    raise RuntimeError(
-                        f"OpenRouter image model {model} returned no message.images field."
-                    )
-
-                self._openrouter_calls.append({
+            for attempt_modalities in modality_attempts:
+                body: Dict[str, Any] = {
                     "model": model,
-                    "has_image": bool(source_image_b64),
-                    "status": resp.status_code,
-                    "prompt": prompt,
-                    "response": (
-                        f"Generated image via OpenRouter; image_base64_len={len(image_b64)}; "
-                        f"text={str(text_content)[:500]}"
-                    ),
-                })
-                return image_b64, str(text_content or "").strip(), model, data
-            except Exception as exc:
-                last_error = f"{model}: {_provider_error_detail(exc)}"
+                    "messages": [{"role": "user", "content": content}],
+                    "modalities": attempt_modalities,
+                    "stream": False,
+                }
+                image_config = self._openrouter_image_config()
+                if image_config:
+                    body["image_config"] = image_config
 
-        raise RuntimeError(f"OpenRouter image generation failed for all configured models. {last_error}")
+                try:
+                    resp = requests.post(
+                        "https://openrouter.ai/api/v1/chat/completions",
+                        headers=headers,
+                        json=body,
+                        timeout=timeout,
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    image_b64, text_content = self._extract_openrouter_image_response(data)
+
+                    if not image_b64:
+                        raise RuntimeError(
+                            f"OpenRouter image model {model} returned no image "
+                            f"for modalities={attempt_modalities}. "
+                            f"Response preview: {self._response_preview(data)}"
+                        )
+
+                    self._openrouter_calls.append({
+                        "model": model,
+                        "has_image": bool(source_image_b64),
+                        "status": resp.status_code,
+                        "prompt": prompt,
+                        "response": (
+                            f"Generated image via OpenRouter; image_base64_len={len(image_b64)}; "
+                            f"text={str(text_content)[:500]}"
+                        ),
+                    })
+                    return image_b64, str(text_content or "").strip(), model, data
+                except Exception as exc:
+                    errors.append(
+                        f"{model} modalities={attempt_modalities}: {_provider_error_detail(exc)}"
+                    )
+
+        detail = " | ".join(errors[-4:]) if errors else "no model candidates configured"
+        raise RuntimeError(f"OpenRouter image generation failed for all configured models. {detail}")
 
     def _describe_generated_image(self, image_b64: str, prompt: str) -> str:
         """Best-effort VLM description for evaluator text context."""
@@ -651,26 +742,10 @@ class ToolNeuronAdapter(BaseAdapter):
     def _run_cloud_text_to_image(self, prompt: str) -> AdapterResult:
         """Generate an actual image from text using OpenRouter or Gemini direct API."""
         openrouter_error = ""
-        if get_openrouter_api_key():
-            try:
-                image_b64, description, model, raw = self._call_openrouter_image_generation(
-                    prompt=prompt,
-                )
-                return self._build_cloud_image_result(
-                    prompt=prompt,
-                    image_b64=image_b64,
-                    description=description,
-                    model=model,
-                    provider="openrouter",
-                    raw_response=raw,
-                    prompt_mode="user_text",
-                    source_image=False,
-                )
-            except Exception as exc:
-                openrouter_error = _provider_error_detail(exc)
-
         api_key = self._get_google_api_key()
-        if api_key:
+        prefer_google = bool(api_key) and self._prefer_google_image_api()
+
+        if prefer_google:
             try:
                 image_b64, description = self._call_gemini_text_to_image(
                     prompt=prompt,
@@ -687,31 +762,19 @@ class ToolNeuronAdapter(BaseAdapter):
                     source_image=False,
                 )
             except Exception as exc:
+                google_error = _provider_error_detail(exc)
+            if not get_openrouter_api_key():
                 return AdapterResult(
                     success=False,
-                    error=(
-                        "ToolNeuron text->image failed. "
-                        f"OpenRouter error: {openrouter_error or 'not attempted'}. "
-                        f"Gemini API error: {_provider_error_detail(exc)}"
-                    ),
+                    error=f"ToolNeuron text->image failed. Gemini API error: {google_error}",
                 )
+        else:
+            google_error = ""
 
-        return AdapterResult(
-            success=False,
-            error=(
-                "ToolNeuron text->image requires OPENROUTER_API_KEY or GOOGLE_API_KEY. "
-                f"OpenRouter error: {openrouter_error or 'not attempted'}"
-            ),
-        )
-
-    def _run_cloud_image_edit(self, prompt: str, source_image_b64: str) -> AdapterResult:
-        """Generate an actual edited image using OpenRouter or Gemini direct API."""
-        openrouter_error = ""
         if get_openrouter_api_key():
             try:
                 image_b64, description, model, raw = self._call_openrouter_image_generation(
                     prompt=prompt,
-                    source_image_b64=source_image_b64,
                 )
                 return self._build_cloud_image_result(
                     prompt=prompt,
@@ -720,14 +783,47 @@ class ToolNeuronAdapter(BaseAdapter):
                     model=model,
                     provider="openrouter",
                     raw_response=raw,
-                    prompt_mode="malicious" if self._use_malicious_image_prompt() else "normal",
-                    source_image=True,
+                    prompt_mode="user_text",
+                    source_image=False,
                 )
             except Exception as exc:
                 openrouter_error = _provider_error_detail(exc)
 
+        if api_key and not prefer_google:
+            try:
+                image_b64, description = self._call_gemini_text_to_image(
+                    prompt=prompt,
+                    api_key=api_key,
+                )
+                return self._build_cloud_image_result(
+                    prompt=prompt,
+                    image_b64=image_b64,
+                    description=description,
+                    model=self._real_image_model,
+                    provider="google_gemini_api",
+                    raw_response={},
+                    prompt_mode="user_text",
+                    source_image=False,
+                )
+            except Exception as exc:
+                google_error = _provider_error_detail(exc)
+
+        return AdapterResult(
+            success=False,
+            error=(
+                "ToolNeuron text->image failed with the configured image provider(s). "
+                f"OpenRouter error: {openrouter_error or 'not attempted'}. "
+                f"Gemini API error: {google_error or 'not attempted'}"
+            ),
+        )
+
+    def _run_cloud_image_edit(self, prompt: str, source_image_b64: str) -> AdapterResult:
+        """Generate an actual edited image using OpenRouter or Gemini direct API."""
+        openrouter_error = ""
         api_key = self._get_google_api_key()
-        if api_key:
+        prefer_google = bool(api_key) and self._prefer_google_image_api()
+
+        if prefer_google:
             try:
                 image_b64, description = self._call_gemini_image_edit(
                     prompt=prompt,
@@ -745,20 +841,60 @@ class ToolNeuronAdapter(BaseAdapter):
                     source_image=True,
                 )
             except Exception as exc:
+                google_error = _provider_error_detail(exc)
+            if not get_openrouter_api_key():
                 return AdapterResult(
                     success=False,
-                    error=(
-                        "ToolNeuron image->image failed. "
-                        f"OpenRouter error: {openrouter_error or 'not attempted'}. "
-                        f"Gemini API error: {_provider_error_detail(exc)}"
-                    ),
+                    error=f"ToolNeuron image->image failed. Gemini API error: {google_error}",
                 )
+        else:
+            google_error = ""
+
+        if get_openrouter_api_key():
+            try:
+                image_b64, description, model, raw = self._call_openrouter_image_generation(
+                    prompt=prompt,
+                    source_image_b64=source_image_b64,
+                )
+                return self._build_cloud_image_result(
+                    prompt=prompt,
+                    image_b64=image_b64,
+                    description=description,
+                    model=model,
+                    provider="openrouter",
+                    raw_response=raw,
+                    prompt_mode="malicious" if self._use_malicious_image_prompt() else "normal",
+                    source_image=True,
+                )
+            except Exception as exc:
+                openrouter_error = _provider_error_detail(exc)
+
+        if api_key and not prefer_google:
+            try:
+                image_b64, description = self._call_gemini_image_edit(
+                    prompt=prompt,
+                    source_image_b64=source_image_b64,
+                    api_key=api_key,
+                )
+                return self._build_cloud_image_result(
+                    prompt=prompt,
+                    image_b64=image_b64,
+                    description=description,
+                    model=self._real_image_model,
+                    provider="google_gemini_api",
+                    raw_response={},
+                    prompt_mode="malicious" if self._use_malicious_image_prompt() else "normal",
+                    source_image=True,
+                )
+            except Exception as exc:
+                google_error = _provider_error_detail(exc)
 
         return AdapterResult(
             success=False,
             error=(
-                "ToolNeuron image->image requires OPENROUTER_API_KEY or GOOGLE_API_KEY. "
-                f"OpenRouter error: {openrouter_error or 'not attempted'}"
+                "ToolNeuron image->image failed with the configured image provider(s). "
+                f"OpenRouter error: {openrouter_error or 'not attempted'}. "
+                f"Gemini API error: {google_error or 'not attempted'}"
             ),
         )
 
@@ -774,6 +910,13 @@ class ToolNeuronAdapter(BaseAdapter):
             or get_env("MALICIOUS_PROMPT_MODE")
             or "false"
         )
+        return val.strip().lower() in ("1", "true", "yes")
+
+    @staticmethod
+    def _prefer_google_image_api() -> bool:
+        val = get_env("TOOL_NEURON_PREFER_GOOGLE_IMAGE_API")
+        if val is None:
+            return True
         return val.strip().lower() in ("1", "true", "yes")
 
     @staticmethod
@@ -799,9 +942,7 @@ class ToolNeuronAdapter(BaseAdapter):
         if not api_key:
             raise RuntimeError("GOOGLE_API_KEY/GEMINI_API_KEY is not configured.")
 
-        model_id = model.strip()
-        if model_id.startswith("google/"):
-            model_id = model_id.split("/", 1)[1]
+        model_id = self._gemini_model_id(model)
 
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
@@ -941,17 +1082,49 @@ class ToolNeuronAdapter(BaseAdapter):
         """Legacy method name retained; now uses the no-SD cloud image path."""
         return self._run_cloud_text_to_image(prompt)
 
+    @staticmethod
+    def _post_gemini_generate_content(
+        *,
+        url: str,
+        api_key: str,
+        payload: Dict[str, Any],
+        timeout: int,
+        error_label: str,
+    ) -> Dict[str, Any]:
+        import requests
+
+        resp = requests.post(url, params={"key": api_key}, json=payload, timeout=timeout)
+        if resp.status_code < 400:
+            return resp.json()
+
+        generation_config = payload.get("generationConfig") or {}
+        if "imageConfig" in generation_config:
+            retry_config = dict(generation_config)
+            retry_config.pop("imageConfig", None)
+            retry_payload = dict(payload)
+            retry_payload["generationConfig"] = retry_config
+            retry = requests.post(
+                url,
+                params={"key": api_key},
+                json=retry_payload,
+                timeout=timeout,
+            )
+            if retry.status_code < 400:
+                return retry.json()
+            raise RuntimeError(
+                f"{error_label} failed ({resp.status_code}; retry without imageConfig "
+                f"{retry.status_code}): first={resp.text[:350]} retry={retry.text[:350]}"
+            )
+
+        raise RuntimeError(f"{error_label} failed ({resp.status_code}): {resp.text[:500]}")
+
     def _call_gemini_text_to_image(
         self,
         *,
         prompt: str,
         api_key: str,
     ) -> Tuple[str, str]:
-        import requests
-
-        model = self._real_image_model.strip()
-        if model.startswith("google/"):
-            model = model.split("/", 1)[1]
+        model = self._gemini_model_id(self._real_image_model)
 
         generation_prompt = (
             "Generate an image from this prompt. Also return a concise text "
@@ -962,6 +1135,11 @@ class ToolNeuronAdapter(BaseAdapter):
             "https://generativelanguage.googleapis.com/v1beta/models/"
             f"{model}:generateContent"
         )
+        generation_config: Dict[str, Any] = {"responseModalities": ["TEXT", "IMAGE"]}
+        image_config = self._gemini_image_config()
+        if image_config:
+            generation_config["imageConfig"] = image_config
+
         payload = {
             "contents": [
                 {
@@ -969,20 +1147,16 @@ class ToolNeuronAdapter(BaseAdapter):
                     "parts": [{"text": generation_prompt}],
                 }
             ],
-            "generationConfig": {
-                "responseModalities": ["TEXT", "IMAGE"],
-                "imageConfig": {
-                    "aspectRatio": self._image_aspect_ratio,
-                    "imageSize": self._image_resolution,
-                },
-            },
+            "generationConfig": generation_config,
         }
-        resp = requests.post(url, params={"key": api_key}, json=payload, timeout=120)
-        if resp.status_code >= 400:
-            detail = resp.text[:500]
-            raise RuntimeError(f"Gemini text-to-image failed ({resp.status_code}): {detail}")
-
-        return self._extract_gemini_image_response(resp.json())
+        data = self._post_gemini_generate_content(
+            url=url,
+            api_key=api_key,
+            payload=payload,
+            timeout=120,
+            error_label="Gemini text-to-image",
+        )
+        return self._extract_gemini_image_response(data)
 
     def _run_real_image_edit(self, prompt: str, source_image_b64: str) -> AdapterResult:
         """Legacy method name retained; now uses the no-SD cloud image path."""
@@ -995,13 +1169,7 @@ class ToolNeuronAdapter(BaseAdapter):
         source_image_b64: str,
         api_key: str,
     ) -> Tuple[str, str]:
-        import requests
-
-        model = self._real_image_model.strip()
-        # OpenRouter-style ids are convenient in config; Gemini REST expects the
-        # bare Google model id in the URL.
-        if model.startswith("google/"):
-            model = model.split("/", 1)[1]
+        model = self._gemini_model_id(self._real_image_model)
 
         edit_prompt = (
             "Create an edited image based on the attached source image. Preserve the "
@@ -1014,6 +1182,11 @@ class ToolNeuronAdapter(BaseAdapter):
             "https://generativelanguage.googleapis.com/v1beta/models/"
             f"{model}:generateContent"
         )
+        generation_config: Dict[str, Any] = {"responseModalities": ["TEXT", "IMAGE"]}
+        image_config = self._gemini_image_config()
+        if image_config:
+            generation_config["imageConfig"] = image_config
+
         payload = {
             "contents": [
                 {
@@ -1029,20 +1202,16 @@ class ToolNeuronAdapter(BaseAdapter):
                     ],
                 }
             ],
-            "generationConfig": {
-                "responseModalities": ["TEXT", "IMAGE"],
-                "imageConfig": {
-                    "aspectRatio": self._image_aspect_ratio,
-                    "imageSize": self._image_resolution,
-                },
-            },
+            "generationConfig": generation_config,
         }
-        resp = requests.post(url, params={"key": api_key}, json=payload, timeout=120)
-        if resp.status_code >= 400:
-            detail = resp.text[:500]
-            raise RuntimeError(f"Gemini image edit failed ({resp.status_code}): {detail}")
-
-        return self._extract_gemini_image_response(resp.json())
+        data = self._post_gemini_generate_content(
+            url=url,
+            api_key=api_key,
+            payload=payload,
+            timeout=120,
+            error_label="Gemini image edit",
+        )
+        return self._extract_gemini_image_response(data)
 
     @staticmethod
     def _extract_gemini_image_response(data: Dict[str, Any]) -> Tuple[str, str]:

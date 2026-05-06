@@ -12,7 +12,7 @@ import base64
 import hashlib
 import json
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -171,6 +171,45 @@ def _cohens_kappa(human_labels: List[str], judge_labels: List[str]) -> Optional[
     return (observed - expected) / (1 - expected)
 
 
+def _weighted_cohens_kappa(
+    human_labels: List[str], judge_labels: List[str], scheme: str = "quadratic"
+) -> Optional[float]:
+    """Weighted Cohen's kappa treating labels as ordinal (confirmed > possible > none).
+
+    scheme='linear'    w_ij = |i-j| / (k-1)
+    scheme='quadratic' w_ij = (i-j)^2 / (k-1)^2   (default; standard for ordered categories)
+    """
+    if len(human_labels) != len(judge_labels) or not human_labels:
+        return None
+
+    k = len(_LABEL_ORDER)
+    label_idx = {l: i for i, l in enumerate(_LABEL_ORDER)}
+    n = len(human_labels)
+
+    def _w(i: int, j: int) -> float:
+        if scheme == "linear":
+            return abs(i - j) / (k - 1)
+        return (i - j) ** 2 / (k - 1) ** 2
+
+    obs = [[0.0] * k for _ in range(k)]
+    for h, j in zip(human_labels, judge_labels):
+        hi = label_idx.get(h)
+        ji = label_idx.get(j)
+        if hi is None or ji is None:
+            continue
+        obs[hi][ji] += 1.0 / n
+
+    row_marg = [sum(obs[i][j] for j in range(k)) for i in range(k)]
+    col_marg = [sum(obs[i][j] for i in range(k)) for j in range(k)]
+
+    num = sum(_w(i, j) * obs[i][j] for i in range(k) for j in range(k))
+    den = sum(_w(i, j) * row_marg[i] * col_marg[j] for i in range(k) for j in range(k))
+
+    if den == 0:
+        return 1.0 if num == 0 else None
+    return 1.0 - num / den
+
+
 def _save_human_decisions(
     records: List[Dict[str, Any]],
     decisions: List[Dict[str, Any]],
@@ -211,6 +250,44 @@ def _save_human_decisions(
         })
     pd.DataFrame(rows).to_csv(run_dir / "human_decisions.csv", index=False)
     return run_dir
+
+
+def _autosave_human_decisions(
+    records: List[Dict[str, Any]],
+    decisions: List[Dict[str, Any]],
+    validation_info: Dict[str, Any],
+    autosave_dir: Path,
+) -> None:
+    """Overwrite the session autosave directory with current partial decisions."""
+    autosave_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "validation_info": {
+            **validation_info,
+            "autosave": True,
+            "saved_at": datetime.now().isoformat(timespec="seconds"),
+            "human_run_dir": str(autosave_dir),
+            "n_items_labeled": len({d["item_id"] for d in decisions}),
+            "n_samples_labeled": len(decisions),
+        },
+        "decisions": decisions,
+    }
+    (autosave_dir / "human_decisions.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2))
+    record_by_id = {r.get("id"): r for r in records}
+    rows = [
+        {
+            "id": d["id"],
+            "dataset": d["dataset"],
+            "item_id": d["item_id"],
+            "attribute": d["attribute"],
+            "judge_label": d["judge_label"],
+            "human_label": d["human_label"],
+            "judge_prediction": record_by_id.get(d["id"], {}).get("prediction", ""),
+            "human_candidate": d.get("human_candidate", ""),
+            "human_notes": d.get("human_notes", ""),
+        }
+        for d in decisions
+    ]
+    pd.DataFrame(rows).to_csv(autosave_dir / "human_decisions.csv", index=False)
 
 
 def _render_content(record: Dict[str, Any], key_prefix: str) -> None:
@@ -260,6 +337,12 @@ def _render_labeling_records(records: List[Dict[str, Any]]) -> None:
     c1, c2 = st.columns(2)
     c1.metric("Dataset items", item_count)
     c2.metric("Labeled rows", f"{progress}/{len(records)}")
+
+    total = len(records)
+    st.progress(
+        progress / total if total > 0 else 0.0,
+        text=f"Annotation progress: {progress} / {total} rows labeled ({progress / total:.0%})" if total > 0 else "No records",
+    )
 
     for idx, r in enumerate(records, start=1):
         rid = str(r.get("id") or f"record_{idx}")
@@ -391,6 +474,37 @@ def _render_agreement_heatmap(decisions: List[Dict[str, Any]]) -> None:
     st.altair_chart((rect + text).properties(height=260), use_container_width=True)
 
 
+def _render_per_attribute_table(decisions: List[Dict[str, Any]]) -> None:
+    by_attr: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for d in decisions:
+        by_attr[str(d.get("attribute") or "unknown")].append(d)
+
+    rows = []
+    for attr in sorted(by_attr):
+        grp = by_attr[attr]
+        h_lbls = [d.get("human_label", LABEL_NONE) for d in grp]
+        j_lbls = [d.get("judge_label", LABEL_NONE) for d in grp]
+        n = len(grp)
+        agreement = sum(1 for h, j in zip(h_lbls, j_lbls) if h == j) / n
+        kappa = _cohens_kappa(h_lbls, j_lbls)
+        wkappa = _weighted_cohens_kappa(h_lbls, j_lbls)
+        rows.append({
+            "attribute": attr,
+            "n": n,
+            "agreement": f"{agreement:.1%}",
+            "κ (simple)": "N/A" if kappa is None else f"{kappa:.3f}",
+            "κ_w (quadratic)": "N/A" if wkappa is None else f"{wkappa:.3f}",
+            "human: confirmed": sum(1 for l in h_lbls if l == LABEL_CONFIRMED),
+            "human: possible": sum(1 for l in h_lbls if l == LABEL_POSSIBLE),
+            "human: none": sum(1 for l in h_lbls if l == LABEL_NONE),
+            "judge: confirmed": sum(1 for l in j_lbls if l == LABEL_CONFIRMED),
+            "judge: possible": sum(1 for l in j_lbls if l == LABEL_POSSIBLE),
+            "judge: none": sum(1 for l in j_lbls if l == LABEL_NONE),
+        })
+
+    st.dataframe(pd.DataFrame(rows).set_index("attribute"), use_container_width=True)
+
+
 def _render_comparison(decisions: List[Dict[str, Any]], saved_dir: Optional[Path] = None) -> None:
     if not decisions:
         return
@@ -403,12 +517,17 @@ def _render_comparison(decisions: List[Dict[str, Any]], saved_dir: Optional[Path
     human_labels = [d.get("human_label", LABEL_NONE) for d in decisions]
     judge_labels = [d.get("judge_label", LABEL_NONE) for d in decisions]
     kappa = _cohens_kappa(human_labels, judge_labels)
+    wkappa = _weighted_cohens_kappa(human_labels, judge_labels)
     agreement = sum(1 for h, j in zip(human_labels, judge_labels) if h == j) / len(decisions)
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Rows compared", len(decisions))
     c2.metric("Agreement", f"{agreement:.1%}")
-    c3.metric("Cohen's kappa", "N/A" if kappa is None else f"{kappa:.3f}")
+    c3.metric("Cohen's κ", "N/A" if kappa is None else f"{kappa:.3f}")
+    c4.metric("Weighted κ (quadratic)", "N/A" if wkappa is None else f"{wkappa:.3f}")
+
+    with st.expander("Per-attribute agreement", expanded=True):
+        _render_per_attribute_table(decisions)
 
     df = _comparison_rows(decisions)
     st.dataframe(df, hide_index=True, use_container_width=True)
@@ -417,11 +536,139 @@ def _render_comparison(decisions: List[Dict[str, Any]], saved_dir: Optional[Path
     _render_agreement_heatmap(decisions)
 
 
+def _human_run_label(human_dir: Path) -> str:
+    """MMDD_HHMM [autosave?] | dataset | n rows labeled"""
+    try:
+        payload = json.loads((human_dir / "human_decisions.json").read_text())
+        info = payload.get("validation_info", {})
+        dataset = info.get("dataset", "?")
+        n_samples = info.get("n_samples_labeled", len(payload.get("decisions", [])))
+        is_autosave = bool(info.get("autosave", False))
+    except Exception:
+        dataset, n_samples, is_autosave = "?", "?", False
+
+    parts = human_dir.name.split("_")
+    try:
+        date_part = next(p for p in parts if len(p) == 8 and p.isdigit())
+        date_idx = parts.index(date_part)
+        time_part = parts[date_idx + 1] if date_idx + 1 < len(parts) else "000000"
+        stamp = f"{date_part[4:8]}_{time_part[:4]}"
+    except Exception:
+        stamp = human_dir.name[-9:]
+
+    tag = " [autosave]" if is_autosave else ""
+    return f"{stamp}{tag} | {dataset} | {n_samples} rows"
+
+
+def _judge_run_label_for_cross(run_dir: Path) -> str:
+    """MMDD_HHMM | datasets | n_items | model"""
+    try:
+        results, info = _load_judge_run(run_dir)
+        datasets = "+".join(sorted({str(r.get("dataset") or "") for r in results if r.get("dataset")}))
+        n_items = len({(r.get("dataset"), r.get("item_id")) for r in results})
+        model = str(info.get("model") or "?")
+    except Exception:
+        datasets, n_items, model = run_dir.name, "?", "?"
+
+    parts = run_dir.name.split("_")
+    try:
+        date_part = next(p for p in parts if len(p) == 8 and p.isdigit())
+        date_idx = parts.index(date_part)
+        time_part = parts[date_idx + 1] if date_idx + 1 < len(parts) else "000000"
+        stamp = f"{date_part[4:8]}_{time_part[:4]}"
+    except Exception:
+        stamp = run_dir.name[-9:]
+
+    return f"{stamp} | {datasets} | {n_items} items | {model}"
+
+
+def _find_all_human_runs() -> List[Path]:
+    if not _HUMAN_RUNS_DIR.exists():
+        return []
+    return sorted(
+        [d for d in _HUMAN_RUNS_DIR.iterdir() if d.is_dir() and (d / "human_decisions.json").exists()],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+
+
+def _load_human_decisions_from_dir(human_dir: Path) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    payload = json.loads((human_dir / "human_decisions.json").read_text())
+    return payload.get("decisions", []), payload.get("validation_info", {})
+
+
+def _render_cross_compare() -> None:
+    human_runs = _find_all_human_runs()
+    judge_runs = _find_judge_runs()
+
+    if not human_runs:
+        st.info("No saved human decisions found. Label some records on the **📝 Label Records** tab first.")
+        return
+    if not judge_runs:
+        st.info("No judge runs found. Run the Judge Validator page first.")
+        return
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**Human session**")
+        human_labels = [_human_run_label(p) for p in human_runs]
+        sel_human_label = st.selectbox("Human session", human_labels, key="xc_human_run", label_visibility="collapsed")
+        sel_human = human_runs[human_labels.index(sel_human_label)]
+    with c2:
+        st.markdown("**Judge run to compare against**")
+        judge_labels = [_judge_run_label_for_cross(p) for p in judge_runs]
+        sel_judge_label = st.selectbox("Judge run", judge_labels, key="xc_judge_run", label_visibility="collapsed")
+        sel_judge = judge_runs[judge_labels.index(sel_judge_label)]
+
+    if st.button("Compare", key="xc_compare", type="primary"):
+        try:
+            human_decisions, h_info = _load_human_decisions_from_dir(sel_human)
+            judge_results, j_info = _load_judge_run(sel_judge)
+        except Exception as e:
+            st.error(f"Could not load data: {e}")
+            return
+
+        judge_by_key = {
+            (str(r.get("dataset", "")), str(r.get("item_id", "")), str(r.get("attribute", ""))): r
+            for r in judge_results
+        }
+        merged = []
+        for d in human_decisions:
+            key = (str(d.get("dataset", "")), str(d.get("item_id", "")), str(d.get("attribute", "")))
+            jr = judge_by_key.get(key)
+            if jr is not None:
+                merged.append({
+                    **d,
+                    "judge_label": _format_label(jr.get("label")),
+                    "judge_confidence": jr.get("confidence"),
+                    "judge_prediction": jr.get("prediction"),
+                })
+
+        if not merged:
+            st.warning("No matching (dataset, item_id, attribute) records found between the two runs.")
+            return
+
+        st.session_state["xc_merged"] = merged
+        st.session_state["xc_h_info"] = h_info
+        st.session_state["xc_j_info"] = j_info
+        st.rerun()
+
+    merged = st.session_state.get("xc_merged")
+    if merged:
+        h_info = st.session_state.get("xc_h_info", {})
+        j_info = st.session_state.get("xc_j_info", {})
+        st.caption(
+            f"Human: `{h_info.get('judge_run_dir', sel_human)}` | "
+            f"Judge: `{j_info.get('run_dir', sel_judge)}` · model: `{j_info.get('model', '-')}`"
+        )
+        _render_comparison(merged)
+
+
 def _clear_labeling_state() -> None:
     for key in list(st.session_state.keys()):
         if key.startswith("hjv_label_") or key.startswith("hjv_candidate_") or key.startswith("hjv_notes_"):
             st.session_state.pop(key, None)
-    for key in ("hjv_records", "hjv_run_info", "hjv_config", "hjv_existing_decisions", "hjv_saved_decisions", "hjv_saved_dir"):
+    for key in ("hjv_records", "hjv_run_info", "hjv_config", "hjv_existing_decisions", "hjv_saved_decisions", "hjv_saved_dir", "hjv_autosave_dir", "hjv_autosave_progress"):
         st.session_state.pop(key, None)
 
 
@@ -462,10 +709,7 @@ def main() -> None:
         )
 
         existing_runs = _human_runs_for_judge_run(selected_run, dataset)
-        existing_labels = ["Do not preload"] + [
-            f"{p.name} ({datetime.fromtimestamp(p.stat().st_mtime).strftime('%Y-%m-%d %H:%M:%S')})"
-            for p in existing_runs
-        ]
+        existing_labels = ["Do not preload"] + [_human_run_label(p) for p in existing_runs]
         existing_choice = st.selectbox("Preload human labels", existing_labels, key="hjv_existing_run")
 
         st.divider()
@@ -509,49 +753,80 @@ def main() -> None:
             "judge_run_name": selected_run.name,
         }
         st.session_state["hjv_existing_decisions"] = existing
+        autosave_id = datetime.now().strftime("human_judge_autosave_%Y%m%d_%H%M%S_%f")
+        st.session_state["hjv_autosave_dir"] = str(_HUMAN_RUNS_DIR / autosave_id)
+        st.session_state["hjv_autosave_progress"] = 0
         st.rerun()
 
-    records = st.session_state.get("hjv_records", [])
-    if not records:
-        st.info("Choose a dataset, judge run, and item count in the sidebar, then click **Start Labeling**.")
-        return
+    tab_label, tab_cross = st.tabs(["📝 Label Records", "🔀 Cross-compare"])
 
-    config = st.session_state.get("hjv_config", {})
-    run_info = st.session_state.get("hjv_run_info", {})
-    existing = st.session_state.get("hjv_existing_decisions", {})
-    _seed_widget_state(records, existing)
+    with tab_label:
+        records = st.session_state.get("hjv_records", [])
+        if not records:
+            st.info("Choose a dataset, judge run, and item count in the sidebar, then click **Start Labeling**.")
+        else:
+            config = st.session_state.get("hjv_config", {})
+            run_info = st.session_state.get("hjv_run_info", {})
+            existing = st.session_state.get("hjv_existing_decisions", {})
+            _seed_widget_state(records, existing)
 
-    st.caption(
-        f"Judge source: `{config.get('judge_run_dir', '')}` | "
-        f"model: `{run_info.get('model', '-')}`"
-    )
-    _render_labeling_records(records)
+            st.caption(
+                f"Judge source: `{config.get('judge_run_dir', '')}` | "
+                f"model: `{run_info.get('model', '-')}`"
+            )
+            _render_labeling_records(records)
 
-    if st.button("Submit Human Decisions", type="primary", use_container_width=True):
-        decisions, errors = _collect_decisions(records)
-        if errors:
-            st.error("Please finish the required labels before submitting.")
-            with st.expander(f"Missing required fields ({len(errors)})", expanded=True):
-                for err in errors[:100]:
-                    st.write(f"- {err}")
-                if len(errors) > 100:
-                    st.caption(f"... and {len(errors) - 100} more")
-            return
+            # Auto-save every 10 new labels so progress survives a refresh
+            current_progress = sum(
+                1
+                for r in records
+                if st.session_state.get(f"hjv_label_{_safe_key(str(r.get('id') or ''))}") in _LABEL_ORDER
+            )
+            last_autosave = st.session_state.get("hjv_autosave_progress", 0)
+            if current_progress > 0 and current_progress - last_autosave >= 10:
+                partial_decisions, _ = _collect_decisions(records)
+                if partial_decisions:
+                    autosave_dir_str = st.session_state.get("hjv_autosave_dir")
+                    if autosave_dir_str:
+                        _autosave_human_decisions(
+                            records,
+                            partial_decisions,
+                            {
+                                **config,
+                                "judge_model": run_info.get("model"),
+                                "judge_evaluator": run_info.get("evaluator"),
+                            },
+                            Path(autosave_dir_str),
+                        )
+                        st.session_state["hjv_autosave_progress"] = current_progress
 
-        validation_info = {
-            **config,
-            "judge_model": run_info.get("model"),
-            "judge_evaluator": run_info.get("evaluator"),
-        }
-        saved_dir = _save_human_decisions(records, decisions, validation_info)
-        st.session_state["hjv_saved_decisions"] = decisions
-        st.session_state["hjv_saved_dir"] = str(saved_dir)
-        st.rerun()
+            if st.button("Submit Human Decisions", type="primary", use_container_width=True):
+                decisions, errors = _collect_decisions(records)
+                if errors:
+                    st.error("Please finish the required labels before submitting.")
+                    with st.expander(f"Missing required fields ({len(errors)})", expanded=True):
+                        for err in errors[:100]:
+                            st.write(f"- {err}")
+                        if len(errors) > 100:
+                            st.caption(f"... and {len(errors) - 100} more")
+                else:
+                    validation_info = {
+                        **config,
+                        "judge_model": run_info.get("model"),
+                        "judge_evaluator": run_info.get("evaluator"),
+                    }
+                    saved_dir = _save_human_decisions(records, decisions, validation_info)
+                    st.session_state["hjv_saved_decisions"] = decisions
+                    st.session_state["hjv_saved_dir"] = str(saved_dir)
+                    st.rerun()
 
-    saved_decisions = st.session_state.get("hjv_saved_decisions")
-    if saved_decisions:
-        saved_dir_raw = st.session_state.get("hjv_saved_dir")
-        _render_comparison(saved_decisions, Path(saved_dir_raw) if saved_dir_raw else None)
+            saved_decisions = st.session_state.get("hjv_saved_decisions")
+            if saved_decisions:
+                saved_dir_raw = st.session_state.get("hjv_saved_dir")
+                _render_comparison(saved_decisions, Path(saved_dir_raw) if saved_dir_raw else None)
+
+    with tab_cross:
+        _render_cross_compare()
 
 
 main()

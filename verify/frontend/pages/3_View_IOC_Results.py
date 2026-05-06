@@ -87,6 +87,17 @@ def _display_image(b64_str: str | None, caption: str = ""):
         st.error(f"Could not display image: {e}")
 
 
+def _get_generated_image_b64(result: Dict[str, Any]) -> str:
+    """Return generated output image bytes from current or legacy result shapes."""
+    direct = result.get("generated_image_b64") or result.get("generated_image_base64")
+    if direct:
+        return str(direct)
+    raw_output = result.get("raw_output") or {}
+    if isinstance(raw_output, dict):
+        return str(raw_output.get("image_b64") or raw_output.get("image_base64") or "")
+    return ""
+
+
 def _display_preview_text(text: str, area_key: str, *, empty_text: str, height: int = 200) -> None:
     """Show a truncated preview in the UI while preserving the full stored text."""
     show_full = st.session_state.get("show_full_externalizations", False)
@@ -552,6 +563,7 @@ def _render_item(
     idx: int,
     cache_dir: Path | None = None,
     dataset_name: str = "unknown",
+    output_modality: str = "text",
 ):
     filename    = result.get("filename", "unknown")
     status      = result.get("status", "")
@@ -627,6 +639,10 @@ def _render_item(
                 st.text_area("Raw output text", value=result.get("output_text", ""),
                              height=200, disabled=True, label_visibility="collapsed",
                              key=f"vioc_out_{idx}")
+                generated_image_b64 = _get_generated_image_b64(result)
+                if generated_image_b64 or output_modality == "image":
+                    st.caption("Generated output image")
+                    _display_image(generated_image_b64, caption="Generated image")
 
             with ext_col:
                 st.markdown(f"**{STAGE_EXT}**")
@@ -965,7 +981,7 @@ def main():
     )
     cache_dir_path = Path(cache_dir_str) if cache_dir_str else None
     for idx, result in enumerate(items):
-        _render_item(result, unified_attrs, idx, cache_dir_path, dataset_name)
+        _render_item(result, unified_attrs, idx, cache_dir_path, dataset_name, output_modality)
 
     # ── Delete ────────────────────────────────────────────────────────────────
     if cache_dir_str:

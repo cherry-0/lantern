@@ -34,7 +34,8 @@ ATTACH_DIR.mkdir(parents=True, exist_ok=True)
 PAPER_FIGS.mkdir(parents=True, exist_ok=True)
 
 # ── Style (FIGURE.md §1, §2) ──────────────────────────────────────────────────
-sns.set_theme(style="whitegrid", font_scale=1.15)
+sns.set_theme(style="white", font_scale=1.5)
+plt.rcParams["axes.grid"] = False
 # Adobe pastel palette
 P_TEAL   = "#7ADBC4"
 P_YELLOW = "#FAD765"
@@ -83,13 +84,17 @@ def render_both_aspects(slug, draw_fn):
 
 # ── Fig 1 — Evaluator Configuration Comparison ────────────────────────────────
 def _draw_fig1_modality_gap(ax, aspect: str):
-    """Recall_lb and precision_confirmed for HR-VISPR & OpenPII under judge-text vs judge-image."""
+    """Recall_lb and precision_confirmed under judge-text vs judge-image
+    on the canonical gemini-2.0-flash-001 runs. The OpenPII judge-text run
+    (Run A) is retired and is no longer present in
+    `verify/outputs/judge_validation_runs/`, so the 4-configuration version
+    of this figure is reduced to 3: the modality-fidelity gap on HR-VISPR
+    plus the OpenPII judge-image control point."""
     rows = [
         # (dataset, evaluator, recall_lb, precision)
-        ("HR-VISPR\njudge-text / flash-lite",   "judge-text",  0.176, 0.698),
-        ("HR-VISPR\njudge-image / flash",       "judge-image", 0.669, 0.762),
-        ("OpenPII\njudge-text / flash-lite",    "judge-text",  0.836, 0.651),
-        ("OpenPII\njudge-image / flash",        "judge-image", 0.841, 0.694),
+        ("HR-VISPR\njudge-text / flash-001",    "judge-text",  0.170, 0.667),
+        ("HR-VISPR\njudge-image / flash-001",   "judge-image", 0.669, 0.762),
+        ("OpenPII\njudge-image / flash-001",    "judge-image", 0.841, 0.694),
     ]
     labels  = [r[0] for r in rows]
     evals   = [r[1] for r in rows]
@@ -116,14 +121,14 @@ def _draw_fig1_modality_gap(ax, aspect: str):
         ax.text(x[i] + w/2, v + 0.012, f"{v:.3f}", ha="center", va="bottom",
                 fontsize=9, fontweight="bold", color="#333")
 
-    # 3.8× gap callout (bars 0 → 1, recall_lb on HR-VISPR; 0.669 / 0.176 ≈ 3.8)
+    # 3.9× gap callout (bars 0 → 1, recall_lb on HR-VISPR; 0.669 / 0.170 ≈ 3.94)
     x0 = x[0] - w/2; x1 = x[1] - w/2
     y0 = recalls[0]; y1 = recalls[1]
     ax.annotate("", xy=(x1, y1), xytext=(x0, y0),
                 arrowprops=dict(arrowstyle="->", color=P_SLATE, lw=1.8,
                                 connectionstyle="arc3,rad=-0.18"))
     ax.text((x0 + x1) / 2 - 0.02, (y0 + y1) / 2 + 0.10,
-            "3.8× recall gap", color=P_SLATE, fontsize=10, fontweight="bold",
+            "3.9× recall gap", color=P_SLATE, fontsize=10, fontweight="bold",
             ha="center")
 
     label_fs = 9.5 if aspect == "2x1" else 8.5
@@ -131,9 +136,6 @@ def _draw_fig1_modality_gap(ax, aspect: str):
     ax.set_xticklabels(labels, fontsize=label_fs)
     ax.set_ylabel("Metric value")
     ax.set_ylim(0, 1.12)
-    ax.set_title("Evaluator Configuration Comparison\n"
-                 "(dark = judge-image, light = judge-text)",
-                 fontsize=11.5)
 
     legend_handles = [
         mpatches.Patch(color=P_BLUE,   alpha=1.0,  label="recall_lb (judge-image)"),
@@ -152,20 +154,22 @@ def fig1_modality_gap():
 
 # ── Fig 2 — Judge Discrimination: TPR(GT=1) vs FPR(GT=0) ──────────────────────
 def _draw_fig2_discrimination(ax, aspect: str):
-    """Per-config: recall on GT=1 stratum (TPR) vs false-fire rate on GT=0 stratum (FPR).
+    """Per-dataset: TPR on GT=1 vs FPR on GT=0 under the canonical judge-image
+    configuration. The three calibration datasets are placed side-by-side so the
+    SynthPAI regime (near-floor confirmed-fire rate, small TPR-FPR gap) reads
+    directly against the OpenPII / HR-VISPR clusters that do clear the
+    calibration bar.
 
-    The original "precision on GT=1 stratum" framing was structurally trivial —
-    in a GT=1 stratum, FPs are impossible by definition, so precision = 1.000
-    is mechanical. The non-trivial discrimination metric is the gap between
-    TPR (rate at which the judge fires when attribute is present) and FPR
-    (rate at which it fires when attribute is absent).
+    The previous version included judge-text / flash-lite bars for OpenPII and
+    HR-VISPR; those are retired here in favor of a SynthPAI cluster, since the
+    cross-dataset comparison is the relevant one for the headline calibration
+    claim and the modality-fidelity claim is already covered by Fig.~1.
     """
     rows = [
         # (label, TPR_GT1, FPR_GT0, n_GT_pos, n_GT_neg)
-        ("OpenPII\njudge-text / flash-lite",    0.836, 0.226,   67,  133),
-        ("OpenPII\njudge-image / flash",        0.841, 0.183,  132,  268),
-        ("HR-VISPR\njudge-text / flash-lite",   0.176, 0.055,  210,  290),
-        ("HR-VISPR\njudge-image / flash",       0.669, 0.144,  734, 1065),
+        ("OpenPII\njudge-image / flash-001",     0.841, 0.183,  132,  268),
+        ("HR-VISPR\njudge-image / flash-001",    0.669, 0.144,  734, 1065),
+        ("SynthPAI\njudge-image / flash-001",    0.059, 0.005,  102,  398),
     ]
     labels   = [r[0] for r in rows]
     tpr      = [r[1] for r in rows]
@@ -200,11 +204,8 @@ def _draw_fig2_discrimination(ax, aspect: str):
     label_fs = 10 if aspect == "2x1" else 9
     ax.set_xticks(x)
     ax.set_xticklabels(labels, fontsize=label_fs)
-    ax.set_ylabel("Rate at which the judge issues a 'confirmed' verdict")
+    ax.set_ylabel("'confirmed' verdict rate")
     ax.set_ylim(0, 1.12)
-    ax.set_title("Judge Discrimination: TPR on GT=1 vs FPR on GT=0\n"
-                 "(large gap = the judge fires on present attributes far more often than on absent ones)",
-                 fontsize=11)
     ax.legend(loc="upper right", fontsize=9.5, framealpha=0.92)
 
 
@@ -261,10 +262,6 @@ def _draw_fig3_attribute_sensitivity(ax, aspect: str):
     ax.set_yticklabels(attrs, fontsize=10)
     ax.set_xlim(0, 1.18)
     ax.set_xlabel("recall_lb")
-    ax.set_title("Attribute Sensitivity Hierarchy\n"
-                 "HR-VISPR • judge-image • gemini-2.0-flash-001  "
-                 "(n_ok=1,799, GT+ items only)",
-                 fontsize=11)
 
     legend_handles = [
         mpatches.Patch(color=P_GREEN,  label="≥ 0.90  (very high)"),

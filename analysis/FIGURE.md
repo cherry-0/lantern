@@ -63,7 +63,22 @@ Reserved for 3-class verdict encodings.
 - **Spines:** hide top and right (`ax.spines["top"].set_visible(False)`,
   `ax.spines["right"].set_visible(False)`).
 - **Bar edges:** white (`edgecolor="white"`), `linewidth=0.6`.
-- **Fonts:** seaborn default with `sns.set_theme(style="whitegrid", font_scale=1.15)`.
+- **Fonts:** seaborn default with `sns.set_theme(style="white", font_scale=1.5)`
+  --- the previous `1.15` baseline is retired; new figures should be ${\sim}1.3{\times}$
+  larger so the panels read at column-width embeds. Also add
+  `plt.rcParams["axes.grid"] = False` after the seaborn theme.
+- **No grids.**
+- **No plot titles.** Do not call `ax.set_title(...)` for paper figures: the
+  panel letter and a short description live in the LaTeX caption, so an
+  in-figure title is redundant and steals vertical space. The same rule
+  applies to `fig.suptitle(...)`.
+- **No text overlap.** Bar value labels, axis-tick labels, in-axes
+  annotations, and the legend must not collide. Before saving, double-check
+  by eye on both aspect ratios; if a label would overlap a bar value or
+  another label, shorten it, rotate it (`rotation=25, ha="right"` for x-tick
+  labels), shrink it (`fontsize=` adjustment), or move it
+  (`bbox_to_anchor=` for the legend, `va="bottom"` / `va="top"` flips for
+  value labels).
 
 ---
 

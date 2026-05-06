@@ -10,3 +10,4 @@ GretelSyntheticPII,,Gretel synthetic PII documents (111k synthetic documents wit
 MIMIC-CXR,,MIMIC-CXR chest X-ray dataset with paired radiology reports (image + text_augment)
 MultiCaRe,,MultiCaRe clinical case reports from PubMed Central (93k case narratives)
 ASAP-AES,,ASAP Automated Essay Scoring corpus (21k student essays across 8 prompt sets)
+Nutrition5k,,Nutrition5k food image dataset with per-dish nutrition totals and ingredient metadata

@@ -29,7 +29,7 @@ _APP_DEFAULT_MODES = {
     # No backend server — Firebase Cloud Functions / browser-only PWA
     "edupal": "serverless",
     "spendsense": "serverless",
-    "fiscalflow": "serverless",
+    "fiscal-flow": "serverless",
     # Streamlit web app — not automatable natively
     "sgpa": "serverless",
     # Flutter/Dart on-device app — no server endpoints

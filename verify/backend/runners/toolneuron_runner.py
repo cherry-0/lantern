@@ -47,6 +47,7 @@ Output JSON
 """
 
 import base64
+import gc
 import io
 import json
 import os
@@ -153,23 +154,30 @@ def _run_text(data: dict) -> dict:
 
     print("[tool-neuron] Running text generation ...", file=sys.stderr, flush=True)
 
-    output = llm.create_chat_completion(
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": text_content},
-        ],
-        max_tokens=max_tokens,
-        temperature=0.7,
-        top_k=40,
-        top_p=0.9,
-        min_p=0.05,
-        repeat_penalty=1.1,
-    )
+    try:
+        output = llm.create_chat_completion(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": text_content},
+            ],
+            max_tokens=max_tokens,
+            temperature=0.7,
+            top_k=40,
+            top_p=0.9,
+            min_p=0.05,
+            repeat_penalty=1.1,
+        )
 
-    response: str = output["choices"][0]["message"]["content"] or ""
-    tokens_predicted: int = output.get("usage", {}).get("completion_tokens", 0)
+        response: str = output["choices"][0]["message"]["content"] or ""
+        tokens_predicted: int = output.get("usage", {}).get("completion_tokens", 0)
 
-    print("[tool-neuron] Text generation complete.", file=sys.stderr, flush=True)
+        print("[tool-neuron] Text generation complete.", file=sys.stderr, flush=True)
+    finally:
+        close = getattr(llm, "close", None)
+        if callable(close):
+            close()
+        del llm
+        gc.collect()
 
     from _runner_log import log_output
     log_output("tool-neuron", "text_generation", response, {"TOKENS": tokens_predicted})

@@ -297,6 +297,15 @@ def _is_asapaes_dataset(dataset_path: Path) -> bool:
     return False
 
 
+def _is_nutrition5k_dataset(dataset_path: Path) -> bool:
+    """Return True if the directory contains the local Nutrition5k export."""
+    return (
+        (dataset_path / "dish_images.pkl").exists()
+        and (dataset_path / "dishes.xlsx").exists()
+        and (dataset_path / "dish_ingredients.xlsx").exists()
+    )
+
+
 def _parse_stringified_list(s: str) -> List[str]:
     """Parse a stringified Python list (e.g. \"['a', 'b']\") back to a Python list."""
     import ast
@@ -345,6 +354,10 @@ def detect_modality(dataset_name: str) -> Optional[str]:
     if _is_asapaes_dataset(dataset_path):
         return "text"
 
+    # Nutrition5k: image
+    if _is_nutrition5k_dataset(dataset_path):
+        return "image"
+
     # HuggingFace disk datasets — image if any split has an Image feature, else text
     if _is_hf_dataset(dataset_path):
         if _is_hf_image_dataset(dataset_path):
@@ -386,6 +399,9 @@ def list_dataset_items(dataset_name: str, modality: str) -> List[Path]:
 
     if _is_hf_dataset(dataset_path):
         return []  # rows are accessed via iter_dataset
+
+    if _is_nutrition5k_dataset(dataset_path):
+        return []  # images are stored as bytes in dish_images.pkl
 
     ext_set = {
         "image": IMAGE_EXTENSIONS,
@@ -1004,6 +1020,210 @@ def _iter_asapaes_dataset(
                 yield True, item, None
 
 
+@functools.lru_cache(maxsize=2)
+def _load_nutrition5k_images(dataset_path_str: str) -> Any:
+    """Load Nutrition5k image dataframe from dish_images.pkl."""
+    import pickle
+
+    pkl_path = Path(dataset_path_str) / "dish_images.pkl"
+    with open(pkl_path, "rb") as f:
+        return pickle.load(f)
+
+
+def _clean_nutrition5k_value(value: Any) -> Any:
+    """Convert pandas/numpy scalar values into JSON-friendly Python values."""
+    try:
+        import pandas as pd
+
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            pass
+    return value
+
+
+def _clean_nutrition5k_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        str(k): _clean_nutrition5k_value(v)
+        for k, v in record.items()
+        if _clean_nutrition5k_value(v) is not None
+    }
+
+
+@functools.lru_cache(maxsize=2)
+def _load_nutrition5k_metadata(
+    dataset_path_str: str,
+) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, List[Dict[str, Any]]]]:
+    """Load Nutrition5k per-dish total nutrition and ingredient rows."""
+    try:
+        import pandas as pd
+    except ImportError as e:
+        raise RuntimeError("pandas + openpyxl required for Nutrition5k metadata") from e
+
+    dataset_path = Path(dataset_path_str)
+    dishes_df = pd.read_excel(dataset_path / "dishes.xlsx")
+    ingredients_df = pd.read_excel(dataset_path / "dish_ingredients.xlsx")
+
+    totals: Dict[str, Dict[str, Any]] = {}
+    for record in dishes_df.to_dict("records"):
+        dish_id = str(record.get("dish_id") or "").strip()
+        if dish_id:
+            totals[dish_id] = _clean_nutrition5k_record(record)
+
+    ingredients: Dict[str, List[Dict[str, Any]]] = {}
+    for record in ingredients_df.to_dict("records"):
+        dish_id = str(record.get("dish_id") or "").strip()
+        if dish_id:
+            ingredients.setdefault(dish_id, []).append(_clean_nutrition5k_record(record))
+
+    return totals, ingredients
+
+
+def _nutrition5k_text_context(
+    dish_id: str,
+    totals: Dict[str, Any],
+    ingredients: List[Dict[str, Any]],
+) -> str:
+    parts = [f"Dish ID: {dish_id}"]
+
+    if totals:
+        nutrition_fields = [
+            ("total_mass", "mass_g"),
+            ("total_calories", "calories"),
+            ("total_fat", "fat_g"),
+            ("total_carb", "carb_g"),
+            ("total_protein", "protein_g"),
+        ]
+        facts = [
+            f"{label}: {totals[field]}"
+            for field, label in nutrition_fields
+            if field in totals and totals[field] is not None
+        ]
+        if facts:
+            parts.append("Nutrition totals: " + ", ".join(facts))
+
+    ingredient_text: List[str] = []
+    for ingredient in ingredients:
+        name = str(ingredient.get("ingr_name") or "").strip()
+        if not name:
+            continue
+        details = []
+        for field, label in (
+            ("grams", "g"),
+            ("calories", "kcal"),
+            ("fat", "fat_g"),
+            ("carb", "carb_g"),
+            ("protein", "protein_g"),
+        ):
+            if field in ingredient and ingredient[field] is not None:
+                details.append(f"{label}: {ingredient[field]}")
+        ingredient_text.append(f"{name} ({', '.join(details)})" if details else name)
+
+    if ingredient_text:
+        parts.append("Ingredients: " + "; ".join(ingredient_text))
+
+    return "\n".join(parts)
+
+
+def _nutrition5k_image_item(
+    *,
+    dataset_path: Path,
+    dish_id: str,
+    image_bytes: bytes,
+    totals: Dict[str, Any],
+    ingredients: List[Dict[str, Any]],
+) -> Tuple[bool, Dict[str, Any], Optional[str]]:
+    try:
+        from PIL import Image as PILImage
+        import io
+
+        img = PILImage.open(BytesIO(image_bytes)).convert("RGB")
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        image_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+    except ImportError:
+        return False, {}, "Pillow (PIL) is required to load Nutrition5k images."
+    except Exception as e:
+        return False, {}, f"Nutrition5k: failed to decode image for {dish_id}: {e}"
+
+    text_context = _nutrition5k_text_context(dish_id, totals, ingredients)
+    item: Dict[str, Any] = {
+        "modality": "image",
+        "path": f"{dataset_path / 'dish_images.pkl'}::{dish_id}",
+        "filename": f"{dish_id}.jpg",
+        "data": img,
+        "image_base64": image_b64,
+        "text_content": text_context,
+        "raw": {
+            "dish_id": dish_id,
+            "nutrition_totals": totals,
+            "ingredients": ingredients,
+        },
+        "label_source": "nutrition5k",
+        "privacy_labels": [],
+        "dish_id": dish_id,
+        "nutrition5k_totals": totals,
+        "nutrition5k_ingredients": ingredients,
+    }
+    return True, item, None
+
+
+def _iter_nutrition5k_dataset(
+    dataset_path: Path,
+) -> Generator[Tuple[bool, Dict[str, Any], Optional[str]], None, None]:
+    """
+    Load Nutrition5k food images and nutrition metadata.
+
+    Structure:
+        dish_images.pkl          — DataFrame with columns: dish, rgb_image, depth_image
+        dishes.xlsx              — per-dish total mass/calories/macros
+        dish_ingredients.xlsx    — per-dish ingredient rows and macros
+
+    The Verify item is an image input using rgb_image. Nutrition facts are attached
+    as metadata for app context, but this dataset has no unified privacy GT labels.
+    """
+    try:
+        images_df = _load_nutrition5k_images(str(dataset_path))
+    except Exception as e:
+        yield False, {}, f"Nutrition5k: failed to load dish_images.pkl: {e}"
+        return
+
+    try:
+        totals_by_dish, ingredients_by_dish = _load_nutrition5k_metadata(str(dataset_path))
+    except Exception:
+        totals_by_dish, ingredients_by_dish = {}, {}
+
+    required = {"dish", "rgb_image"}
+    if not required.issubset(set(getattr(images_df, "columns", []))):
+        yield False, {}, "Nutrition5k: dish_images.pkl must contain dish and rgb_image columns."
+        return
+
+    for _, row in images_df.iterrows():
+        dish_id = str(row.get("dish") or "").strip()
+        image_bytes = row.get("rgb_image")
+        if not dish_id or not isinstance(image_bytes, (bytes, bytearray)):
+            yield False, {
+                "modality": "image",
+                "path": str(dataset_path / "dish_images.pkl"),
+                "filename": dish_id or "unknown",
+            }, f"Nutrition5k: invalid image row for dish {dish_id or '<missing>'}."
+            continue
+
+        yield _nutrition5k_image_item(
+            dataset_path=dataset_path,
+            dish_id=dish_id,
+            image_bytes=bytes(image_bytes),
+            totals=totals_by_dish.get(dish_id, {}),
+            ingredients=ingredients_by_dish.get(dish_id, []),
+        )
+
+
 def count_dataset_items(dataset_name: str, modality: str) -> int:
     """
     Return the total number of items in a dataset without loading all data.
@@ -1065,6 +1285,12 @@ def count_dataset_items(dataset_name: str, modality: str) -> int:
                     except Exception:
                         pass
         return total
+
+    if _is_nutrition5k_dataset(dataset_path):
+        try:
+            return len(_load_nutrition5k_images(str(dataset_path)))
+        except Exception:
+            return 0
 
     if _is_hf_dataset(dataset_path):
         total = 0
@@ -1131,6 +1357,8 @@ def iter_dataset(
         source = _iter_openpii_dataset(dataset_path)
     elif _is_asapaes_dataset(dataset_path):
         source = _iter_asapaes_dataset(dataset_path)
+    elif _is_nutrition5k_dataset(dataset_path):
+        source = _iter_nutrition5k_dataset(dataset_path)
     elif _is_hf_dataset(dataset_path):
         source = _iter_hf_dataset(dataset_path)
     elif _is_sroie_dataset(dataset_path):

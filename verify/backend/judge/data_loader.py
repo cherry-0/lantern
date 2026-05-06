@@ -65,15 +65,28 @@ def _openpii_difficulty(gt: int) -> str:
 def _synthpai_samples(
     max_items: Optional[int],
     attrs: List[str],
+    seed: int = 42,
 ) -> Generator[Dict[str, Any], None, None]:
-    count = 0
-    for ok, item, _err in iter_dataset("SynthPAI", "text", max_items=max_items):
+    # Collect all valid items first, then shuffle to avoid ordering bias
+    # (the SynthPAI dataset is sorted such that the first N items are
+    # heavily skewed toward a single attribute being positive).
+    import random
+    all_items = []
+    for ok, item, _err in iter_dataset("SynthPAI", "text"):
         if not ok:
             continue
         text = item.get("text_content", "") or ""
         if not text.strip():
             continue
+        all_items.append(item)
+
+    random.Random(seed).shuffle(all_items)
+    if max_items is not None:
+        all_items = all_items[:max_items]
+
+    for count, item in enumerate(all_items):
         item_id = item.get("filename", f"sp_{count:05d}")
+        text = item.get("text_content", "") or ""
         for attr in attrs:
             difficulty = _label_mapper.synthpai_attr_difficulty(item, attr)
             gt = 0 if difficulty == "none" else 1
@@ -87,7 +100,7 @@ def _synthpai_samples(
                 "difficulty":   difficulty,
                 "item_id":      item_id,
             }
-        count += 1
+
 
 
 def _hrvispr_samples(

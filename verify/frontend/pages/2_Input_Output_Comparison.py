@@ -33,6 +33,7 @@ from verify.backend.evaluation_method.evaluator import (
 )
 from verify.backend.utils.config import (
     EVAL_PROMPT_CHOICES,
+    get_default_eval_model,
     get_default_eval_prompt,
     load_color_palette,
 )
@@ -60,6 +61,9 @@ KNOWN_APPS = [
     "healyks",
     "sgpa",
     "waico",
+    "nom-ai",
+    "tinytavern",
+    "edumind",
 ]
 
 STAGE_INPUT = "Input"
@@ -96,6 +100,18 @@ VERDICT_COLORS = {
     VERDICT_NO_EVIDENCE: _PALETTE["verdict"][VERDICT_NO_EVIDENCE],
     "na": _PALETTE["verdict"]["na"],
 }
+MODALITIES = ["image", "text", "video"]
+
+
+def _detect_dataset_modality(dataset_name: str) -> str | None:
+    try:
+        from verify.backend.datasets.loader import detect_modality
+
+        detected = detect_modality(dataset_name)
+        return detected if detected in MODALITIES else None
+    except Exception:
+        return None
+    return None
 
 
 def _current_input_labels(result: Dict[str, Any], unified_attrs: List[str]) -> Dict[str, int]:
@@ -179,22 +195,26 @@ def _ioc_cache_dir(
     modality: str,
     generation_task: str = "text",
     eval_prompt: str = "prompt1",
+    eval_model: Optional[str] = None,
 ) -> "Path":
     """Return the IOC-specific cache directory (distinct from perturb-input caches)."""
     from verify.backend.utils import cache as cache_module
     normalized_prompt = cache_module.normalize_eval_prompt(eval_prompt)
-    if generation_task == "text":
-        eval_method = "openrouter" if normalized_prompt == "prompt1" else f"openrouter:{normalized_prompt}"
-    else:
-        eval_method = (
-            f"openrouter:task={generation_task}"
-            if normalized_prompt == "prompt1"
-            else f"openrouter:{normalized_prompt}:task={generation_task}"
-        )
+    eval_method = "openrouter" if normalized_prompt == "prompt1" else f"openrouter:{normalized_prompt}"
+    if eval_model:
+        eval_method = f"{eval_method}:model={eval_model}"
+    if generation_task != "text":
+        eval_method = f"{eval_method}:task={generation_task}"
     # Use "ioc_comparison" as perturbation_method so the SHA256 key never
     # collides with any perturb-input cache (which always has a real method name).
     return cache_module.get_cache_dir(
-        app_name, dataset_name, modality, [], "ioc_comparison", eval_method
+        app_name,
+        dataset_name,
+        modality,
+        [],
+        "ioc_comparison",
+        eval_method,
+        generation_task,
     )
 
 
@@ -215,6 +235,7 @@ def run_comparison_pipeline(
     use_cache: bool = True,
     generation_task: str = "text",
     eval_prompt: Optional[str] = None,
+    eval_model: Optional[str] = None,
 ) -> Generator[Dict[str, Any], None, None]:
     """
     Generator that yields one result dict per dataset item.
@@ -250,6 +271,7 @@ def run_comparison_pipeline(
     from verify.backend.utils import cache as cache_module
 
     eval_prompt = eval_prompt or get_default_eval_prompt()
+    eval_model = eval_model or get_default_eval_model()
     ext_eval_fn = {
         "prompt2": evaluate_inferability_v2,
         "prompt3": evaluate_inferability_v3,
@@ -268,6 +290,7 @@ def run_comparison_pipeline(
         modality,
         generation_task,
         eval_prompt,
+        eval_model,
     ) if use_cache else None
 
     # Save run config on first use so the View IOC Results page can discover this cache
@@ -285,14 +308,11 @@ def run_comparison_pipeline(
                 "perturbation_method": "ioc_comparison",
                 "evaluation_method": (
                     ("openrouter" if eval_prompt == "prompt1" else f"openrouter:{eval_prompt}")
-                    if generation_task == "text"
-                    else (
-                        f"openrouter:task={generation_task}"
-                        if eval_prompt == "prompt1"
-                        else f"openrouter:{eval_prompt}:task={generation_task}"
-                    )
+                    + (f":model={eval_model}" if eval_model else "")
+                    + (f":task={generation_task}" if generation_task != "text" else "")
                 ),
                 "eval_prompt": eval_prompt,
+                "eval_model": eval_model,
             })
 
     for ok, item, err in iter_dataset(dataset_name, modality, max_items=max_items):
@@ -335,6 +355,7 @@ def run_comparison_pipeline(
                 "ext_eval_ok": False,
                 "output_eval_error": None,
                 "ext_eval_error": None,
+                "output_eval_source": "none",
                 "eval_prompt": eval_prompt,
                 "from_cache": False,
             }
@@ -367,6 +388,7 @@ def run_comparison_pipeline(
                 "ext_eval_ok": False,
                 "output_eval_error": None,
                 "ext_eval_error": None,
+                "output_eval_source": "none",
                 "eval_prompt": eval_prompt,
                 "from_cache": False,
             }
@@ -397,11 +419,16 @@ def run_comparison_pipeline(
             continue
 
         output_text = pipeline_result.output_text or ""
+        generated_image_b64 = (pipeline_result.raw_output or {}).get("image_b64", "")
         externalizations = pipeline_result.externalizations or {}
         ext_text = _build_ext_text(externalizations)
 
         # 3. Evaluate raw output
-        out_ok, out_eval, out_err = evaluate_inferability(output_text, unified_attrs)
+        out_ok, out_eval, out_err = evaluate_inferability(
+            output_text,
+            unified_attrs,
+            image_b64=generated_image_b64 or None,
+        )
 
         # 4. Evaluate externalized results (skip if empty)
         if ext_text.strip():
@@ -417,6 +444,7 @@ def run_comparison_pipeline(
             "input_item": item,
             "input_labels": input_labels,
             "output_text": output_text,
+            "generated_image_b64": generated_image_b64,
             "externalizations": externalizations,
             "ext_text": ext_text,
             "output_eval": out_eval,
@@ -425,6 +453,7 @@ def run_comparison_pipeline(
             "ext_eval_ok": ext_ok,
             "output_eval_error": out_err,
             "ext_eval_error": ext_err,
+            "output_eval_source": "image" if generated_image_b64 else "text",
             "eval_prompt": eval_prompt,
             "from_cache": False,
             "prompt_text": pipeline_result.metadata.get("prompt_text", ""),
@@ -947,6 +976,8 @@ def _render_item(result: Dict[str, Any], unified_attrs: List[str], idx: int):
                     label_visibility="collapsed",
                     key=f"ioc_out_{idx}",
                 )
+                if result.get("generated_image_b64"):
+                    _display_image(result.get("generated_image_b64"))
             with ext_col:
                 st.markdown(f"**{STAGE_EXT}**")
                 ext_text = result.get("ext_text", "")
@@ -1070,8 +1101,22 @@ def main():
 
         # Input Modality
         st.subheader("Input Modality")
+        detected_modality = _detect_dataset_modality(selected_dataset)
+        default_modality_idx = (
+            MODALITIES.index(detected_modality)
+            if detected_modality in MODALITIES
+            else 0
+        )
         selected_modality = st.selectbox(
-            "Input Modality", ["image", "text", "video"], key="ioc_modality"
+            "Input Modality",
+            MODALITIES,
+            index=default_modality_idx,
+            key=f"ioc_modality_{selected_dataset}",
+            help=(
+                f"Detected from dataset: {detected_modality}"
+                if detected_modality
+                else "Could not detect modality from dataset files."
+            ),
         )
 
         st.divider()

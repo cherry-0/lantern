@@ -180,95 +180,24 @@ def get_output_verdict(output_eval_attr: Any) -> str:
         return v
     return "confirmed leakage" if output_eval_attr.get("inferable") else "no evidence"
 
+try:
+    from _leakage_common import load_all_data as _load_all_data_unified
+except ImportError:  # support running as `python analysis/scripts/leakage_analysis.py`
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from _leakage_common import load_all_data as _load_all_data_unified
+
+
 def load_all_data() -> pd.DataFrame:
-    records = []
-    for d in sorted(OUTPUTS_DIR.iterdir()):
-        cfg_f = d / "run_config.json"
-        if not cfg_f.exists():
-            continue
-        try:
-            cfg = json.loads(cfg_f.read_text())
-        except:
-            continue
-        app      = cfg.get("app_name", "?")
-        dataset  = cfg.get("dataset_name", "?")
-        in_mod   = cfg.get("input_modality", "?")
-        out_mod  = cfg.get("output_modality", "?")
-        in_type  = DATASET_INPUT_TYPE.get(dataset, in_mod)
+    """Load + filter via the shared loader in _leakage_common.
 
-        for r in sorted(d.glob("*.json")):
-            if r.name in SKIP_FILES:
-                continue
-            try:
-                data = json.loads(r.read_text())
-            except:
-                continue
-            ep = data.get("eval_prompt", "")
-            if ep not in ("prompt4", "prompt5"):
-                continue
-            ext_eval = data.get("ext_eval", {}) or {}
-            # Check has verdict
-            has_v = any(
-                isinstance(v, dict) and "aggregate" in v
-                and "verdict" in v.get("aggregate", {})
-                for v in ext_eval.values()
-            )
-            if not has_v:
-                continue
-
-            input_labels = data.get("input_labels", {}) or {}
-            output_eval  = data.get("output_eval", {}) or {}
-            exts         = data.get("externalizations", {}) or {}
-            filename     = data.get("filename", r.stem)
-
-            base = dict(
-                app=app, dataset=dataset, in_mod=in_mod, out_mod=out_mod,
-                in_type=in_type, modality_pair=f"{in_mod}→{out_mod}",
-                category=APP_CATEGORY.get(app, "Other"),
-                eval_prompt=ep, filename=filename, dir_name=d.name,
-                n_ext_channels=len(exts),
-                ext_channels=list(exts.keys()),
-            )
-
-            for attr in ALL_ATTRS:
-                ext_entry = ext_eval.get(attr)
-                out_entry = output_eval.get(attr)
-                agg_verdict   = entry_to_verdict(ext_entry)
-                out_verdict   = get_output_verdict(out_entry)
-                ch_verdicts   = get_channel_verdicts(ext_entry)
-                inp_label     = int(input_labels.get(attr, 0))
-                # Was output_eval actually populated for this attribute?
-                out_present = 1 if (
-                    isinstance(out_entry, dict)
-                    and (
-                        out_entry.get("verdict") in ("confirmed leakage","possible leakage","no evidence")
-                        or "inferable" in out_entry
-                    )
-                ) else 0
-
-                rec = {**base,
-                    "attr": attr,
-                    "family": ATTR_TO_FAMILY.get(attr, "Other"),
-                    "input_label":      inp_label,
-                    "output_verdict":   out_verdict,
-                    "output_present":   out_present,
-                    "out_leakage":      1 if (out_present and out_verdict in ("confirmed leakage","possible leakage")) else 0,
-                    "out_confirmed":    1 if (out_present and out_verdict == "confirmed leakage") else 0,
-                    "agg_verdict":      agg_verdict,
-                    "agg_score":        entry_to_score(ext_entry),
-                    "agg_leakage":      1 if agg_verdict in ("confirmed leakage","possible leakage") else 0,
-                    "agg_confirmed":    1 if agg_verdict == "confirmed leakage" else 0,
-                }
-                for ch in CHANNELS:
-                    cv = ch_verdicts.get(ch, None)
-                    rec[f"ch_{ch}_verdict"] = cv if cv else "na"
-                    rec[f"ch_{ch}_leakage"] = 1 if cv in ("confirmed leakage","possible leakage") else 0
-                    rec[f"ch_{ch}_confirmed"] = 1 if cv == "confirmed leakage" else 0
-                    rec[f"ch_{ch}_present"] = 1 if ch in exts else 0
-                records.append(rec)
-
-    df = pd.DataFrame(records)
-    return df
+    Filtering is identical for both leakage_analysis.py and leakage_deep.py:
+      - drop items whose ext_eval is empty / missing aggregate verdict;
+      - drop (app, dataset) configs with fewer than 100 successful items,
+        except image->image which is exempt (kept regardless of N).
+    Legacy column names used by this script are added as aliases.
+    """
+    return _load_all_data_unified()
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 

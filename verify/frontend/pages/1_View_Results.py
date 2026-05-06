@@ -83,6 +83,12 @@ def _display_text(text: str, key_suffix: str = ""):
                  label_visibility="collapsed", key=f"txt_{key_suffix}")
 
 
+def _display_generated_output_image(output: dict, caption: str = "Generated image") -> None:
+    image_b64 = (output.get("raw_output") or {}).get("image_b64")
+    if image_b64:
+        _display_image(image_b64, caption=caption)
+
+
 def _display_externalized_preview(text: str, key_suffix: str = ""):
     show_full = st.session_state.get("show_full_externalizations", False)
     if show_full or len(text) <= DISPLAY_PREVIEW_CHARS:
@@ -582,6 +588,7 @@ def _render_item_result(
                     disabled=True,
                     key=f"orig_out_{filename}",
                 )
+                _display_generated_output_image(orig_out, "Original generated image")
                 exts = orig_out.get("externalizations", {})
                 if exts:
                     st.markdown("**🌐 Captured Externalizations**")
@@ -622,6 +629,7 @@ def _render_item_result(
                     disabled=True,
                     key=f"pert_out_{filename}",
                 )
+                _display_generated_output_image(pert_out, "Perturbed generated image")
                 exts = pert_out.get("externalizations", {})
                 if exts:
                     st.markdown("**🌐 Captured Externalizations**")

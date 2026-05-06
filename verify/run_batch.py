@@ -46,7 +46,11 @@ for _p in (str(_LANTERN_ROOT), str(_VERIFY_ROOT)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from verify.backend.utils.config import EVAL_PROMPT_CHOICES, get_default_eval_prompt
+from verify.backend.utils.config import (
+    EVAL_PROMPT_CHOICES,
+    get_default_eval_model,
+    get_default_eval_prompt,
+)
 
 # ── Attribute loading from config files ──────────────────────────────────────
 
@@ -337,9 +341,15 @@ def _row_tag(row: Dict[str, str], mode: str) -> str:
     return f"{mode}/{app_name}/{dataset_name}/{workflow}"
 
 
-def _ioc_cache_eval_method(eval_prompt: str, output_modality: str = "text") -> str:
+def _ioc_cache_eval_method(
+    eval_prompt: str,
+    output_modality: str = "text",
+    eval_model: Optional[str] = None,
+) -> str:
     """Generate cache method string for IOC evaluation."""
     method = "openrouter" if eval_prompt == "prompt1" else f"openrouter:{eval_prompt}"
+    if eval_model:
+        method = f"{method}:model={eval_model}"
     if output_modality != "text":
         method = f"{method}:task={output_modality}"
     return method
@@ -374,6 +384,7 @@ def _run_ioc(
     use_cache: bool,
     item_workers: int = 1,
     eval_prompt: str = get_default_eval_prompt(),
+    eval_model: str = get_default_eval_model(),
 ) -> Dict[str, Any]:
     """
     Headless IOC pipeline matching run_comparison_pipeline() in
@@ -414,6 +425,7 @@ def _run_ioc(
             "input_item": _strip_pil(input_item),
             "input_labels": input_labels,
             "output_text": "",
+            "generated_image_b64": "",
             "externalizations": {},
             "ext_text": "",
             "output_eval": {},
@@ -422,8 +434,10 @@ def _run_ioc(
             "ext_eval_ok": False,
             "output_eval_error": None,
             "ext_eval_error": None,
+            "output_eval_source": "none",
             "prompt_text": "",
             "eval_prompt": eval_prompt,
+            "eval_model": eval_model,
             "from_cache": False,
         }
 
@@ -433,7 +447,7 @@ def _run_ioc(
         return {"mode": "ioc", "tag": tag, "error": f"No adapter for '{app_name}'",
                 "n_success": 0, "n_failed": 0, "n_cached": 0, "items": [],
                 "app": app_name, "dataset": dataset_name, "modality": modality,
-                "eval_prompt": eval_prompt}
+                "eval_prompt": eval_prompt, "eval_model": eval_model}
 
     cache_dir = (
         cache_module.get_cache_dir(
@@ -442,7 +456,7 @@ def _run_ioc(
             input_modality,
             [],
             "ioc_comparison",
-            _ioc_cache_eval_method(eval_prompt, output_modality),
+            _ioc_cache_eval_method(eval_prompt, output_modality, eval_model),
             output_modality,
         )
         if use_cache else None
@@ -460,8 +474,9 @@ def _run_ioc(
                 "generation_task": output_modality,
                 "unified_attrs": unified_attrs,
                 "perturbation_method": "ioc_comparison",
-                "evaluation_method": _ioc_cache_eval_method(eval_prompt, output_modality),
+                "evaluation_method": _ioc_cache_eval_method(eval_prompt, output_modality, eval_model),
                 "eval_prompt": eval_prompt,
+                "eval_model": eval_model,
             })
 
     n_success = n_failed = n_cached = 0
@@ -501,14 +516,24 @@ def _run_ioc(
 
         # 3. Evaluate output and externalizations
         output_text    = pipeline_result.output_text or ""
+        generated_image_b64 = (pipeline_result.raw_output or {}).get("image_b64", "")
         externalizations = pipeline_result.externalizations or {}
         ext_text = "\n".join(
             f"[{ch.upper()}] {c}" for ch, c in externalizations.items()
         ) if externalizations else ""
 
-        out_ok, output_eval, out_err = evaluate_inferability(output_text, unified_attrs)
+        out_ok, output_eval, out_err = evaluate_inferability(
+            output_text,
+            unified_attrs,
+            model=eval_model,
+            image_b64=generated_image_b64 or None,
+        )
         if ext_text.strip():
-            ext_ok, ext_eval, ext_err = ext_eval_fn(ext_text, unified_attrs)
+            ext_ok, ext_eval, ext_err = ext_eval_fn(
+                ext_text,
+                unified_attrs,
+                model=eval_model,
+            )
         else:
             ext_ok, ext_eval, ext_err = True, {}, None
 
@@ -520,6 +545,7 @@ def _run_ioc(
             "input_item": item,
             "input_labels": input_labels,
             "output_text": output_text,
+            "generated_image_b64": generated_image_b64,
             "externalizations": externalizations,
             "ext_text": ext_text,
             "output_eval": output_eval,
@@ -528,8 +554,10 @@ def _run_ioc(
             "ext_eval_ok": ext_ok,
             "output_eval_error": out_err,
             "ext_eval_error": ext_err,
+            "output_eval_source": "image" if generated_image_b64 else "text",
             "prompt_text": (pipeline_result.metadata or {}).get("prompt_text", ""),
             "eval_prompt": eval_prompt,
+            "eval_model": eval_model,
             "from_cache": False,
         }
 
@@ -607,6 +635,7 @@ def _run_ioc(
         "items": item_results,
         "error": None,
         "eval_prompt": eval_prompt,
+        "eval_model": eval_model,
     }
     _print_ioc_chart(result)
     return result
@@ -859,6 +888,15 @@ def main() -> None:
             "prompt4=3-way verdict, prompt5=3-way verdict + prediction)"
         ),
     )
+    parser.add_argument(
+        "--eval-model",
+        default=get_default_eval_model(),
+        help=(
+            "OpenRouter model ID for IOC evaluator calls "
+            "(default: VERIFY_EVAL_MODEL/EVAL_MODEL from .env, "
+            "then google/gemini-2.0-flash-001)"
+        ),
+    )
     args = parser.parse_args()
 
     config_path = Path(args.config)
@@ -906,7 +944,10 @@ def main() -> None:
             print(f"  {mode_label}  {row['app_name']:<30s}  {row['dataset_name']:<12s}"
                   f"  {workflow:<12s}  method={method}  items={row_max}")
             if fn is _run_ioc:
-                print(f"            ext_eval_prompt: {args.eval_prompt}  (raw_output=prompt1)")
+                print(
+                    f"            ext_eval_prompt: {args.eval_prompt}  "
+                    f"eval_model: {args.eval_model}  (raw_output=prompt1)"
+                )
             if fn is _run_perturb:
                 print(f"            attrs: {', '.join(attrs) or '(none — row will be skipped)'}")
         print()
@@ -936,15 +977,35 @@ def main() -> None:
           f"(workers={args.workers}, item_workers={args.item_workers}, "
           f"cache={'on' if use_cache else 'off'}, "
           f"max_items={args.max_items or 'all'}, "
-          f"ioc_ext_eval={args.eval_prompt})\n")
+          f"ioc_ext_eval={args.eval_prompt}, "
+          f"eval_model={args.eval_model})\n")
 
     results: List[Dict[str, Any]] = []
     futures_map: Dict[Any, Tuple[Any, Dict]] = {}
 
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         for fn, row in tasks:
-            fut = pool.submit(fn, row, unified_attrs, args.max_items, use_cache,
-                              args.item_workers, args.eval_prompt)
+            if fn is _run_ioc:
+                fut = pool.submit(
+                    fn,
+                    row,
+                    unified_attrs,
+                    args.max_items,
+                    use_cache,
+                    args.item_workers,
+                    args.eval_prompt,
+                    args.eval_model,
+                )
+            else:
+                fut = pool.submit(
+                    fn,
+                    row,
+                    unified_attrs,
+                    args.max_items,
+                    use_cache,
+                    args.item_workers,
+                    args.eval_prompt,
+                )
             futures_map[fut] = (fn, row)
 
         for fut in as_completed(futures_map):

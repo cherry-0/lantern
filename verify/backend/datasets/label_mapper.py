@@ -453,6 +453,9 @@ def get_input_labels(item: Dict[str, Any], unified_attrs: List[str]) -> Dict[str
     if label_source == "gretel_pii":
         return gretel_pii_to_unified(item, unified_attrs)
 
+    if label_source == "nutrition5k":
+        return {attr: 0 for attr in unified_attrs}
+
     if "seed" in item or "vignette" in item or "trajectory" in item:
         return privacylens_to_unified(item, unified_attrs)
 

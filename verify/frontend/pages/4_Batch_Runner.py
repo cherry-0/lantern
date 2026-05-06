@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import csv
 import html as _html
+import json
 import re
 import signal
 import subprocess
 import sys
 import threading
 import time
+from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -25,12 +27,18 @@ if str(LANTERN_ROOT) not in sys.path:
     sys.path.insert(0, str(LANTERN_ROOT))
 
 import streamlit as st
-from verify.backend.utils.config import EVAL_PROMPT_CHOICES, get_default_eval_prompt
+from verify.backend.utils.cache import normalize_eval_prompt
+from verify.backend.utils.config import (
+    EVAL_PROMPT_CHOICES,
+    get_default_eval_model,
+    get_default_eval_prompt,
+)
 
 
 _BATCH_SCRIPT = VERIFY_ROOT / "run_batch.py"
 _BATCH_CONFIG = VERIFY_ROOT / "batch_config.csv"
 _TEMP_CONFIG  = VERIFY_ROOT / "_batch_config_ui_temp.csv"
+_OUTPUTS_DIR  = VERIFY_ROOT / "outputs"
 _CSV_FIELDNAMES = [
     "enabled",
     "app_name",
@@ -103,6 +111,130 @@ def _group_rows_by_cell(rows: List[Dict[str, str]]) -> Tuple[List[str], List[str
         key = (row.get("app_name", ""), input_modality, output_modality, row.get("dataset_name", ""))
         grouped.setdefault(key, []).append((i, row))
     return apps, datasets, grouped
+
+
+@st.cache_data(ttl=15)
+def _scan_cached_progress() -> Dict[Tuple[str, str, str, str, str], Dict[str, object]]:
+    """Return cached run progress keyed by app/input/output/dataset/method."""
+    if not _OUTPUTS_DIR.exists():
+        return {}
+
+    def _merge_status(existing: Optional[str], incoming: str) -> str:
+        if existing is None:
+            return incoming
+        rank = {"success": 3, "failed": 2, "error": 1}
+        return incoming if rank.get(incoming, 0) > rank.get(existing, 0) else existing
+
+    grouped_items: Dict[Tuple[str, str, str, str, str], Dict[str, str]] = defaultdict(dict)
+    grouped_stale: Dict[Tuple[str, str, str, str, str], set[str]] = defaultdict(set)
+    grouped_prompt_items: Dict[Tuple[str, str, str, str, str], Dict[str, Dict[str, str]]] = defaultdict(lambda: defaultdict(dict))
+    grouped_prompt_stale: Dict[Tuple[str, str, str, str, str], Dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
+
+    for d in _OUTPUTS_DIR.iterdir():
+        if not d.is_dir():
+            continue
+        cfg_path = d / "run_config.json"
+        if not cfg_path.exists():
+            continue
+        try:
+            cfg = json.loads(cfg_path.read_text())
+            app = str(cfg.get("app_name", "")).strip()
+            dataset = str(cfg.get("dataset_name", "")).strip()
+            in_mod = str(cfg.get("input_modality", "") or cfg.get("modality", "")).strip()
+            out_mod = str(
+                cfg.get("output_modality", "")
+                or cfg.get("generation_task", "")
+                or cfg.get("modality", "")
+            ).strip()
+            method = str(cfg.get("perturbation_method", "")).strip()
+            if not app or not dataset:
+                continue
+            key = (app, in_mod, out_mod, dataset, method)
+            cfg_prompt = normalize_eval_prompt(cfg.get("eval_prompt")) or "prompt1"
+
+            saw_item = False
+            for f in d.iterdir():
+                if f.suffix != ".json" or f.name in ("run_config.json", "dir_summary.json"):
+                    continue
+                saw_item = True
+                try:
+                    item = json.loads(f.read_text())
+                    item_name = str(item.get("filename") or f.stem)
+                    status = str(item.get("status", ""))
+                    prompt = normalize_eval_prompt(item.get("eval_prompt") or cfg_prompt) or "prompt1"
+                    grouped_items[key][item_name] = _merge_status(grouped_items[key].get(item_name), status)
+                    grouped_prompt_items[key][prompt][item_name] = _merge_status(
+                        grouped_prompt_items[key][prompt].get(item_name),
+                        status,
+                    )
+                    if status == "success" and item.get("ext_eval_stale", False):
+                        grouped_stale[key].add(item_name)
+                        grouped_prompt_stale[key][prompt].add(item_name)
+                except Exception:
+                    grouped_items[key][f.stem] = _merge_status(grouped_items[key].get(f.stem), "error")
+
+            if not saw_item:
+                summary_path = d / "dir_summary.json"
+                if summary_path.exists():
+                    try:
+                        summary = json.loads(summary_path.read_text())
+                        synthetic_prefix = d.name
+                        prompt = normalize_eval_prompt(summary.get("eval_prompt") or cfg_prompt) or "prompt1"
+                        for idx in range(int(summary.get("success", 0) or 0)):
+                            item_name = f"{synthetic_prefix}:success:{idx}"
+                            grouped_items[key][item_name] = "success"
+                            grouped_prompt_items[key][prompt][item_name] = "success"
+                        for idx in range(int(summary.get("failed", 0) or 0)):
+                            item_name = f"{synthetic_prefix}:failed:{idx}"
+                            grouped_items[key][item_name] = "failed"
+                            grouped_prompt_items[key][prompt][item_name] = "failed"
+                    except Exception:
+                        pass
+        except Exception:
+            continue
+
+    progress: Dict[Tuple[str, str, str, str, str], Dict[str, int]] = {}
+    for key, items in grouped_items.items():
+        progress[key] = {
+            "success": sum(1 for status in items.values() if status == "success"),
+            "failed": sum(1 for status in items.values() if status == "failed"),
+            "stale": len(grouped_stale.get(key, set())),
+            "prompt_success_counts": {
+                prompt: sum(1 for status in prompt_items.values() if status == "success")
+                for prompt, prompt_items in grouped_prompt_items.get(key, {}).items()
+            },
+            "prompt_stale_counts": {
+                prompt: len(stale_items)
+                for prompt, stale_items in grouped_prompt_stale.get(key, {}).items()
+            },
+        }
+    return progress
+
+
+@st.cache_data(ttl=60)
+def _dataset_size(dataset_name: str, modality: str) -> int:
+    try:
+        from verify.backend.datasets.loader import count_dataset_items
+        return count_dataset_items(dataset_name, modality)
+    except Exception:
+        return 0
+
+
+def _progress_cell_html(success: int, total: int, stale: int = 0, label: str = "") -> str:
+    if total > 0 and success >= total:
+        cls = "batch-progress-complete"
+    elif success > 0:
+        cls = "batch-progress-partial"
+    else:
+        cls = "batch-progress-empty"
+    ratio = f"{success} / {total}" if total > 0 else f"{success} / ?"
+    stale_text = f" <span class=\"batch-progress-stale\">({stale} stale)</span>" if stale else ""
+    label_text = f"<span class=\"batch-progress-label\">{_html.escape(label)}</span>" if label else ""
+    return (
+        f'<div class="batch-progress-line {cls}">'
+        f'{label_text}<span class="batch-progress-ratio">{_html.escape(ratio)}</span>{stale_text}'
+        "</div>"
+    )
 
 
 # ── Log parsing for per-task progress ────────────────────────────────────────
@@ -267,6 +399,15 @@ def main() -> None:
                 "prompt5 also includes prediction."
             ),
         )
+        eval_model = st.text_input(
+            "IOC Eval Model",
+            value=get_default_eval_model(),
+            disabled=running,
+            help=(
+                "OpenRouter model ID for IOC evaluator calls. "
+                "Defaults to VERIFY_EVAL_MODEL or EVAL_MODEL from .env."
+            ),
+        ).strip() or get_default_eval_model()
         use_cache = st.toggle("Use cache", value=True, disabled=running)
         dry_run   = st.toggle(
             "Dry run (print plan only)", value=False, disabled=running,
@@ -285,7 +426,10 @@ def main() -> None:
 
     # ── Config checklist ──────────────────────────────────────────────────────
     st.subheader("Config Checklist")
-    st.caption("Rows are (app, input→output modality) combinations. Columns are datasets. Each cell shows available config options.")
+    st.caption(
+        "Rows are (app, input→output modality) combinations. Columns are datasets. "
+        f"Each progress count shows successful cached items evaluated with `{eval_prompt}`."
+    )
     st.markdown(
         """
 <style>
@@ -327,10 +471,44 @@ def main() -> None:
     font-size: 0.76rem;
     margin-left: 0.3rem;
 }
+.batch-progress-line {
+    border-radius: 6px;
+    padding: 0.24rem 0.45rem;
+    margin: 0.18rem 0;
+    font-size: 0.8rem;
+    line-height: 1.2;
+}
+.batch-progress-complete {
+    background: #c3e6cb;
+    color: #155724;
+    font-weight: 600;
+}
+.batch-progress-partial {
+    background: #fff3cd;
+    color: #856404;
+}
+.batch-progress-empty {
+    background: #f8d7da;
+    color: #721c24;
+}
+.batch-progress-label {
+    display: inline-block;
+    min-width: 3.8rem;
+    font-weight: 700;
+}
+.batch-progress-ratio {
+    font-variant-numeric: tabular-nums;
+}
+.batch-progress-stale {
+    font-size: 0.72rem;
+    opacity: 0.85;
+}
 </style>
 """,
         unsafe_allow_html=True,
     )
+    cached_progress = _scan_cached_progress()
+    selected_prompt = normalize_eval_prompt(eval_prompt) or "prompt1"
 
     header_cols = st.columns([1.4] + [1.8] * len(datasets))
     header_cols[0].markdown("**App \\ Dataset**")
@@ -374,18 +552,36 @@ def main() -> None:
                             disabled=running,
                         )
 
-                        # Show method and max_items
-                        method = row.get("perturbation_method", "") or "—"
-                        max_items = row.get("max_items", "") or "all"
-                        st.markdown(
-                            (
-                                '<div class="batch-option-line">'
-                                f'<span class="batch-method">{_html.escape(method)}</span>'
-                                f'<span class="batch-meta">max={_html.escape(max_items)}</span>'
-                                '</div>'
-                            ),
-                            unsafe_allow_html=True,
-                        )
+                        row_method = row.get("perturbation_method", "")
+                        total = _dataset_size(dataset_name, in_mod)
+                        progress_lines: List[str] = []
+                        if mode in ("both", "ioc"):
+                            key = (app_name, in_mod, out_mod, dataset_name, "ioc_comparison")
+                            p = cached_progress.get(key, {})
+                            prompt_success_counts = p.get("prompt_success_counts", {}) if isinstance(p, dict) else {}
+                            prompt_stale_counts = p.get("prompt_stale_counts", {}) if isinstance(p, dict) else {}
+                            progress_lines.append(
+                                _progress_cell_html(
+                                    int(prompt_success_counts.get(selected_prompt, 0) or 0),
+                                    total,
+                                    int(prompt_stale_counts.get(selected_prompt, 0) or 0),
+                                    "IOC" if mode == "both" else "",
+                                )
+                            )
+                        if mode in ("both", "perturb"):
+                            key = (app_name, in_mod, out_mod, dataset_name, row_method)
+                            p = cached_progress.get(key, {})
+                            prompt_success_counts = p.get("prompt_success_counts", {}) if isinstance(p, dict) else {}
+                            prompt_stale_counts = p.get("prompt_stale_counts", {}) if isinstance(p, dict) else {}
+                            progress_lines.append(
+                                _progress_cell_html(
+                                    int(prompt_success_counts.get(selected_prompt, 0) or 0),
+                                    total,
+                                    int(prompt_stale_counts.get(selected_prompt, 0) or 0),
+                                    "Perturb" if mode == "both" else "",
+                                )
+                            )
+                        st.markdown("".join(progress_lines), unsafe_allow_html=True)
 
                         if checked:
                             selected_rows.append({**row, "enabled": "true"})
@@ -445,6 +641,7 @@ def main() -> None:
             "--workers", str(workers),
             "--item-workers", "1",
             "--eval-prompt", eval_prompt,
+            "--eval-model", eval_model,
         ]
         if max_items_val > 0:
             cmd += ["--max-items", str(int(max_items_val))]

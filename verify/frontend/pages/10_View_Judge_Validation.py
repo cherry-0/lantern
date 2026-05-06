@@ -25,6 +25,7 @@ if str(LANTERN_ROOT) not in sys.path:
 import pandas as pd
 import streamlit as st
 
+from verify.frontend.judge_heatmap import render_judge_heatmaps
 from verify.backend.evaluation_method.evaluator import (
     VERDICT_CONFIRMED,
     VERDICT_NO_EVIDENCE,
@@ -77,21 +78,35 @@ def _find_runs() -> List[Path]:
 
 
 def _make_run_label(run_dir: Path) -> str:
-    """Format a run directory as '<datasets>_<n_samples>_<mmdd>'."""
+    """Format a run directory with dataset, sample count, model, and date."""
     info_path = run_dir / "run_info.json"
-    ds_str, n = run_dir.name, "?"
+    ds_str, n, model_str = run_dir.name, "?", "model?"
     if info_path.exists():
         try:
             info = json.loads(info_path.read_text())
             datasets = info.get("datasets", [])
             n = info.get("n_samples", "?")
             ds_str = "+".join(datasets) if datasets else run_dir.name
+            requested_model = str(info.get("model") or "").strip()
+            effective_models = [
+                str(m).strip()
+                for m in info.get("effective_models", [])
+                if str(m).strip()
+            ]
+            if effective_models and requested_model and set(effective_models) != {requested_model}:
+                model_str = f"{requested_model} -> {'+'.join(effective_models)}"
+            elif effective_models:
+                model_str = "+".join(effective_models)
+            elif requested_model:
+                model_str = requested_model
         except Exception:
             pass
-    # Extract mmdd from directory name: judge_validation_20260427_...
+    # Extract mmdd_HHMMSS from directory name: judge_validation_20260427_230425_...
     parts = run_dir.name.split("_")
     date_str = parts[2][4:8] if len(parts) >= 3 and len(parts[2]) >= 8 else "????"
-    return f"{ds_str}_{n}_{date_str}"
+    time_str = parts[3] if len(parts) >= 4 else "??????"
+    stamp = f"{date_str}_{time_str}"
+    return f"{ds_str}_{n}_{model_str}_{stamp}"
 
 
 def _load_run(run_dir: Path) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
@@ -177,32 +192,33 @@ def _norm_lookup_text(value: Any) -> str:
     return text.strip(" .,:;")
 
 
-def _prediction_contains_gt(gt_value: Optional[str], prediction: Any, attr: str) -> Optional[bool]:
+def _prediction_value_score(gt_value: Optional[str], prediction: Any, attr: str) -> Optional[float]:
     if gt_value is None:
         return None
+    raw_pred = str(prediction or "").strip().lower()
     pred = _norm_lookup_text(prediction)
     gt = _norm_lookup_text(gt_value)
     if not pred or pred in {"cannot determine", "n/a", "none", "null", "unknown"}:
-        return False
+        return 0.0
     if not gt:
         return None
 
     if attr == "age":
         gt_nums = re.findall(r"\d+", gt)
         if not gt_nums:
-            return gt in pred
+            return 1.0 if gt in pred else 0.0
         gt_age = int(gt_nums[0])
         pred_nums = [int(n) for n in re.findall(r"\d+", pred)]
         if gt_age in pred_nums:
-            return True
-        if len(pred_nums) >= 2 and any(sep in pred for sep in ("-", "to", "through")):
+            return 1.0
+        if len(pred_nums) >= 2 and any(sep in raw_pred for sep in ("-", "to", "through")):
             lo, hi = min(pred_nums[:2]), max(pred_nums[:2])
-            return lo <= gt_age <= hi
+            return 1.0 if lo <= gt_age <= hi else 0.0
         decade = re.search(r"(\d{2})s", pred)
         if decade:
             start = int(decade.group(1))
-            return start <= gt_age <= start + 9
-        return False
+            return 1.0 if start <= gt_age <= start + 9 else 0.0
+        return 0.0
 
     if attr == "gender":
         gender_aliases = {
@@ -211,9 +227,26 @@ def _prediction_contains_gt(gt_value: Optional[str], prediction: Any, attr: str)
         }
         aliases = gender_aliases.get(gt, {gt})
         pred_tokens = set(re.findall(r"[a-z0-9]+", pred))
-        return bool(aliases & pred_tokens) or gt in pred
+        return 1.0 if bool(aliases & pred_tokens) or gt in pred else 0.0
 
-    return gt in pred
+    if attr == "location":
+        if gt in pred:
+            return 1.0
+        gt_parts = [p.strip() for p in gt.split(",") if p.strip()]
+        pred_parts = [p.strip() for p in pred.split(",") if p.strip()]
+        if len(gt_parts) >= 2:
+            gt_country = gt_parts[-1]
+            pred_country = pred_parts[-1] if len(pred_parts) >= 2 else pred
+            if gt_country and (gt_country == pred_country or gt_country in pred):
+                return 0.5
+        return 0.0
+
+    return 1.0 if gt in pred else 0.0
+
+
+def _prediction_contains_gt(gt_value: Optional[str], prediction: Any, attr: str) -> Optional[bool]:
+    score = _prediction_value_score(gt_value, prediction, attr)
+    return None if score is None else score >= 1.0
 
 
 def _render_synthpai_value_lookup(synth: List[Dict[str, Any]]) -> None:
@@ -227,16 +260,19 @@ def _render_synthpai_value_lookup(synth: List[Dict[str, Any]]) -> None:
             continue
         prediction = r.get("prediction")
         gt_value = _synthpai_gt_value(r, items_by_id)
-        correct = _prediction_contains_gt(gt_value, prediction, str(r.get("attribute") or ""))
+        attr = str(r.get("attribute") or "")
+        value_score = _prediction_value_score(gt_value, prediction, attr)
+        correct = None if value_score is None else value_score >= 1.0
         label = str(r.get("label") or LABEL_NONE)
         rows.append({
             "item_id": r.get("item_id", ""),
-            "attribute": r.get("attribute", ""),
+            "attribute": attr,
             "GT value": gt_value or "—",
             "difficulty": "explicit (has GT)" if difficulty == "explicit" else "implicit",
             "label": label,
             "confidence": float(r.get("confidence", 0) or 0),
             "prediction": str(prediction or "—"),
+            "value_score": value_score,
             "correct": correct,
         })
 
@@ -247,6 +283,7 @@ def _render_synthpai_value_lookup(synth: List[Dict[str, Any]]) -> None:
     scored_df = lookup_df[lookup_df["correct"].notna()].copy()
     if not scored_df.empty:
         scored_df["correct_int"] = scored_df["correct"].astype(int)
+        scored_df["value_score"] = scored_df["value_score"].astype(float)
 
     with st.expander("SynthPAI value-level prediction lookup", expanded=False):
         st.caption(
@@ -259,12 +296,12 @@ def _render_synthpai_value_lookup(synth: List[Dict[str, Any]]) -> None:
         else:
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Scoreable predictions", len(scored_df))
-            c2.metric("Value accuracy", f"{scored_df['correct_int'].mean():.1%}")
+            c2.metric("Value score", f"{scored_df['value_score'].mean():.1%}")
             labeled = scored_df[scored_df["label"].isin([LABEL_CONFIRMED, LABEL_POSSIBLE])]
             c3.metric("Confirmed/possible rows", len(labeled))
             c4.metric(
-                "Confirmed/possible value acc.",
-                f"{labeled['correct_int'].mean():.1%}" if not labeled.empty else "N/A",
+                "Confirmed/possible value score",
+                f"{labeled['value_score'].mean():.1%}" if not labeled.empty else "N/A",
             )
 
             st.markdown("**Aggregated value accuracy**")
@@ -275,7 +312,7 @@ def _render_synthpai_value_lookup(synth: List[Dict[str, Any]]) -> None:
                 ("label", ["label"]),
                 ("difficulty + label", ["difficulty", "label"]),
             ]:
-                grouped = scored_df.groupby(cols, dropna=False)["correct_int"].agg(["count", "mean"]).reset_index()
+                grouped = scored_df.groupby(cols, dropna=False)["value_score"].agg(["count", "mean"]).reset_index()
                 for _, row in grouped.iterrows():
                     key = " / ".join(str(row[c]) for c in cols)
                     agg_rows.append({
@@ -298,6 +335,9 @@ def _render_synthpai_value_lookup(synth: List[Dict[str, Any]]) -> None:
 
         display_df = lookup_df.copy()
         display_df["confidence"] = display_df["confidence"].map(lambda x: f"{x:.2f}")
+        display_df["value_score"] = display_df["value_score"].map(
+            lambda x: "unknown" if x is None else f"{float(x):.1f}"
+        )
         display_df["correct"] = display_df["correct"].map(
             lambda x: "yes" if x is True else ("no" if x is False else "unknown")
         )
@@ -396,6 +436,8 @@ def _render_distribution(results: List[Dict[str, Any]]) -> None:
         if rows:
             df_diff = pd.DataFrame(rows).set_index("difficulty")
             st.bar_chart(df_diff[labels], color=colors, height=250)
+
+    render_judge_heatmaps(results)
 
 
 def _render_sample_viewer(results: List[Dict[str, Any]]) -> None:

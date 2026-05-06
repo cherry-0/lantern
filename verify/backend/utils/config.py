@@ -169,11 +169,14 @@ def get_openrouter_api_key() -> Optional[str]:
 
 def get_default_eval_model() -> str:
     """Return the default OpenRouter model ID for evaluator calls."""
-    return (
+    model = (
         get_env("VERIFY_EVAL_MODEL")
         or get_env("EVAL_MODEL")
         or "google/gemini-2.0-flash-001"
     )
+    if "/" not in model:
+        return "google/gemini-2.0-flash-001"
+    return model
 
 
 def get_default_eval_prompt() -> str:
@@ -215,6 +218,9 @@ _APP_DEFAULT_MODES: Dict[str, str] = {
     "fiscal-flow": "serverless",
     "sgpa": "serverless",
     "waico": "serverless",
+    "edumind": "serverless",
+    "tinytavern": "serverless",
+    "nom-ai": "serverless",
 }
 
 # Maps app_name → "native" | "serverless".

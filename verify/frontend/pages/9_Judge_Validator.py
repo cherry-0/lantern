@@ -28,6 +28,7 @@ if str(LANTERN_ROOT) not in sys.path:
 import pandas as pd
 import streamlit as st
 
+from verify.frontend.judge_heatmap import render_judge_heatmaps
 from verify.backend.evaluation_method.evaluator import (
     EVAL_MODEL,
     VERDICT_CONFIRMED,
@@ -132,7 +133,13 @@ def _load_cached(sample_id: str, model: str) -> Optional[Dict[str, Any]]:
     p = _cache_path(_cache_key(sample_id, model))
     if p.exists():
         try:
-            return json.loads(p.read_text())
+            cached = json.loads(p.read_text())
+            if str(cached.get("model") or "") != model:
+                return None
+            cached_version = cached.get("evaluator_version")
+            if cached_version and cached_version != _EVALUATOR_VERSION:
+                return None
+            return cached
         except Exception:
             return None
     return None
@@ -140,8 +147,13 @@ def _load_cached(sample_id: str, model: str) -> Optional[Dict[str, Any]]:
 
 def _save_cached(sample_id: str, model: str, result: Dict[str, Any]) -> None:
     try:
+        payload = {
+            **result,
+            "model": model,
+            "evaluator_version": _EVALUATOR_VERSION,
+        }
         _cache_path(_cache_key(sample_id, model)).write_text(
-            json.dumps(result, ensure_ascii=False, indent=2)
+            json.dumps(payload, ensure_ascii=False, indent=2)
         )
     except Exception:
         pass
@@ -405,6 +417,8 @@ def _render_distribution(results: List[Dict[str, Any]]) -> None:
         if rows:
             df_diff = pd.DataFrame(rows).set_index("difficulty")
             st.bar_chart(df_diff[labels], color=colors, height=250)
+
+    render_judge_heatmaps(results)
 
 
 def _render_sample_viewer(results: List[Dict[str, Any]]) -> None:

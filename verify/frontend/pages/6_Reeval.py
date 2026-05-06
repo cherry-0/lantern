@@ -21,7 +21,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 LANTERN_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 VERIFY_ROOT  = Path(__file__).resolve().parent.parent.parent
@@ -30,12 +30,18 @@ if str(LANTERN_ROOT) not in sys.path:
     sys.path.insert(0, str(LANTERN_ROOT))
 
 import streamlit as st
+import pandas as pd
 from verify.backend.utils.cache import normalize_eval_prompt
-from verify.backend.utils.config import EVAL_PROMPT_CHOICES, get_default_eval_prompt
+from verify.backend.utils.config import (
+    EVAL_PROMPT_CHOICES,
+    get_default_eval_model,
+    get_default_eval_prompt,
+)
 
 
 _REEVAL_SCRIPT = VERIFY_ROOT / "reeval.py"
 _OUTPUTS_DIR   = VERIFY_ROOT / "outputs"
+_BATCH_CONFIG  = VERIFY_ROOT / "batch_config.csv"
 _DIR_SUMMARY   = "dir_summary.json"
 
 _SUGGESTED_MODELS = [
@@ -51,33 +57,64 @@ _SUGGESTED_MODELS = [
 
 # ── Data loading ───────────────────────────────────────────────────────────────
 
+def _load_csv_rows(path: Path) -> List[Dict[str, str]]:
+    rows: List[Dict[str, str]] = []
+    if not path.exists():
+        return rows
+    with open(path, newline="") as f:
+        import csv
+        reader = csv.DictReader(
+            (line for line in f if not line.lstrip().startswith("#"))
+        )
+        for row in reader:
+            cleaned = {(k or "").strip(): (v or "").strip() for k, v in row.items()}
+            if any(cleaned.values()):
+                rows.append(cleaned)
+    return rows
+
+
+@st.cache_data(ttl=60)
+def _dataset_size(dataset_name: str, modality: str) -> int:
+    try:
+        from verify.backend.datasets.loader import count_dataset_items
+        return count_dataset_items(dataset_name, modality)
+    except Exception:
+        return 0
+
+
 @st.cache_data(ttl=10)
 def _scan_dirs() -> List[Dict]:
     """
     Scan all output directories and aggregate them into run groups keyed by:
-      (app_name, dataset_name, modality, perturbation_method)
+      (app_name, dataset_name, input_modality, output_modality, perturbation_method)
 
     Returns list of dicts with:
-      dirs, dir_count, app_name, dataset_name, modality, method,
-      total, success, failed, eval_model, eval_prompt, last_reeval, has_summary
+      dirs, dir_count, app_name, dataset_name, input/output modality, method,
+      total, success, failed, eval_success, eval_model, eval_prompt,
+      last_reeval, has_summary
     """
     if not _OUTPUTS_DIR.exists():
         return []
 
     def _merge_item_state(
-        existing: Optional[tuple[str, bool]],
+        existing: Optional[tuple[str, bool, bool]],
         incoming_status: str,
         incoming_stale: bool,
-    ) -> tuple[str, bool]:
+        incoming_eval_success: bool,
+    ) -> tuple[str, bool, bool]:
         if existing is None:
-            return incoming_status, incoming_stale
+            return incoming_status, incoming_stale, incoming_eval_success
         status_rank = {"success": 3, "failed": 2, "error": 1}
-        existing_status, existing_stale = existing
+        existing_status, existing_stale, existing_eval_success = existing
         if status_rank.get(incoming_status, 0) > status_rank.get(existing_status, 0):
-            return incoming_status, incoming_stale
+            return incoming_status, incoming_stale, incoming_eval_success
         if incoming_status == existing_status == "success":
-            return "success", existing_stale or incoming_stale
-        return existing_status, existing_stale
+            return (
+                "success",
+                existing_stale or incoming_stale,
+                existing_eval_success or incoming_eval_success,
+            )
+        return existing_status, existing_stale, existing_eval_success
 
     groups: Dict[tuple, Dict] = {}
 
@@ -93,13 +130,18 @@ def _scan_dirs() -> List[Dict]:
             dataset = cfg.get("dataset_name", "").strip()
             if not app or not dataset:
                 continue
-            modality = cfg.get("modality", "").strip()
+            input_modality = str(cfg.get("input_modality", "") or cfg.get("modality", "")).strip()
+            output_modality = str(
+                cfg.get("output_modality", "")
+                or cfg.get("generation_task", "")
+                or cfg.get("modality", "")
+            ).strip()
+            modality = input_modality
             method = cfg.get("perturbation_method", "") or "ioc"
-            expected_eval_prompt = normalize_eval_prompt(cfg.get("eval_prompt")) if method == "ioc_comparison" else None
         except Exception:
             continue
 
-        key = (app, dataset, modality, method)
+        key = (app, dataset, input_modality, output_modality, method)
         group = groups.setdefault(
             key,
             {
@@ -107,11 +149,14 @@ def _scan_dirs() -> List[Dict]:
                 "app_name": app,
                 "dataset_name": dataset,
                 "modality": modality,
+                "input_modality": input_modality,
+                "output_modality": output_modality,
                 "method": method,
                 "items": {},
                 "summary_total": 0,
                 "summary_success": 0,
                 "summary_failed": 0,
+                "summary_eval_success": 0,
                 "has_summary": False,
                 "eval_models": set(),
                 "eval_prompts": set(),
@@ -132,6 +177,11 @@ def _scan_dirs() -> List[Dict]:
             group["summary_total"] += int(summary.get("total", 0) or 0)
             group["summary_success"] += int(summary.get("success", 0) or 0)
             group["summary_failed"] += int(summary.get("failed", 0) or 0)
+            eval_failed = int(summary.get("eval_failed", 0) or 0)
+            if "eval_success" in summary:
+                group["summary_eval_success"] += int(summary.get("eval_success", 0) or 0)
+            elif summary.get("success") is not None:
+                group["summary_eval_success"] += max(0, int(summary.get("success", 0) or 0) - eval_failed)
             if summary.get("eval_model"):
                 group["eval_models"].add(str(summary["eval_model"]))
             if summary.get("eval_prompt"):
@@ -147,21 +197,24 @@ def _scan_dirs() -> List[Dict]:
             saw_item_json = True
             try:
                 data = json.loads(f.read_text())
-                if expected_eval_prompt is not None:
-                    item_prompt = normalize_eval_prompt(data.get("eval_prompt"))
-                    if item_prompt != expected_eval_prompt:
-                        continue
+                item_prompt = normalize_eval_prompt(data.get("eval_prompt"))
+                if item_prompt:
+                    group["eval_prompts"].add(item_prompt)
+                if data.get("eval_model"):
+                    group["eval_models"].add(str(data["eval_model"]))
                 item_name = str(data.get("filename") or f.stem)
                 group["items"][item_name] = _merge_item_state(
                     group["items"].get(item_name),
                     str(data.get("status", "")),
                     bool(data.get("ext_eval_stale", False)),
+                    data.get("status") == "success" and data.get("ext_eval_ok") is True,
                 )
             except Exception:
                 item_name = f.stem
                 group["items"][item_name] = _merge_item_state(
                     group["items"].get(item_name),
                     "error",
+                    False,
                     False,
                 )
 
@@ -170,18 +223,21 @@ def _scan_dirs() -> List[Dict]:
                 group["items"].get(d.name),
                 "error",
                 False,
+                False,
             )
 
     rows: List[Dict] = []
     for group in groups.values():
         if group["items"]:
             total = len(group["items"])
-            success = sum(1 for st, _ in group["items"].values() if st == "success")
-            failed = sum(1 for st, _ in group["items"].values() if st == "failed")
+            success = sum(1 for st, _, _ in group["items"].values() if st == "success")
+            failed = sum(1 for st, _, _ in group["items"].values() if st == "failed")
+            eval_success = sum(1 for st, _, eval_ok in group["items"].values() if st == "success" and eval_ok)
         else:
             total = group["summary_total"]
             success = group["summary_success"]
             failed = group["summary_failed"]
+            eval_success = group["summary_eval_success"]
 
         eval_models = sorted(group["eval_models"])
         eval_prompts = sorted(group["eval_prompts"])
@@ -192,10 +248,13 @@ def _scan_dirs() -> List[Dict]:
                 "app_name": group["app_name"],
                 "dataset_name": group["dataset_name"],
                 "modality": group["modality"],
+                "input_modality": group["input_modality"],
+                "output_modality": group["output_modality"],
                 "method": group["method"],
                 "total": total,
                 "success": success,
                 "failed": failed,
+                "eval_success": eval_success,
                 "eval_model": eval_models[0] if len(eval_models) == 1 else ("mixed" if eval_models else ""),
                 "eval_prompt": eval_prompts[0] if len(eval_prompts) == 1 else ("mixed" if eval_prompts else ""),
                 "last_reeval": group["last_reeval"],
@@ -203,6 +262,89 @@ def _scan_dirs() -> List[Dict]:
             }
         )
     return rows
+
+
+def _build_eval_dashboard(batch_rows: List[Dict[str, str]], rows: List[Dict], mode: str) -> pd.DataFrame:
+    combo_keys = {
+        (
+            r.get("app_name", ""),
+            r.get("input_modality", "") or r.get("modality", ""),
+            r.get("output_modality", "") or r.get("generation_task", "") or r.get("modality", ""),
+            r.get("dataset_name", ""),
+        )
+        for r in batch_rows
+    }
+    row_ids = sorted({
+        (
+            r.get("app_name", ""),
+            r.get("input_modality", "") or r.get("modality", ""),
+            r.get("output_modality", "") or r.get("generation_task", "") or r.get("modality", ""),
+        )
+        for r in batch_rows
+    })
+    datasets = sorted({r.get("dataset_name", "") for r in batch_rows if r.get("dataset_name", "")})
+
+    lookup: Dict[Tuple[str, str, str, str], Tuple[int, int]] = {}
+    for row in rows:
+        is_ioc = row["method"] == "ioc_comparison"
+        if (mode == "ioc" and not is_ioc) or (mode == "perturb" and is_ioc):
+            continue
+        key = (
+            row["app_name"],
+            row.get("input_modality", "") or row.get("modality", ""),
+            row.get("output_modality", "") or row.get("modality", ""),
+            row["dataset_name"],
+        )
+        current = lookup.get(key, (-1, -1))
+        candidate = (int(row.get("eval_success", 0) or 0), int(row.get("success", 0) or 0))
+        if candidate[1] > current[1] or (candidate[1] == current[1] and candidate[0] > current[0]):
+            lookup[key] = candidate
+
+    data: Dict[Tuple[str, str], Dict[str, str]] = {}
+    for app, in_mod, out_mod in row_ids:
+        workflow = f"{in_mod}->{out_mod}" if in_mod and out_mod else in_mod or out_mod
+        row_data: Dict[str, str] = {}
+        for dataset in datasets:
+            combo = (app, in_mod, out_mod, dataset)
+            if combo not in combo_keys:
+                row_data[dataset] = "—"
+                continue
+            eval_success, run_success = lookup.get(combo, (0, 0))
+            total = _dataset_size(dataset, in_mod)
+            row_data[dataset] = (
+                f"{eval_success} / {run_success} / {total}"
+                if total > 0 else
+                f"{eval_success} / {run_success} / ?"
+            )
+        data[(app, workflow)] = row_data
+
+    df = pd.DataFrame.from_dict(data, orient="index")
+    df.index.names = ["app", "workflow"]
+    return df
+
+
+def _style_eval_dashboard(df: pd.DataFrame) -> pd.DataFrame:
+    styles = pd.DataFrame("", index=df.index, columns=df.columns)
+    for idx in df.index:
+        for col in df.columns:
+            val = str(df.loc[idx, col])
+            if val == "—":
+                styles.loc[idx, col] = "background-color:#f5f5f5; color:#c0c0c0"
+                continue
+            try:
+                eval_s, run_s, total_s = [part.strip() for part in val.split("/")]
+                eval_count = int(eval_s)
+                run_count = int(run_s)
+                total = int(total_s) if total_s != "?" else 0
+            except Exception:
+                continue
+            if total > 0 and eval_count >= total and run_count >= total:
+                styles.loc[idx, col] = "background-color:#c3e6cb; color:#155724; font-weight:600"
+            elif eval_count > 0 or run_count > 0:
+                styles.loc[idx, col] = "background-color:#fff3cd; color:#856404"
+            else:
+                styles.loc[idx, col] = "background-color:#f8d7da; color:#721c24"
+    return styles
 
 
 # ── Background subprocess ──────────────────────────────────────────────────────
@@ -259,19 +401,15 @@ def main() -> None:
     with st.sidebar:
         st.header("Settings")
 
-        model_choice = st.selectbox(
-            "Model", _SUGGESTED_MODELS,
-            index=0,
+        default_eval_model = get_default_eval_model()
+        model = st.text_input(
+            "Model ID",
+            value=default_eval_model,
             disabled=running,
-            help="OpenRouter model ID for re-evaluation",
-        )
-        custom_model = st.text_input(
-            "Custom model ID (overrides dropdown)",
-            placeholder="e.g. meta-llama/llama-3.3-70b-instruct",
-            disabled=running,
-        )
-        model: str = custom_model.strip() if custom_model.strip() else model_choice
+            help="OpenRouter model ID for re-evaluation. Defaults to VERIFY_EVAL_MODEL or EVAL_MODEL from .env.",
+        ).strip() or default_eval_model
         st.caption(f"Active model: `{model}`")
+        st.caption("Suggested: " + ", ".join(f"`{m}`" for m in _SUGGESTED_MODELS[:4]))
 
         prompt_mode = st.radio(
             "Evaluation prompt",
@@ -390,9 +528,11 @@ def main() -> None:
                                    label_visibility="collapsed")
 
         # Header
-        hdr_cols = st.columns([0.4, 2, 1.1, 2, 1, 0.8, 1, 1.2, 2.7, 1.6])
+        col_widths = [0.4, 1.8, 1.1, 1.8, 1, 0.7, 0.8, 1.2, 1.1, 2.4, 1.4]
+        hdr_cols = st.columns(col_widths)
         for col, label in zip(hdr_cols, ["", "App", "Modality", "Dataset", "Method",
-                                          "Dirs", "Items", "Prompt", "Eval Model", "Last Re-eval"]):
+                                          "Dirs", "Items", "Eval Success", "Prompt",
+                                          "Eval Model", "Last Re-eval"]):
             col.markdown(f"**{label}**")
         st.divider()
 
@@ -405,7 +545,7 @@ def main() -> None:
                 if search.lower() not in haystack:
                     continue
 
-            cols = st.columns([0.4, 2, 1.1, 2, 1, 0.8, 1, 1.2, 2.7, 1.6])
+            cols = st.columns(col_widths)
 
             checked = cols[0].checkbox(
                 "select",
@@ -424,18 +564,19 @@ def main() -> None:
             cols[4].markdown(f"`{row['method']}`")
             cols[5].markdown(str(row['dir_count']))
             cols[6].markdown(f"{row['total']}")
-            cols[7].markdown(f"`{row['eval_prompt'] or '—'}`")
+            cols[7].markdown(f"{row.get('eval_success', 0)} / {row['total']}")
+            cols[8].markdown(f"`{row['eval_prompt'] or '—'}`")
 
             # Eval model with indicator
-            model = row['eval_model']
-            if not model:
-                cols[8].markdown("—")
-            elif model == model_choice or model == model:
-                cols[8].markdown(f"🟩 `{model}`")
+            row_model = row['eval_model']
+            if not row_model:
+                cols[9].markdown("—")
+            elif row_model == model:
+                cols[9].markdown(f"🟩 `{row_model}`")
             else:
-                cols[8].markdown(f"🟨 `{model}`")
+                cols[9].markdown(f"🟨 `{row_model}`")
 
-            cols[9].markdown(row['last_reeval'] or "—")
+            cols[10].markdown(row['last_reeval'] or "—")
 
         st.divider()
 
@@ -450,6 +591,26 @@ def main() -> None:
 
     # Render Perturbation section
     _render_section(perturb_dirs, "Perturbation Analysis")
+
+    batch_rows = _load_csv_rows(_BATCH_CONFIG)
+    if batch_rows:
+        st.subheader("Evaluation Dashboard")
+        st.caption(
+            "Cells show `eval_success / run_success / all` for each configured app/workflow/dataset."
+        )
+        dash_ioc, dash_perturb = st.tabs(["IOC", "Perturb"])
+        for tab, dash_mode in ((dash_ioc, "ioc"), (dash_perturb, "perturb")):
+            with tab:
+                dashboard = _build_eval_dashboard(batch_rows, dirs, dash_mode)
+                if dashboard.empty:
+                    st.info("No configured dashboard rows to show.")
+                else:
+                    styled_dashboard = dashboard.style.apply(_style_eval_dashboard, axis=None)
+                    st.dataframe(
+                        styled_dashboard,
+                        width="stretch",
+                        height=40 * (len(dashboard) + 1) + 36,
+                    )
 
     n_sel = len(selected_dirs)
     n_selected_groups = sum(1 for i in range(len(dirs)) if st.session_state.get(f"reeval_row_{i}", False))

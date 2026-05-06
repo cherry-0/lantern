@@ -64,3 +64,15 @@
 [submodule "target-apps/SGPA"]
 	path = target-apps/SGPA
 	url = https://github.com/GPA95/SGPA.git
+[submodule "target-apps/edumind"]
+	path = target-apps/edumind
+	url = https://github.com/daxp472/EduMind.git
+[submodule "target-apps/tinytavern"]
+	path = target-apps/tinytavern
+	url = https://github.com/virkillz/tinytavern.git
+[submodule "target-apps/dr-ai"]
+	path = target-apps/dr-ai
+	url = https://github.com/MAHMOUDELSAYED7/Dr.Ai.git
+[submodule "target-apps/nom-ai"]
+	path = target-apps/nom-ai
+	url = https://github.com/MabudAlam/NomAI-App.git

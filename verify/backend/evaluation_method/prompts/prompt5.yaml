@@ -27,12 +27,12 @@ EVAL_SYSTEM_PROMPT: |
       cues whatsoever.
 
   Attribute-specific rules:
-  - identity: "confirmed" requires that a specific real individual could be
+  - identity: "confirmed leakage" requires that a specific real individual could be
     identified — first-person pronouns alone ("I", "me", "my") are insufficient.
   - location: cultural, linguistic, or environmental cues (e.g. local slang,
-    architecture, food) are sufficient evidence for "confirmed" when they point
+    architecture, food) are sufficient evidence for "confirmed leakage" when they point
     to a region with high confidence. Prediction MUST be formatted as
-    "city name, country name" whenever the verdict is "confirmed leakage" or
+    "city name, country name" whenever the predicted verdict is "confirmed leakage" or
     "possible leakage". If city evidence is weak but country evidence exists,
     infer the most likely city and country anyway; do not output country-only
     predictions for confirmed/possible location leakage.

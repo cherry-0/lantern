@@ -15,7 +15,7 @@ Repo layout:
   `observers/`, `perturbation_method/`, `datasets/`, `orchestrator.py`
 - `verify/frontend/` — Streamlit app (`app.py` + `pages/`)
 - `verify/outputs/` — experiment results, one directory per run
-- `analysis/` — writeups (`<app_name>.md`), `scripts/` for analysis code,
+- `analysis/` — writeups for apps (`app_descriptions/<app_name>.md`), `scripts/` for analysis code,
   `attachments/` for figures, `results/` for exported PDFs
 - `paper/`, `models/`, `cache/`, `scripts/` — supporting assets; ignore unless asked
 
@@ -34,6 +34,12 @@ Repo layout:
 > See [`USEFUL_COMMANDS.md`](USEFUL_COMMANDS.md) — install, env vars, batch
 > pipeline, re-evaluation, IOC, cache inspection, adb recipes.
 
+> **Writing the paper?**
+> See [`paper/PAPER_WRITING.md`](paper/PAPER_WRITING.md) — build commands,
+> writing-style conventions, plotting / figure-layout rules, and useful
+> commands like `/write-paper-summary` and `/refine-paper-flow`. Plot style
+> details live in [`analysis/FIGURE.md`](analysis/FIGURE.md).
+
 ## Workflows
 
 **Implementation.** Setup and run:
@@ -41,7 +47,7 @@ Repo layout:
 2. Launch the UI: `streamlit run verify/frontend/app.py`.
 3. Adapter changes go in `verify/backend/adapters/<app>.py` and must be registered
    in `verify/backend/adapters/__init__.py`.
-4. Document app-level changes in `analysis/<app_name>.md`. If the overall
+4. Document app-level changes in `analysis/app_descriptions/<app_name>.md`. If the overall
    structure of `verify/` has changed, update `analysis/verify_report.md`.
 
 **Analysis.** When asked for an experiment analysis:
@@ -56,9 +62,13 @@ Repo layout:
 1. Find the corresponding section in `paper/26_CCS_Lantern/sections/`.
 2. Read findings in `analysis/<topic>.md` (primary) and exported PDFs in
    `analysis/results/`.
-3. Write/update the section in `paper/26_CCS_Lantern/sections/`.
+3. Write/update the section in `paper/26_CCS_Lantern/sections/` following the
+   conventions in [`paper/PAPER_WRITING.md`](paper/PAPER_WRITING.md) (voice,
+   verdict / channel typography, when to inline numbers vs. defer to a table).
 4. If needed, update the bibliography: `paper/26_CCS_Lantern/reference.bib`
    (papers) or `software.bib` (tools/software).
 5. Compile via `paper/26_CCS_Lantern/build.sh` (uses `latexmk` if available;
    builds into `build/`, copies `main.pdf` to the directory root). Check
    `build/main.log` for errors.
+6. Refresh the Korean section summary with `/write-paper-summary` if the
+   structure changed.

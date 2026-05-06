@@ -303,9 +303,13 @@ def _scan_outputs() -> List[Dict]:
             failed_count = int(fb.get("failed", 0) or 0)
             stale_count = int(fb.get("stale", 0) or 0)
             eval_failed_count = int(fb.get("eval_failed", 0) or 0)
-            prompt_success_counts = {}
             prompts = sorted(key_summary_prompts.get(key, set()))
             eval_prompt = prompts[0] if len(prompts) == 1 else ("mixed" if prompts else "")
+            prompt_success_counts = (
+                {eval_prompt: success_count}
+                if eval_prompt and eval_prompt != "mixed" and success_count > 0
+                else {}
+            )
             has_summary = True
 
         result.append({
@@ -424,8 +428,21 @@ def _build_table(
     return df
 
 
-def _style_table(df: pd.DataFrame) -> pd.DataFrame:
+def _style_table(df: pd.DataFrame, prompt5_threshold: int = 1000) -> pd.DataFrame:
     """Return same-shape DataFrame of CSS strings for st.dataframe styling."""
+    def _prompt_count(val: str, prompt_name: str) -> int:
+        if "[" not in val or "]" not in val:
+            return 0
+        annotation = val.rsplit("[", 1)[-1].split("]", 1)[0]
+        for part in annotation.split(","):
+            label, sep, count = part.strip().partition(":")
+            if sep and label.strip() == prompt_name:
+                try:
+                    return int(count.strip())
+                except ValueError:
+                    return 0
+        return 0
+
     styles = pd.DataFrame("", index=df.index, columns=df.columns)
     for idx in df.index:
         for dataset in df.columns:
@@ -446,8 +463,13 @@ def _style_table(df: pd.DataFrame) -> pd.DataFrame:
                     m     = int(parts[0].strip())
                     n_raw = parts[1].strip()
                     n     = int(n_raw) if n_raw != "?" else 0
-                    if n > 0 and m >= n:
-                        # Complete (possibly stale)
+                    prompt5_count = _prompt_count(val, "prompt5")
+                    prompt5_complete = (
+                        (n > 0 and prompt5_count >= n)
+                        or prompt5_count >= prompt5_threshold
+                    )
+                    if prompt5_complete:
+                        # Complete enough for prompt5: full dataset or the 1000-item cap.
                         styles.loc[idx, dataset] = (
                             "background-color:#c3e6cb; color:#155724; font-weight:600"
                             if not stale else
@@ -455,7 +477,7 @@ def _style_table(df: pd.DataFrame) -> pd.DataFrame:
                             "border-bottom:2px dashed #856404"
                         )
                     elif m > 0:
-                        # Partial (possibly stale)
+                        # Run exists, but prompt5 coverage is incomplete.
                         styles.loc[idx, dataset] = (
                             "background-color:#fff3cd; color:#856404"
                         )
@@ -505,10 +527,22 @@ def main() -> None:
             st.cache_data.clear()
             st.rerun()
 
+        prompt5_threshold = st.number_input(
+            "Prompt5 green threshold",
+            min_value=100,
+            value=100,
+            step=100,
+            help=(
+                "A cell turns green when all items have successful prompt5 evals, "
+                "or when this many prompt5 items have succeeded."
+            ),
+        )
+
         st.caption(
             "**Legend**\n\n"
-            "🟩 M = N — complete\n\n"
-            "🟨 0 < M < N — partial\n\n"
+            f"🟩 prompt5 complete — all items, or at least {prompt5_threshold} items, "
+            "have successful prompt5 evals\n\n"
+            "🟨 run exists but prompt5 coverage is incomplete\n\n"
             "🟥 M = 0 — not started\n\n"
             "⚠️ (S stale) — ext_eval scored on truncated text;\n"
             "run `patch_ext_ui.py` to fix\n\n"
@@ -581,7 +615,10 @@ def main() -> None:
                     f"({total_m / total_n:.0%})**"
                 )
 
-            styled = df.style.apply(_style_table, axis=None)
+            styled = df.style.apply(
+                lambda data: _style_table(data, prompt5_threshold),
+                axis=None,
+            )
             st.dataframe(styled, width="stretch", height=40 * (len(df) + 1) + 36)
 
     # ── Delete output groups ──────────────────────────────────────────────────

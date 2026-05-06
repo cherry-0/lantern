@@ -124,11 +124,24 @@ KNOWN_APPS = [
     "edupal",
     "lira",
     "nutri-track",
+    "nom-ai",
     "healyks",
     "sgpa",
+    "tinytavern",
+    "edumind",
     "waico",
 ]
 MODALITIES = ["image", "text", "video"]
+
+
+def _detect_dataset_modality(dataset_name: str) -> str | None:
+    try:
+        from verify.backend.datasets.loader import detect_modality
+
+        detected = detect_modality(dataset_name)
+        return detected if detected in MODALITIES else None
+    except Exception:
+        return None
 
 
 def _display_image(b64_str: str | None, data=None, caption: str = ""):
@@ -158,6 +171,12 @@ def _display_text(text: str, label: str = "", key_suffix: str = ""):
     unique_label = f"text_area_{key_suffix}" if key_suffix else "text_area"
     st.text_area(unique_label, value=text, height=200, disabled=True, 
                  label_visibility="collapsed", key=f"text_{key_suffix}")
+
+
+def _display_generated_output_image(output: dict, caption: str = "Generated image") -> None:
+    image_b64 = (output.get("raw_output") or {}).get("image_b64")
+    if image_b64:
+        _display_image(image_b64, caption=caption)
 
 
 def _display_externalized_preview(text: str, key_suffix: str = ""):
@@ -492,6 +511,7 @@ def _render_item_result(result: dict):
                     disabled=True,
                     key=f"orig_out_{filename}",
                 )
+                _display_generated_output_image(orig_out, "Original generated image")
 
                 # Render Externalizations
                 exts = orig_out.get("externalizations", {})
@@ -520,6 +540,7 @@ def _render_item_result(result: dict):
                     disabled=True,
                     key=f"pert_out_{filename}",
                 )
+                _display_generated_output_image(pert_out, "Perturbed generated image")
 
                 # Render Externalizations
                 exts = pert_out.get("externalizations", {})
@@ -722,7 +743,23 @@ def main():
 
         # Modality dropdown
         st.subheader("Modality")
-        selected_modality = st.selectbox("Select modality", MODALITIES)
+        detected_modality = _detect_dataset_modality(selected_dataset)
+        default_modality_idx = (
+            MODALITIES.index(detected_modality)
+            if detected_modality in MODALITIES
+            else 0
+        )
+        selected_modality = st.selectbox(
+            "Select modality",
+            MODALITIES,
+            index=default_modality_idx,
+            key=f"perturb_modality_{selected_dataset}",
+            help=(
+                f"Detected from dataset: {detected_modality}"
+                if detected_modality
+                else "Could not detect modality from dataset files."
+            ),
+        )
         generation_task = "text"
         if selected_app == "tool-neuron" and selected_modality == "text":
             st.divider()

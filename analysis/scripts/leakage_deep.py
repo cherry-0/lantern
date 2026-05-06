@@ -16,9 +16,7 @@ Outputs:
 """
 
 from __future__ import annotations
-import json
 from pathlib import Path
-from collections import defaultdict
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
@@ -103,9 +101,9 @@ APP_CATEGORY = {
     "google-ai-edge-gallery":"Photo/Camera","tool-neuron":"Photo/Camera","momentag":"Photo/Camera",
     "clone":"Productivity","snapdo":"Productivity","xend":"Productivity",
     "pocketpal-ai":"Productivity","klyr":"Productivity",
-    "deeptutor":"Education","edupal":"Education","sgpa":"Education",
-    "llm-vtuber":"Social","lira":"Social","waico":"Social",
-    "skin-disease-detection":"Health","nutri-track":"Health","healyks":"Health",
+    "deeptutor":"Education","edupal":"Education","sgpa":"Education","edumind":"Education",
+    "llm-vtuber":"Social","lira":"Social","waico":"Social","tinytavern":"Social",
+    "skin-disease-detection":"Health","nutri-track":"Health","healyks":"Health","nom-ai":"Health",
 }
 CATEGORY_COLORS = {
     "Finance":      P_GREEN,
@@ -164,75 +162,31 @@ def get_channel_verdicts(ext_entry: Any) -> Dict[str,str]:
     chs = ext_entry.get("channels", {})
     return {ch: entry_to_verdict(v) for ch, v in chs.items()} if isinstance(chs, dict) else {}
 
-# ── Data loading ──────────────────────────────────────────────────────────────
+# ── Data loading (delegated to shared loader in _leakage_common) ─────────────
+try:
+    from _leakage_common import load_data as _load_data_unified
+except ImportError:
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from _leakage_common import load_data as _load_data_unified
+
+
 def load_data() -> Tuple[pd.DataFrame, Dict[str, Dict]]:
-    rows = []
-    raw_items: Dict[str, Dict] = {}   # filename → full json (for case studies)
-    for d in sorted(OUTPUTS_DIR.iterdir()):
-        cfg_f = d / "run_config.json"
-        if not cfg_f.exists(): continue
-        try: cfg = json.loads(cfg_f.read_text())
-        except: continue
-        app, ds = cfg.get("app_name","?"), cfg.get("dataset_name","?")
-        in_m, out_m = cfg.get("input_modality","?"), cfg.get("output_modality","?")
-        in_type = DATASET_INPUT_TYPE.get(ds, in_m)
+    """Load + filter via the shared loader in _leakage_common.
 
-        for r in sorted(d.glob("*.json")):
-            if r.name in SKIP_FILES: continue
-            try: data = json.loads(r.read_text())
-            except: continue
-            ep = data.get("eval_prompt","")
-            if ep not in ("prompt4","prompt5"): continue
-            ext_eval = data.get("ext_eval", {}) or {}
-            has_v = any(isinstance(v,dict) and "aggregate" in v and "verdict" in v.get("aggregate",{})
-                        for v in ext_eval.values())
-            if not has_v: continue
+    Filtering is identical for both leakage_analysis.py and leakage_deep.py:
+      - drop items whose ext_eval is empty / missing aggregate verdict;
+      - drop (app, dataset) configs with fewer than 100 successful items,
+        except image->image which is exempt (kept regardless of N).
 
-            input_labels = data.get("input_labels", {}) or {}
-            output_eval  = data.get("output_eval", {})  or {}
-            exts         = data.get("externalizations", {}) or {}
-            filename     = data.get("filename", r.stem)
-            full_key = f"{d.name}/{filename}"
-            raw_items[full_key] = data
-
-            base = dict(
-                app=app, dataset=ds, in_mod=in_m, out_mod=out_m,
-                in_type=in_type, modality_pair=f"{in_m}→{out_m}",
-                category=APP_CATEGORY.get(app,"Other"),
-                eval_prompt=ep, filename=filename, dir_name=d.name,
-                full_key=full_key,
-                n_ext_channels=len(exts),
-            )
-
-            for attr in ALL_ATTRS:
-                ext_e = ext_eval.get(attr)
-                out_e = output_eval.get(attr)
-                ext_v = entry_to_verdict(ext_e)
-                out_v = output_eval_to_verdict(out_e)
-                ch_v  = get_channel_verdicts(ext_e)
-                inp   = int(input_labels.get(attr, 0))
-
-                rec = {**base,
-                    "attr": attr, "family": ATTR_TO_FAMILY.get(attr, "Other"),
-                    "input_label": inp,
-                    "output_verdict": out_v,
-                    "output_leak":  1 if out_v in ("confirmed leakage","possible leakage") else 0,
-                    "output_conf":  1 if out_v == "confirmed leakage" else 0,
-                    "output_has":   1 if isinstance(out_e, dict) and len(out_e) > 0 else 0,
-                    "ext_verdict":  ext_v,
-                    "ext_score":    entry_to_score(ext_e),
-                    "ext_leak":     1 if ext_v in ("confirmed leakage","possible leakage") else 0,
-                    "ext_conf":     1 if ext_v == "confirmed leakage" else 0,
-                }
-                for ch in CHANNELS:
-                    cv = ch_v.get(ch)
-                    rec[f"ch_{ch}_v"]   = cv if cv else "na"
-                    rec[f"ch_{ch}_leak"]= 1 if cv in ("confirmed leakage","possible leakage") else 0
-                    rec[f"ch_{ch}_conf"]= 1 if cv == "confirmed leakage" else 0
-                    rec[f"ch_{ch}_pres"]= 1 if ch in exts else 0
-                rows.append(rec)
-    df = pd.DataFrame(rows)
-    return df, raw_items
+    After loading, the 'family' column is remapped using this script's own
+    ATTR_TO_FAMILY (short names) so that downstream figure code that uses
+    list(ATTR_FAMILIES.keys()) as fam_order works correctly.
+    """
+    df, raw = _load_data_unified()
+    df = df.copy()
+    df["family"] = df["attr"].map(ATTR_TO_FAMILY).fillna("Other")
+    return df, raw
 
 # ── Save helper ───────────────────────────────────────────────────────────────
 def save(fig, name):

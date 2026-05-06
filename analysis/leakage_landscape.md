@@ -1,7 +1,7 @@
 # Inference-Induced Privacy Leakage Landscape
 
-> **Status:** Analysis of prompt4/prompt5 evaluation results — 3,228 items across 14 apps, 9 datasets.
-> Generated: 2026-04-29.
+> **Status:** Analysis of prompt4/prompt5 evaluation results — 6,855 items across 24 apps, 10 datasets.
+> Generated: 2026-05-01.
 
 ---
 
@@ -9,28 +9,45 @@
 
 | App | Dataset | Input → Output | Prompt | Verdict Rows |
 |-----|---------|----------------|--------|-------------|
-| budget-lens | SROIE2019 | image→text | prompt5 | 4,956 |
-| chat-driven-expense-tracker | GretelSyntheticPII | text→text | prompt5 | 2,667 |
-| clone | HR-VISPR | image→text | prompt5 | 4,074 |
-| deeptutor | ASAP-AES | text→text | prompt5 | 3,528 |
-| deeptutor | PrivacyLens | text→text | prompt5 | 4,284 |
-| edupal | ASAP-AES | text→text | prompt5 | 2,079 |
-| google-ai-edge-gallery | HR-VISPR | image→text | prompt4 | 105 |
-| google-ai-edge-gallery | HR-VISPR | image→text | prompt5 | 8,400 |
-| healyks | MultiCaRe | text→text | prompt5 | 3,465 |
-| llm-vtuber | PrivacyLens | text→text | prompt5 | 3,969 |
-| pocketpal-ai | ASAP-AES | text→text | prompt4 | 210 |
-| pocketpal-ai | MultiCaRe | text→text | prompt4 | 210 |
-| pocketpal-ai | OpenPII | text→text | prompt4 | 210 |
-| pocketpal-ai | SynthPAI | text→text | prompt5 | 5,313 |
-| snapdo | HR-VISPR | image→text | prompt5 | 16,548 |
-| snapdo | MIMIC-CXR | image→text | prompt4 | 210 |
-| snapdo | SROIE2019 | image→text | prompt5 | 1,050 |
-| spendsense | SROIE2019 | image→text | prompt5 | 42 |
-| tool-neuron | HR-VISPR | image→image | prompt5 | 21 |
-| tool-neuron | PrivacyLens | text→text | prompt4 | 210 |
-| waico | PrivacyLens | text→text | prompt5 | 2,121 |
-| xend | PrivacyLens | text→text | prompt5 | 8,421 |
+| budget-lens | SROIE2019 | image→text | prompt5 | 4,200 |
+| chat-driven-expense-tracker | GretelSyntheticPII | text→text | prompt5 | 4,200 |
+| chat-driven-expense-tracker | PrivacyLens | text→text | prompt5 | 4,200 |
+| clone | HR-VISPR | image→text | prompt4 | 777 |
+| clone | HR-VISPR | image→text | prompt5 | 3,423 |
+| deeptutor | ASAP-AES | text→text | prompt5 | 4,095 |
+| deeptutor | PrivacyLens | text→text | prompt5 | 4,200 |
+| edumind | ASAP-AES | text→text | prompt5 | 4,137 |
+| edupal | ASAP-AES | text→text | prompt5 | 4,200 |
+| edupal | PrivacyLens | text→text | prompt5 | 4,179 |
+| edupal | SynthPAI | text→text | prompt5 | 2,499 |
+| fiscal-flow | PrivacyLens | text→text | prompt5 | 4,200 |
+| fiscal-flow | SynthPAI | text→text | prompt5 | 4,200 |
+| google-ai-edge-gallery | HR-VISPR | image→text | prompt5 | 4,200 |
+| google-ai-edge-gallery | PrivacyLens | text→text | prompt5 | 4,116 |
+| healyks | MultiCaRe | text→text | prompt5 | 4,200 |
+| klyr | SynthPAI | text→text | prompt5 | 4,074 |
+| lira | SynthPAI | text→text | prompt5 | 4,200 |
+| llm-vtuber | PrivacyLens | text→text | prompt5 | 3,990 |
+| momentag | HR-VISPR | image→text | prompt5 | 4,200 |
+| nom-ai | Nutrition5k | image→text | prompt5 | 4,200 |
+| nutri-track | MultiCaRe | text→text | prompt5 | 4,200 |
+| pocketpal-ai | ASAP-AES | text→text | prompt5 | 4,200 |
+| pocketpal-ai | SynthPAI | text→text | prompt5 | 4,200 |
+| sgpa | ASAP-AES | text→text | prompt5 | 4,200 |
+| sgpa | PrivacyLens | text→text | prompt5 | 4,200 |
+| skin-disease-detection | MIMIC-CXR | image→text | prompt5 | 4,200 |
+| snapdo | HR-VISPR | image→text | prompt5 | 4,200 |
+| snapdo | SROIE2019 | image→text | prompt5 | 4,200 |
+| spendsense | GretelSyntheticPII | text→text | prompt5 | 4,200 |
+| spendsense | MultiPriv | image→text | prompt5 | 2,373 |
+| spendsense | SROIE2019 | image→text | prompt5 | 4,158 |
+| tinytavern | SynthPAI | text→text | prompt5 | 4,074 |
+| tool-neuron | HR-VISPR | image→image | prompt5 | 420 |
+| tool-neuron | HR-VISPR | image→text | prompt4 | 1,953 |
+| tool-neuron | PrivacyLens | text→text | prompt4 | 3,255 |
+| tool-neuron | SynthPAI | text→image | prompt5 | 294 |
+| waico | PrivacyLens | text→text | prompt5 | 4,179 |
+| xend | PrivacyLens | text→text | prompt5 | 4,200 |
 
 **Evaluation protocol:** Each item is evaluated with prompt4 or prompt5 (3-way leakage verdicts: *confirmed leakage*, *possible leakage*, *no evidence*). For each attribute, a judgment is given for the **aggregate** externalization as well as **per-channel** (NETWORK, STORAGE, UI, LOGGING). Rows with failed or missing `ext_eval` are excluded.
 
@@ -56,18 +73,18 @@
 
 | Metric | Value |
 |--------|-------|
-| Total attribute-item pairs evaluated | 72,093 |
-| Unique items | 3,228 |
-| Apps covered | 14 |
-| Datasets covered | 9 |
-| **Inferable in raw model output (binary judge)** | **31.8%** |
-| **Confirmed leakage — externalization (aggregate, 3-class)** | **2.9%** |
+| Total attribute-item pairs evaluated | 144,396 |
+| Unique items | 6,855 |
+| Apps covered | 24 |
+| Datasets covered | 10 |
+| **Inferable in raw model output (binary judge)** | **18.9%** |
+| **Confirmed leakage — externalization (aggregate, 3-class)** | **4.2%** |
 | **Any leakage — externalization (aggregate, 3-class)** | **13.7%** |
 | No-evidence rate (externalization) | 86.3% |
-| Attribute-item pairs with `output_eval` populated | 68,649 |
-| Mean GT input attributes per item | 4.11 |
-| Mean externalized (any-leak) attributes per item | 3.05 |
-| Items with inference expansion (new attrs ≥1) | 66.9% |
+| Attribute-item pairs with `output_eval` populated | 144,396 |
+| Mean GT input attributes per item | 2.02 |
+| Mean externalized (any-leak) attributes per item | 2.88 |
+| Items with inference expansion (new attrs ≥1) | 67.9% |
 
 > The two judges report different metrics by design. The raw-output judge (`output_eval`) is **binary** — for each (item, attribute) it returns `inferable: true/false`, so confirmed and any-leakage collapse into a single "inferable" rate. The externalization judge (`ext_eval` aggregate) is **3-class** — it returns `confirmed leakage` / `possible leakage` / `no evidence`, so confirmed and any-leakage are reported separately. Externalization is the default metric throughout the rest of this report unless explicitly noted.
 
@@ -81,13 +98,13 @@
 
 Across all apps and datasets, the **Identity & Identifiability** family (face, identity), **Demographic** (gender, age), and **Location & Spatial** attributes show the highest confirmed leakage rates.
 
-- `identity` (Identity & Identifiability): 15.5% confirmed leakage rate
-- `gender` (Demographic): 14.7% confirmed leakage rate
-- `location` (Location & Spatial): 7.2% confirmed leakage rate
-- `medical` (Health & Medical): 6.2% confirmed leakage rate
-- `age` (Demographic): 6.0% confirmed leakage rate
+- `identity` (Identity & Identifiability): 27.7% confirmed leakage rate
+- `gender` (Demographic): 20.8% confirmed leakage rate
+- `location` (Location & Spatial): 12.8% confirmed leakage rate
+- `medical` (Health & Medical): 8.7% confirmed leakage rate
+- `age` (Demographic): 7.1% confirmed leakage rate
 
-The top-5 confirmed attributes are: **identity** (15.5%), **gender** (14.7%), **location** (7.2%), **medical** (6.2%), **age** (6.0%). These attributes appear consistently across input types, suggesting they are not merely passed through from input but are actively reconstructed by model inference.
+The top-5 confirmed attributes are: **identity** (27.7%), **gender** (20.8%), **location** (12.8%), **medical** (8.7%), **age** (7.1%). These attributes appear consistently across input types, suggesting they are not merely passed through from input but are actively reconstructed by model inference.
 
 **Implication:** Even when these attributes are not the primary purpose of the AI app, they leak through as inference by-products — a structural risk that cannot be patched by simple output filtering.
 
@@ -98,10 +115,10 @@ The top-5 confirmed attributes are: **identity** (15.5%), **gender** (14.7%), **
 
 ### Finding 2: UI Carries the Most Volume; STORAGE Creates Hidden Background Leakage at Comparable Rates
 
-- **UI**: 1.2% confirmed, 4.4% any leakage (61,698 attr-item pairs)
-- **NETWORK**: 1.1% confirmed, 2.7% any leakage (14,469 attr-item pairs)
-- **STORAGE**: 0.6% confirmed, 4.4% any leakage (8,274 attr-item pairs)
-- **LOGGING**: 0.3% confirmed, 3.8% any leakage (1,176 attr-item pairs)
+- **UI**: 1.9% confirmed, 5.1% any leakage (61,656 attr-item pairs)
+- **NETWORK**: 0.8% confirmed, 2.7% any leakage (87,066 attr-item pairs)
+- **LOGGING**: 0.3% confirmed, 3.2% any leakage (1,428 attr-item pairs)
+- **STORAGE**: 0.3% confirmed, 3.4% any leakage (28,434 attr-item pairs)
 
 ![Fig 4 — Channel Distribution](attachments/leakage_fig4_channel_distribution.png)
 ![Fig 5 — Channel × App Heatmap](attachments/leakage_fig5_channel_app_heatmap.png)
@@ -111,7 +128,7 @@ The top-5 confirmed attributes are: **identity** (15.5%), **gender** (14.7%), **
 
 ### Finding 3: Apps Consistently Infer MORE Attributes Than Were Present in Input (Inference Expansion)
 
-On average, items enter with **4.1** GT-labeled attributes but exit with **3.1** attributes showing any leakage in externalization. **66.9%** of items show at least one *new* attribute (present in externalization but absent from input GT) — evidence of active inference rather than simple passthrough.
+On average, items enter with **2.0** GT-labeled attributes but exit with **2.9** attributes showing any leakage in externalization. **67.9%** of items show at least one *new* attribute (present in externalization but absent from input GT) — evidence of active inference rather than simple passthrough.
 
 ![Fig 7 — Three-Stage Flow](attachments/leakage_fig7_three_stage_flow.png)
 ![Fig 8 — Attribute Persistence Scatter](attachments/leakage_fig8_attribute_persistence.png)
@@ -121,9 +138,10 @@ On average, items enter with **4.1** GT-labeled attributes but exit with **3.1**
 
 ### Finding 4: Image Input Activates More Attributes in Input, but Text Externalizes More Consistently
 
-- **text→text**: 4.0% confirmed, 11.7% any leakage (n=36,687)
-- **image→text**: 1.8% confirmed, 15.7% any leakage (n=35,385)
-- **image→image**: 0.0% confirmed, 100.0% any leakage (n=21)
+- **image→image**: 9.5% confirmed, 28.6% any leakage (n=420)
+- **text→text**: 5.1% confirmed, 14.2% any leakage (n=101,598)
+- **text→image**: 3.7% confirmed, 19.4% any leakage (n=294)
+- **image→text**: 2.0% confirmed, 12.3% any leakage (n=42,084)
 
 ![Fig 11 — Modality × Family Comparison](attachments/leakage_fig11_modality_family.png)
 ![Fig 12 — Input Type Comparison](attachments/leakage_fig12_input_type_comparison.png)
@@ -133,7 +151,7 @@ On average, items enter with **4.1** GT-labeled attributes but exit with **3.1**
 
 ### Finding 5: Multiple Attributes Leak Simultaneously — Profile Consolidation in AI Output
 
-Among items with at least one confirmed leakage event, an average of **1.9** attributes are simultaneously confirmed. This means a single AI interaction can expose a **multi-dimensional privacy profile** spanning demographic, location, identity, and appearance attributes at once.
+Among items with at least one confirmed leakage event, an average of **2.0** attributes are simultaneously confirmed. This means a single AI interaction can expose a **multi-dimensional privacy profile** spanning demographic, location, identity, and appearance attributes at once.
 
 ![Fig 14 — Profile Consolidation](attachments/leakage_fig14_profile_consolidation.png)
 ![Fig 20 — Consistently Leaked Attributes](attachments/leakage_fig20_consistent_attrs.png)
@@ -143,16 +161,16 @@ Among items with at least one confirmed leakage event, an average of **1.9** att
 ## 5. Cross-Group Synthesis
 
 ### RQ1: Where is leakage most prevalent? (by attribute family)
-Identity & Identifiability: 9.0%; Location & Spatial: 7.2%; Demographic: 5.9%
+Identity & Identifiability: 14.5%; Location & Spatial: 12.8%; Demographic: 8.2%
 
 ### RQ2: Which channels carry the most risk?
-- **UI**: 1.2% confirmed, 4.4% any leakage (61,698 attr-item pairs)
-- **NETWORK**: 1.1% confirmed, 2.7% any leakage (14,469 attr-item pairs)
-- **STORAGE**: 0.6% confirmed, 4.4% any leakage (8,274 attr-item pairs)
-- **LOGGING**: 0.3% confirmed, 3.8% any leakage (1,176 attr-item pairs)...
+- **UI**: 1.9% confirmed, 5.1% any leakage (61,656 attr-item pairs)
+- **NETWORK**: 0.8% confirmed, 2.7% any leakage (87,066 attr-item pairs)
+- **LOGGING**: 0.3% confirmed, 3.2% any leakage (1,428 attr-item pairs)
+- **STORAGE**: 0.3% confirmed, 3.4% any leakage (28,434 attr-item pairs)...
 
 ### RQ3: How does input type shape the leakage landscape?
-**text** input: 4.1% confirmed (n=34,020); **image** input: 2.1% confirmed (n=29,358); **docs** input: 1.1% confirmed (n=8,715)
+**text** input: 5.2% confirmed (n=93,492); **docs** input: 2.6% confirmed (n=23,331); **image** input: 2.2% confirmed (n=27,573)
 
 ![Fig 17 — Modality Radar Chart](attachments/leakage_fig17_modality_radar.png)
 ![Fig 18 — Per-App Leakage Summary](attachments/leakage_fig18_app_summary.png)
@@ -168,7 +186,7 @@ This section tests the theoretical claims about how inference transforms attribu
 Text-to-text apps exhibit a phenomenon we term *semantic crystallization*: even when the input text contains only weak or implicit cues for a privacy attribute, the language model's output *consolidates* those cues into explicit, externalized statements. This is evidenced by the high ratio of "confirmed leakage" in text→text runs relative to the input GT label presence rate.
 
 ### 6.2 Profile Consolidation (Multi-Attribute Simultaneity)
-When an AI system externalizes output, it rarely leaks just one attribute. The analysis shows that items with any confirmed leakage average **1.9** simultaneously confirmed attributes — meaning a single externalization event can expose a multi-dimensional privacy profile.
+When an AI system externalizes output, it rarely leaks just one attribute. The analysis shows that items with any confirmed leakage average **2.0** simultaneously confirmed attributes — meaning a single externalization event can expose a multi-dimensional privacy profile.
 
 ### 6.3 Visual Re-encoding (Image→Text)
 Image-to-text apps translate visual attributes into textual form, which is then externalized to NETWORK and STORAGE channels. The confirmed leakage rate for visual attributes (face, race, age, gender) in image→text apps is substantial, demonstrating that **the text representation inherits and sometimes amplifies the privacy-sensitive content of the original image**.
@@ -177,9 +195,9 @@ Image-to-text apps translate visual attributes into textual form, which is then 
 Not all attributes persist from input to externalization. Some (e.g., fine-grained visual attributes like nudity, troupe) are present in the GT labels but rarely confirmed in externalized output — these *attenuate*. Others (e.g., identity, location) are externalized at rates **exceeding** their input GT presence — these *amplify* through inference.
 
 ### 6.5 Modality Split Analysis (Docs / Image / Text)
-- **Docs input**: input GT rate = 11.8%, confirmed leakage = 1.1%
-- **Image input**: input GT rate = 35.2%, confirmed leakage = 2.1%
-- **Text input**: input GT rate = 5.6%, confirmed leakage = 4.1%
+- **Docs input**: input GT rate = 10.1%, confirmed leakage = 2.6%
+- **Image input**: input GT rate = 24.7%, confirmed leakage = 2.2%
+- **Text input**: input GT rate = 5.0%, confirmed leakage = 5.2%
 
 ![Fig 12 — Input Type 3-Way Comparison](attachments/leakage_fig12_input_type_comparison.png)
 ![Fig 16 — Transformation Case Studies](attachments/leakage_fig16_transformation_cases.png)
@@ -190,12 +208,12 @@ Not all attributes persist from input to externalization. Some (e.g., fine-grain
 
 Apps are grouped into six functional categories: **Finance**, **Photo/Camera**, **Productivity**, **Education**, **Social/Communication**, and **Health/Fitness**.
 
-- **Health/Fitness** (257.0 items): 12.1% confirmed, 20.8% any leakage
-- **Photo/Camera** (11.0 items): 9.1% confirmed, 27.7% any leakage
-- **Education** (366.0 items): 3.4% confirmed, 11.1% any leakage
-- **Social/Comm.** (430.0 items): 2.3% confirmed, 9.7% any leakage
-- **Productivity** (1,156.0 items): 1.9% confirmed, 16.0% any leakage
-- **Finance** (362.0 items): 1.1% confirmed, 6.7% any leakage
+- **Health** (600.0 items): 7.7% confirmed, 19.9% any leakage
+- **Social** (403.0 items): 6.9% confirmed, 16.5% any leakage
+- **Photo/Camera** (570.0 items): 4.9% confirmed, 17.9% any leakage
+- **Finance** (1,001.0 items): 4.5% confirmed, 11.9% any leakage
+- **Education** (567.0 items): 3.5% confirmed, 12.9% any leakage
+- **Productivity** (1,141.0 items): 0.8% confirmed, 8.7% any leakage
 
 ![Fig 21 — Category Verdict Overview](attachments/leakage_fig21_category_verdict.png)
 ![Fig 22 — Category × Family Heatmap](attachments/leakage_fig22_category_family_heatmap.png)
@@ -220,34 +238,45 @@ Apps are grouped into six functional categories: **Finance**, **Photo/Camera**, 
 
 | App | N pairs | Confirmed % | Any Leak % |
 |-----|---------|-------------|------------|
-| healyks | 3,465 | 13.1% | 21.0% |
-| waico | 2,121 | 10.5% | 20.6% |
-| tool-neuron | 231 | 9.1% | 27.7% |
-| llm-vtuber | 3,969 | 6.1% | 14.0% |
-| deeptutor | 7,812 | 4.3% | 10.6% |
-| chat-driven-expense-tracker | 2,667 | 3.1% | 9.3% |
-| snapdo | 17,808 | 2.5% | 23.8% |
-| google-ai-edge-gallery | 8,505 | 1.9% | 12.1% |
-| pocketpal-ai | 5,943 | 1.2% | 8.8% |
-| xend | 8,421 | 0.5% | 7.7% |
-| edupal | 2,079 | 0.1% | 13.1% |
-| budget-lens | 4,956 | 0.0% | 5.2% |
-| clone | 4,074 | 0.0% | 0.3% |
-| spendsense | 42 | 0.0% | 4.8% |
+| nutri-track | 4,200 | 14.1% | 25.0% |
+| healyks | 4,200 | 13.0% | 20.7% |
+| lira | 4,200 | 10.8% | 27.0% |
+| tool-neuron | 5,922 | 10.1% | 36.0% |
+| waico | 4,179 | 9.8% | 20.2% |
+| chat-driven-expense-tracker | 8,400 | 7.8% | 16.5% |
+| llm-vtuber | 3,990 | 6.5% | 14.7% |
+| fiscal-flow | 8,400 | 5.5% | 15.0% |
+| sgpa | 8,400 | 4.4% | 15.8% |
+| deeptutor | 8,295 | 4.0% | 10.0% |
+| google-ai-edge-gallery | 8,316 | 3.8% | 14.0% |
+| edupal | 10,878 | 3.8% | 13.3% |
+| budget-lens | 4,200 | 2.5% | 4.7% |
+| snapdo | 8,400 | 2.2% | 14.7% |
+| nom-ai | 4,200 | 2.0% | 30.4% |
+| spendsense | 10,731 | 1.9% | 8.8% |
+| skin-disease-detection | 4,200 | 1.8% | 3.7% |
+| xend | 4,200 | 0.4% | 7.5% |
+| pocketpal-ai | 8,400 | 0.3% | 9.6% |
+| tinytavern | 4,074 | 0.1% | 3.6% |
+| edumind | 4,137 | 0.1% | 11.6% |
+| clone | 4,200 | 0.1% | 0.5% |
+| klyr | 4,074 | 0.0% | 4.1% |
+| momentag | 4,200 | 0.0% | 0.0% |
 
 ### B. Per-Dataset Sample Counts
 
 | Dataset | Input Type | N pairs | Confirmed % |
 |---------|-----------|---------|-------------|
-| ASAP-AES | text | 5,817 | 0.1% |
-| GretelSyntheticPII | docs | 2,667 | 3.1% |
-| HR-VISPR | image | 29,148 | 2.0% |
-| MIMIC-CXR | image | 210 | 3.8% |
-| MultiCaRe | text | 3,675 | 13.3% |
-| OpenPII | text | 210 | 2.9% |
-| PrivacyLens | text | 19,005 | 4.5% |
-| SROIE2019 | docs | 6,048 | 0.3% |
-| SynthPAI | text | 5,313 | 0.5% |
+| ASAP-AES | text | 20,832 | 0.1% |
+| GretelSyntheticPII | docs | 8,400 | 4.0% |
+| HR-VISPR | image | 19,173 | 2.3% |
+| MIMIC-CXR | image | 4,200 | 1.8% |
+| MultiCaRe | text | 8,400 | 13.6% |
+| MultiPriv | docs | 2,373 | 3.5% |
+| Nutrition5k | image | 4,200 | 2.0% |
+| PrivacyLens | text | 40,719 | 8.0% |
+| SROIE2019 | docs | 12,558 | 1.4% |
+| SynthPAI | text | 23,541 | 2.1% |
 
 ### C. Attribute Family → Member Mapping
 
