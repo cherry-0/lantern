@@ -320,3 +320,58 @@ To invalidate all caches, delete the cache directories under `verify/outputs/`:
 ```bash
 rm -rf verify/outputs/cache_*/
 ```
+
+---
+
+## 8. Syncing Results Between Machines
+
+`verify/outputs/` is synced through a shared Google Drive folder using the scripts in `verify/sync/` (rclone under the hood). Run directories are self-contained (`run_config.json`, `report.json`, `report.csv` — no absolute paths), so synced runs appear in the View Results page immediately.
+
+### 8.1 One-time setup on a new machine
+
+**Step 1: Install rclone**
+
+```bash
+brew install rclone                                   # macOS
+# or: curl https://rclone.org/install.sh | sudo bash  # Linux
+```
+
+**Step 2: Configure the Drive remote.** The scripts expect an rclone remote named `lantern` pointing at the shared Drive folder. Two options:
+
+- **Copy the config from an already-configured machine** (simplest). Locate it with `rclone config file` (usually `~/.config/rclone/rclone.conf`) and place it at the same path on the new machine. Transfer it securely — it contains an OAuth token.
+- **Create it fresh**: run `rclone config`, add a remote named `lantern` of type `drive` (scope `drive`), and set its `root_folder_id` to the shared Drive folder's ID (in the advanced options, or by editing `rclone.conf` afterwards).
+
+**Step 3: Verify the setup**
+
+```bash
+rclone listremotes                              # should print: lantern:
+rclone lsf lantern:verify/outputs --dirs-only   # should list run directories
+```
+
+The remote name and path can be overridden via env vars (also picked up from `verify/.env`):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `GDRIVE_REMOTE` | `lantern` | rclone remote name |
+| `GDRIVE_REMOTE_PATH` | `verify/outputs` | folder path inside the remote |
+
+Note that the Drive folder itself is selected by the remote's `root_folder_id` in `rclone.conf`, not by an env var.
+
+### 8.2 Sync commands
+
+```bash
+cd verify/sync
+./sync_download.sh           # pull runs from Drive (only files newer on Drive)
+./sync_upload.sh             # push local runs to Drive (only files newer locally)
+./see_diff.sh                # compare run dirs local ↔ Drive (ignores cache_*)
+./sync_delete.sh             # dry-run: show remote dirs that were deleted locally
+./sync_delete.sh --execute   # actually delete them from Drive
+```
+
+Upload and download both use `rclone copy --update`: per-file "newer wins" by modification time, and nothing is ever deleted. Deletions propagate only through `sync_delete.sh`.
+
+### 8.3 Caveats
+
+- **On a fresh machine, run `sync_download.sh` before anything else.** `sync_delete.sh` treats every Drive directory missing locally as "deleted locally" — running `--execute` with an empty `outputs/` would purge the entire remote backup. The dry-run default is the safety net.
+- `cache_*` directories (cached evaluation calls, see §7) are uploaded and downloaded too. Keeping them avoids re-paying judge API calls when re-evaluating runs on another machine.
+- For a direct machine-to-machine copy without Drive: `rsync -avz verify/outputs/ user@host:/path/to/lantern/verify/outputs/`.
